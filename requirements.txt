@@ -1,0 +1,8 @@
+# 运行服务所需（不锁版本，pip 自动解析；无法再减，否则后端无法启动）
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+pydantic-settings
+python-multipart
+itsdangerous
