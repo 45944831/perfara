@@ -1,0 +1,24 @@
+{
+  "occupancy": ["Vertex Occupancy", "Fragment Occupancy", "Compute Occupancy"],
+  "aluPerf": ["ALU Utilization", "F32 Utilization", "F16 Utilization", "ALU Limiter"],
+  "texture": [
+    "Texture Sample Utilization",
+    "Texture Filtering Limiter",
+    "Texture Sample Limiter",
+    "Texture Cache Limiter"
+  ],
+  "bandwidth": ["GPU Read Bandwidth", "GPU Write Bandwidth"],
+  "cache": [
+    "GPU Last Level Cache Utilization",
+    "GPU Last Level Cache Limiter",
+    "MMU Utilization",
+    "MMU Limiter"
+  ],
+  "shader": [
+    "Fragment Input Interpolation Limiter",
+    "Fragment Input Interpolation Utilization",
+    "Threadgroup/Imageblock Load Utilization",
+    "Threadgroup/Imageblock Store Utilization"
+  ]
+}
+

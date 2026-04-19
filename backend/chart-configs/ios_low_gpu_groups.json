@@ -1,0 +1,10 @@
+{
+  "texture": ["texture/*"],
+  "bandwidth": ["bandwidth/*"],
+  "compute": ["compute/*"],
+  "cache": ["cache/*"],
+  "buffer": ["buffer/*"],
+  "threadgroup": ["threadgroup/*"],
+  "fragment": ["fragment/*"]
+}
+

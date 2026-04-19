@@ -1,0 +1,15 @@
+{
+  "cpu": ["cpuUsage", "cpuTotalSystem", "cpuTotalUser"],
+  "fps": ["fps", "jank", "bigjank"],
+  "mem": ["physFootprint", "memResidentSize"],
+  "memdetail": [
+    "memRPrvt",
+    "memRShrd",
+    "memAnon",
+    "memCompressed",
+    "memPurgeable"
+  ],
+  "disk": ["_diskReadKBps", "_diskWriteKBps"],
+  "events": ["_ctxSwitchPs", "_intWakeupsPs", "_vmPageInsPs"]
+}
+

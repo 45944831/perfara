@@ -1,0 +1,24 @@
+{
+  "cpu": ["cpu.sysCpu", "cpu.procCpu"],
+  "mem": ["mem.totalPss"],
+  "memDetail": [
+    "mem.nativeHeap",
+    "mem.dalvikHeap",
+    "mem.javaHeap",
+    "mem.code",
+    "mem.stack",
+    "mem.graphics",
+    "mem.privateOther",
+    "mem.system"
+  ],
+  "fps": ["fps", "jank", "bigJank", "jankRate"],
+  "net": ["net.rxKBps", "net.txKBps"],
+  "gpu": ["gpu"],
+  "temp": ["temperature", "battery.temperature"],
+  "current": ["battery.currentNow"],
+  "power": ["battery.power"],
+  "cpuCores": ["cpuCores.usage[*]"],
+  "cpuFreq": ["cpuCores.freq[*]"],
+  "pcDisk": ["pcExtra.diskReadKBps", "pcExtra.diskWriteKBps", "pcExtra.fpsFloat"],
+  "pid": ["pid"]
+}
