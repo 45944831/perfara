@@ -31,13 +31,13 @@
 | 文件 | 说明 |
 |------|------|
 | `Android1.jpg` | Android 数据展示示例 |
-| `an2.jpg` | Android 补充视图 |
+| `an2.gif` | Android 补充视图 |
 | `web1.jpg` | Web 云端采集与数据汇聚示意 |
 | `anti.jpg` | **趋势统计**：同场景多次测试的均值/峰值曲线，用于持续观测与防劣化 |
 
 ![Android 数据展示](Android1.jpg)
 
-![Android 补充视图](an2.jpg)
+![Android 补充视图](an2.gif)
 
 ![Web 云端采集与汇聚](web1.jpg)
 
@@ -139,13 +139,13 @@ Place these next to this file or under `docs/`:
 | File | Description |
 |------|-------------|
 | `Android1.jpg` | Android dashboard sample |
-| `an2.jpg` | Additional Android view |
+| `an2.gif` | Additional Android view |
 | `web1.jpg` | Web-side collection & aggregation |
 | `anti.jpg` | **Trends**: mean vs peak curves across runs for the same scenario |
 
 ![Android dashboard](Android1.jpg)
 
-![Android — additional view](an2.jpg)
+![Android — additional view](an2.gif)
 
 ![Web capture & aggregation](web1.jpg)
 
