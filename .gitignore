@@ -16,6 +16,11 @@ Thumbs.db
 .idea/
 .vscode/
 
+# PyInstaller
+build/
+dist/
+*.manifest
+
 # Local DB overrides (data/webperf.db 为演示数据，按需保留)
 data/*.db-journal
 data/*.db-wal

@@ -3,7 +3,10 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 import os
 import sqlite3
 
-DB_PATH = os.environ.get("WEB_PERF_DB", os.path.join(os.path.dirname(__file__), "..", "data", "webperf.db"))
+from .paths import ensure_data_dir
+
+# 打包后默认落在 exe 同级的 data/ 下，源码运行时为项目根的 data/。
+DB_PATH = os.environ.get("WEB_PERF_DB") or str(ensure_data_dir() / "webperf.db")
 DB_PATH = os.path.abspath(DB_PATH)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 

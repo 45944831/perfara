@@ -95,6 +95,31 @@ python3 serve.py
 
 浏览器访问 `http://<主机>:<端口>/`；API 为同源 `/api/*`。更完整的接口与上传格式见仓库内 **`README.md`**。
 
+### 便携式 EXE（Windows 免安装）
+
+不需要 Python 环境，单个 exe 双击即用（内置后端 + 前端页面 + 图表配置）。
+
+```bash
+# 打包（需本机装过 Python 3.9+；Windows 双击 build_exe.bat 亦可）
+pip install -r requirements.txt pyinstaller
+pyinstaller perfara.spec --noconfirm --clean
+# 产物：dist/Perfara.exe
+```
+
+使用：
+
+| 操作 | 说明 |
+|------|------|
+| 双击 `Perfara.exe` | 启动服务并自动打开浏览器（默认 `http://127.0.0.1:8000/`） |
+| `Perfara.exe --port 8099` | 指定端口；端口被占用时自动顺延 |
+| `Perfara.exe --host 0.0.0.0` | 允许局域网访问（默认仅本机） |
+| `Perfara.exe --no-browser` | 不自动打开浏览器 |
+| `Perfara.exe --data-dir D:\perfara-data` | 指定数据目录 |
+
+- **数据位置**：exe 同目录的 `data/webperf.db`（首次运行自动初始化）与 `logs/app.log`；整个文件夹拷走即可迁移，升级 exe 不会覆盖已有数据。
+- 启动后浏览器打开 `http://127.0.0.1:8000/?uid=perfara123` 可直接看演示数据；正式使用请换成自己的 UID。
+- 关闭控制台窗口即停止服务。
+
 ### 私有化部署（采集端指向自有看板）
 
 将采集客户端解压或安装后，编辑：
@@ -199,6 +224,21 @@ python3 serve.py
 | `WEB_PERF_DB` | Absolute path to SQLite file; default `<repo>/data/webperf.db` |
 
 Open `http://<host>:<port>/`; APIs are same-origin under `/api/*`. See **`README.md`** in the repository for full API and upload schema.
+
+### Portable EXE (Windows, no install)
+
+Single-file executable bundling backend + built frontend + chart configs — no Python required.
+
+```bash
+pip install -r requirements.txt pyinstaller
+pyinstaller perfara.spec --noconfirm --clean
+# output: dist/Perfara.exe
+```
+
+- Double-click `Perfara.exe` → starts the server and opens `http://127.0.0.1:8000/`.
+- Flags: `--port`, `--host 0.0.0.0` (LAN access), `--no-browser`, `--data-dir <path>`.
+- Data lives next to the exe in `data/webperf.db` and `logs/app.log`; copy the whole folder to migrate, and upgrading the exe never overwrites existing data.
+- Close the console window to stop the service.
 
 ### Self-hosting (client → your server)
 

@@ -5,8 +5,17 @@ try:
 except Exception:
     from pydantic import BaseSettings  # fallback for v1
 
-CONFIGS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "chart-configs"))
-os.makedirs(CONFIGS_DIR, exist_ok=True)
+from .paths import resource, user_data
+
+# 打包后 chart-configs 随只读资源一起解包；源码运行时即 backend/chart-configs。
+_cfg_dir = resource("backend", "chart-configs")
+if not _cfg_dir.is_dir():
+    _cfg_dir = user_data("backend", "chart-configs")
+CONFIGS_DIR = str(_cfg_dir)
+try:
+    os.makedirs(CONFIGS_DIR, exist_ok=True)
+except OSError:
+    pass
 
 
 class Settings(BaseSettings):

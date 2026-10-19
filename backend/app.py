@@ -24,6 +24,7 @@ from .schemas import (
     TrendPointOut,
 )
 from .auth_deps import require_uid, resolve_uid, is_super_uid, is_demo_perfara_uid
+from .paths import APP_ROOT, resource
 from .parsers import parse_uploaded_json
 from .utils import ensure_project_for_payload
 from .version import __version__
@@ -46,8 +47,8 @@ def _cors_allow_origins():
     ]
 
 
-# Initialize logging to logs/app.log
-_log_file = setup_logging(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# Initialize logging to <可写目录>/logs/app.log（打包后即 exe 同级的 logs/）
+_log_file = setup_logging(str(APP_ROOT))
 logging.getLogger(__name__).info("Logging initialized at %s", _log_file)
 
 Base.metadata.create_all(bind=engine)
@@ -919,9 +920,10 @@ def list_project_infos(
 
 
 # Frontend static + SPA fallback (so /tests?testid=... works when pasted).
-FRONTEND_DIST = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+# 打包后前端产物位于只读资源目录，源码运行时为项目根的 frontend/dist。
+FRONTEND_DIST = str(resource("frontend", "dist"))
 FRONTEND_INDEX = os.path.join(FRONTEND_DIST, "index.html")
-PERFARA_AD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "perfara-ad"))
+PERFARA_AD_DIR = str(resource("perfara-ad"))
 
 try:
     if os.path.isdir(PERFARA_AD_DIR):
