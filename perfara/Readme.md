@@ -29,7 +29,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `docs/screenshots/dashboard.png` | 本地看板：测试列表、场景标记与分享令牌 |
+| `docs/screenshots/dashboard.png` | 本地看板：测试列表、场景标记与「复制 testid」 |
 | `docs/screenshots/test-detail.png` | 测试详情：指标卡与整体统计（均值 / 峰值 / P98） |
 | `docs/screenshots/report.png` | 报告页：关键指标 + 自动解读总结 |
 | `docs/screenshots/report-charts.png` | 报告页：FPS / 卡顿 / 网络 / 温度多图联动 |
@@ -50,7 +50,7 @@
 ### 核心能力
 
 1. **本地看板** — 浏览器内完成列表、详情、图表与指标汇总，支持按 UID 管理数据范围；可只跑本机，也可部署到内网供团队共用。  
-2. **竞品比对** — 在比对页填入 **两个 testid**（分享令牌），即可并排对比关键指标，快速定位差异。  
+2. **竞品比对** — 在比对页填入 **两个 testid**，即可并排对比关键指标，快速定位差异。  
 3. **趋势统计与自动防劣化** — 为用例打上**场景标记**后，在「趋势统计」中按场景筛选；每次同场景测试在时间轴上形成趋势，便于发现性能回退与波动。  
 4. **开放数据路径** — 支持自建服务、自主上传与导出；详情页可复制 testid 用于分享与集成。
 
@@ -162,7 +162,7 @@ All screenshots live in `docs/screenshots/` and come from this project's real UI
 
 | File | Description |
 |------|-------------|
-| `docs/screenshots/dashboard.png` | Local dashboard: test list, scenario tags, share token |
+| `docs/screenshots/dashboard.png` | Local dashboard: test list, scenario tags, "copy testid" |
 | `docs/screenshots/test-detail.png` | Test detail: metric cards and mean / peak / P98 table |
 | `docs/screenshots/report.png` | Report: key metrics plus automatic diagnosis summary |
 | `docs/screenshots/report-charts.png` | Report: FPS, jank, network and thermal charts |
@@ -183,7 +183,7 @@ All screenshots live in `docs/screenshots/` and come from this project's real UI
 ### Highlights
 
 1. **Local dashboard** — Lists, details, charts, and summaries in the browser; UID-scoped data access. Runs on one machine or on an intranet server.  
-2. **Competitor / A-B compare** — Enter **two `testid` tokens** on the compare page for side-by-side metrics.  
+2. **Competitor / A-B compare** — Enter **two `testid` values** on the compare page for side-by-side metrics.  
 3. **Trends & anti-degradation** — Tag scenarios on each run; filter by scenario in **Trends** to see evolution and catch performance drift early.  
 4. **Open data path** — Self-host, upload, and export; copy `testid` from detail pages for sharing and automation.
 
