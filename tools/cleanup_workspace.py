@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-清理工作区无用文件：备份副本、构建中间产物、虚拟环境、测试脚本、过程截图。
+清理工作区无用文件：备份副本、构建中间产物、虚拟环境、过程截图。
 
 设计原则：
   1) 只删"可从别处重建 / 已归档"的东西，源码与构建配置一律保留；
   2) 删除前把清单写到报告文件，可追溯；
   3) 支持 --dry-run 预演，默认必须显式 --apply 才真删。
+
+⚠️ 禁止清理的资产（历史教训：曾误删引发返工，务必保持在此列表中）：
+  - perfara/tests：10 套回归测试脚本，属代码资产，不是"临时测试文件"；
+  - _client_src、tools、perfara/{backend,frontend,server}：源码；
+  - build/**/*.spec：打包配置。
 """
 import os
 import sys
@@ -26,7 +31,6 @@ DIRS = [
     '_evidence_compare', '_evidence_metric_info', '_evidence_openloc',
     '_evidence_overlap', '_evidence_readability', '_evidence_realdevice',
     '_evidence_shared',            # 证据截图（已归档 F 盘）
-    'perfara/tests',               # 测试脚本（已归档 F 盘）
     'perfara/.venv',               # 75M：Python 虚拟环境
     'perfara/build',               # 36M：PyInstaller 中间产物
     'perfara/dist',                # 23M：PyInstaller 产物
@@ -46,6 +50,15 @@ ROOT_PATTERNS = ('.png', '.jpg', '.jpeg', '.gif')
 
 # 必须保留（即使匹配到上面的模式）
 KEEP_ROOT_FILES = {'Readme.md'}
+
+# 永远不清理的目录：回归资产与源码，任何情况下都不进删除清单
+PROTECTED = (
+    'perfara/tests',              # 回归测试脚本（代码资产）
+    '_client_src',                # 客户端源码
+    'tools',                      # 构建 / 工具脚本
+    'perfara/backend', 'perfara/frontend', 'perfara/server',
+    'build/launcher/Perfara.spec', 'build/launcher-offline/Perfara离线版.spec',
+)
 
 
 def dir_size(p):
@@ -72,8 +85,11 @@ def main():
     ap.add_argument('--apply', action='store_true', help='真正执行删除（默认仅预演）')
     args = ap.parse_args()
 
+    protected = set(p.replace('/', os.sep) for p in PROTECTED)
     targets = []
     for rel in DIRS:
+        if rel.replace('/', os.sep) in protected:
+            continue
         p = os.path.join(ROOT, rel.replace('/', os.sep))
         if os.path.isdir(p):
             targets.append(('dir', rel, dir_size(p)))
@@ -95,10 +111,8 @@ def main():
         print('  [%s] %-42s %10s' % (kind, rel, human(size)))
 
     # 保留项提示
-    print('\n保留（源码 / 构建配置 / 运行时）：')
-    for rel in ('_client_src', 'tools', 'perfara/backend', 'perfara/frontend',
-                'perfara/server', 'perfara/collector', 'build/launcher/Perfara.spec',
-                'build/launcher-offline/Perfara离线版.spec'):
+    print('\n保留（源码 / 构建配置 / 运行时 / 回归资产）：')
+    for rel in PROTECTED + ('perfara/collector',):
         p = os.path.join(ROOT, rel.replace('/', os.sep))
         if os.path.exists(p):
             print('  keep  %s' % rel)
