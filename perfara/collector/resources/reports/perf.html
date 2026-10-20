@@ -1,0 +1,3611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Perfara离线版 · 性能报告</title>
+  <!-- echarts：优先用同目录本地文件（离线可用），缺失时回退 CDN；都失败则用空实现兜底，保证表格照常渲染 -->
+  <script src="echarts.min.js"></script>
+  <script>
+    if (typeof echarts === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"><\/script>');
+    }
+  </script>
+  <script>
+    if (typeof echarts === 'undefined') {
+      window.echarts = {
+        init: function () {
+          return {
+            setOption: function () {}, resize: function () {}, dispose: function () {},
+            on: function () {}, off: function () {}, getDom: function () { return null; },
+            getZr: function () { return { on: function () {} }; }
+          };
+        },
+        connect: function () {},
+        registerTheme: function () {}
+      };
+      console.warn('[perf] echarts 未加载：图表区域留空，数据表照常显示');
+    }
+  </script>
+  <style>
+/* ===== Inlined from html-template2/style.css (keep visual identical) ===== */
+/* ═══ Reset & Base ══════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0f1117;
+  --bg2: #161922;
+  --bg3: #1e2230;
+  --border: #2a2f3d;
+  --text: #e0e4ef;
+  --text2: #8a90a0;
+  --accent: #4f8ef7;
+  --green: #3ecf8e;
+  --red: #f85151;
+  --orange: #f5a623;
+  --yellow: #f5d020;
+  --radius: 8px;
+  --font: 'Segoe UI', system-ui, sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Ensure inner app participates in flex for scroll */
+#root{
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ═══ Scrollbar ═════════════════════════════════════════════════════════════ */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg2); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ═══ Top Bar ═══════════════════════════════════════════════════════════════ */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.logo-icon {
+  font-size: 16px;
+  color: var(--accent);
+}
+
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.control-group label {
+  color: var(--text2);
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.control-text {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+select, input[type="text"] {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  outline: none;
+}
+
+select { cursor: pointer; min-width: 180px; }
+input[type="text"] { width: 160px; }
+
+.sel-app-select {
+  min-width: 220px;
+  width: min(320px, 36vw);
+}
+
+select:focus, input:focus { border-color: var(--accent); }
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.elapsed {
+  color: var(--text2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
+}
+
+/* ═══ Buttons ═══════════════════════════════════════════════════════════════ */
+.btn {
+  border: none;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn:not(:disabled):hover { opacity: 0.85; }
+.btn-sm  { padding: 4px 8px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-danger  { background: var(--red); color: #fff; }
+.btn-export  { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+
+/* ═══ Badge ═════════════════════════════════════════════════════════════════ */
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.idle     { background: var(--bg3); color: var(--text2); }
+.badge.info     { background: var(--accent); color: #fff; }
+
+/* 设备信息条 */
+.device-info-strip {
+  padding: 6px 16px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text2);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.device-info-strip[hidden] { display: none !important; }
+.device-info-strip-inner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.device-info-text { flex: 1; min-width: 0; }
+
+/* ═══ Stat Cards ════════════════════════════════════════════════════════════ */
+.cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 16px;
+  flex-shrink: 0;
+}
+.card {
+  flex: 1 1 90px;
+  min-width: 90px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transition: border-color 0.2s;
+}
+.card-label { font-size: 11px; color: var(--text2); }
+.card-value {
+  font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1;
+  color: var(--card-color, var(--text));
+}
+.card-unit  { font-size: 10px; color: var(--text2); }
+
+/* Card color states (android cards ids) */
+#card-cpu     { --card-color: #4f8ef7; }
+#card-proccpu { --card-color: #79d4f7; }
+#card-mem     { --card-color: #3ecf8e; }
+#card-fps     { --card-color: #f5d020; }
+#card-jank    { --card-color: #f5a623; }
+#card-bigjank { --card-color: #f85151; }
+#card-net     { --card-color: #c77dff; }
+#card-gpu     { --card-color: #f5a623; }
+#card-battery { --card-color: #3ecf8e; }
+#card-temp    { --card-color: #f85151; }
+
+/* 阈值着色：JS 在 card 上写 --card-color（内联优先级高于上面的 id 规则） */
+.card[data-state="good"] { border-color: rgba(62,207,142,.38); }
+.card[data-state="warn"] { border-color: rgba(245,166,35,.40); }
+.card[data-state="bad"]  { border-color: rgba(248,81,81,.45); }
+
+/* ═══ Charts Grid ═══════════════════════════════════════════════════════════ */
+.charts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px 8px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.chart-wrap {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  position: relative;
+  height: 230px;
+}
+.chart-title {
+  padding: 6px 12px 0;
+  font-size: 11px;
+  color: var(--text2);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.chart { flex: 1; min-height: 0; }
+/* 该指标本次无数据时的提示（如机型不提供 GPU 使用率） */
+.chart-empty-tip {
+  position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%);
+  font-size: 12px; line-height: 1.5; color: var(--text2);
+  background: rgba(10, 14, 22, 0.72); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 8px; pointer-events: none; z-index: 5;
+  white-space: nowrap;
+}
+
+/* Stats tables */
+.stats-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding: 8px 12px 0;
+  flex-shrink:0;
+}
+.stats-head .chart-title{ padding:0; }
+.stats-actions{ display:flex; gap:8px; align-items:center; }
+.stats-body{ padding: 8px 12px 12px; overflow:auto; }
+.stats-table{
+  width:100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.stats-table th, .stats-table td{
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align:left;
+}
+.stats-table th{
+  color: var(--text2);
+  font-weight: 600;
+}
+.stats-table td:nth-child(n+2), .stats-table th:nth-child(n+2){
+  text-align:right;
+  font-variant-numeric: tabular-nums;
+}
+.chart-wrap.stats{
+  height: auto;
+}
+
+/* Hide log panel in static report (keep layout clean) */
+.log-panel { display:none !important; }
+
+/* hidden 属性优先于 flex/grid 布局（否则 .chart-wrap 的 display:flex 会盖掉它） */
+[hidden] { display: none !important; }
+
+/* 顶部「测试类型 / 包名」在概要条里已有，去掉重复信息 */
+.topbar-controls .control-group:not(.btns) { display: none; }
+
+/* Static: disable selectors while keeping appearance */
+select[disabled] { opacity: 0.85; cursor: default; }
+  
+/* ═══ 解读总结 ══════════════════════════════════════════════════════════════ */
+.insight {
+  margin: 2px 16px 10px;
+  padding: 12px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  flex-shrink: 0;
+}
+.insight-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.insight-title { font-size: 13px; font-weight: 600; letter-spacing: .3px; }
+.insight-sub { font-size: 11px; color: var(--text2); margin-left: auto; font-variant-numeric: tabular-nums; }
+.insight-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 10px;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.insight-badge--great { color: var(--green);  border-color: #2a6b4f; background: rgba(62,207,142,.10); }
+.insight-badge--good  { color: var(--accent); border-color: #2f4d7a; background: rgba(79,142,247,.10); }
+.insight-badge--warn  { color: var(--orange); border-color: #6b4d1f; background: rgba(245,166,35,.10); }
+.insight-badge--bad   { color: var(--red);    border-color: #6b2a2a; background: rgba(248,81,81,.10); }
+.insight-lead { font-size: 12.5px; line-height: 1.75; color: var(--text); margin-bottom: 9px; }
+.insight-lead b { font-weight: 600; }
+.insight-list {
+  list-style: none;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 3px 20px;
+}
+.insight-list li { font-size: 12px; line-height: 1.7; color: var(--text2); }
+.insight-list li b { color: var(--text); font-weight: 500; margin-right: 6px; }
+.insight-note--good { color: var(--green); }
+.insight-note--warn { color: var(--orange); }
+.insight-note--bad  { color: var(--red); }
+.insight-note--info { color: var(--text2); }
+.insight-risks {
+  margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--border);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.insight-risk { font-size: 12px; line-height: 1.6; }
+.insight-risk--high { color: var(--red); }
+.insight-risk--mid  { color: var(--orange); }
+.insight-risk--info { color: var(--text2); }
+
+/* ═══ 报告概要条（设备 / 应用 / 平台 / 采样 / 时间） ═══════════════════════ */
+.report-meta {
+  display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap;
+  width: 100%;
+}
+.rm-main { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.rm-device { font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: .2px; }
+.rm-app {
+  font-size: 12px; color: var(--text2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw;
+}
+.rm-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.rm-chip {
+  font-size: 11px; line-height: 18px; color: var(--text);
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 5px; padding: 1px 8px; font-variant-numeric: tabular-nums;
+}
+.rm-chip i { font-style: normal; color: var(--text2); margin-right: 5px; }
+.rm-chip--plat { border-color: #2f4d7a; color: var(--accent); }
+.rm-sub {
+  width: 100%; margin-top: 2px;
+  font-size: 11px; color: var(--text2); line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ═══ 分区标题 ══════════════════════════════════════════════════════════════ */
+.section-label {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 16px 4px; flex-shrink: 0;
+  font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: .3px;
+}
+.section-label .hint { font-weight: 400; font-size: 11px; color: var(--text2); }
+.section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* ═══ 统计表：单位后缀 + 明细折叠 ══════════════════════════════════════════ */
+.metric-unit {
+  margin-left: 5px; font-size: 10px; color: var(--text2); font-weight: 400;
+}
+.stats-toggle td { padding: 4px 8px 6px; border-bottom: none; }
+.stats-toggle button {
+  width: 100%; text-align: left;
+  background: transparent; border: 1px dashed var(--border); border-radius: 6px;
+  color: var(--text2); font-size: 11px; font-family: inherit;
+  padding: 4px 9px; cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.stats-toggle button:hover { color: var(--accent); border-color: var(--accent); }
+.stats-detail-row td { color: var(--text2); background: rgba(255,255,255,.012); }
+.stats-detail-row td:first-child { padding-left: 18px; }
+
+
+/* ═══ 参数说明「!」标记（(__METRIC_INFO_V1__)) ═══════════════════════════════ */
+.info-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; margin-left: 4px; flex: none;
+  border: 1px solid var(--border); border-radius: 50%;
+  background: var(--bg3); color: var(--text2);
+  font: 700 9px/1 var(--font); font-style: normal;
+  vertical-align: middle; cursor: help; opacity: .55;
+  transition: opacity .15s ease, color .15s ease, border-color .15s ease;
+  user-select: none; -webkit-user-select: none;
+}
+.info-dot:hover, .info-dot:focus {
+  opacity: 1; color: var(--accent); border-color: var(--accent); outline: none;
+}
+.kpi-label .info-dot, .card-label .info-dot { width: 12px; height: 12px; margin-left: 3px; }
+.kpis-extra .info-dot { width: 11px; height: 11px; }
+.mi-mask {
+  position: fixed; inset: 0; z-index: 9999; padding: 20px;
+  background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center;
+}
+.mi-mask[hidden] { display: none; }
+.mi-modal {
+  width: 100%; max-width: 560px; max-height: 82vh; overflow: auto;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
+  animation: mi-pop .16s ease-out;
+}
+@keyframes mi-pop { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+.mi-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+}
+.mi-title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
+.mi-unit { margin-left: 6px; font-size: 11px; font-weight: 400; color: var(--text2); }
+.mi-close {
+  border: none; background: transparent; color: var(--text2);
+  font-size: 14px; line-height: 1; padding: 3px 6px; border-radius: 4px; cursor: pointer;
+}
+.mi-close:hover { color: var(--text); background: var(--bg3); }
+.mi-body { padding: 12px 14px 14px; }
+.mi-row { margin-bottom: 10px; }
+.mi-row:last-child { margin-bottom: 0; }
+.mi-row > i {
+  display: block; margin-bottom: 3px;
+  font-size: 11px; font-style: normal; font-weight: 600; color: var(--accent);
+}
+.mi-row > p { font-size: 12px; line-height: 1.8; color: var(--text2); }
+/* ═══ 可读性优化 __READABILITY_V1__ begin ══════════════════════════════ */
+:root {
+  /* 次要文字整体提亮：标签 / 单位 / 说明文字更容易看清（对比度约 5.9:1） */
+  --text2: #9ba3b4;
+}
+
+/* ── 分区标题：主色竖条 + 更大字号，层级更清楚 ────────────────────────── */
+.section-label { font-size: 12.5px; padding: 10px 16px 5px; }
+.section-label::before {
+  content: ''; display: inline-block; flex: none;
+  width: 3px; height: 13px; border-radius: 2px; background: var(--accent);
+}
+
+/* ── 顶部概要条 ────────────────────────────────────────────────────────── */
+.rm-device { font-size: 15px; }
+.rm-app { font-size: 12.5px; }
+.rm-chip { font-size: 11.5px; line-height: 19px; }
+.rm-sub { white-space: normal; line-height: 1.55; }
+
+/* ── 指标卡：等宽网格 + 字号层次 + 悬停反馈 ───────────────────────────── */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(106px, 1fr));
+  gap: 8px;
+  padding: 8px 16px 10px;
+}
+.card { padding: 12px 10px; gap: 4px; }
+.card:hover { border-color: #3b4354; }
+.card-label { font-size: 12px; font-weight: 500; }
+.card-value { font-size: 24px; letter-spacing: -.2px; }
+.card-unit  { font-size: 11px; }
+
+/* ── 图表：标题更醒目、图区更舒展 ─────────────────────────────────────── */
+.charts-grid { gap: 12px; padding: 0 16px 12px; }
+.chart-wrap { height: 250px; }
+.chart-wrap:hover { border-color: #333a4a; }
+.chart-wrap.stats { height: auto; }          /* 统计表保持自适应高度 */
+.chart-title { padding: 9px 12px 0; font-size: 12.5px; color: var(--text); letter-spacing: .2px; }
+
+/* ── 统计表：表头吸顶 + 斑马纹 + 行悬停 ───────────────────────────────── */
+.stats-head { padding-top: 10px; }
+/* 让统计表跟随主滚动条滚动（stats-body 不再自成滚动容器），表头才能相对图表区吸顶 */
+.chart-wrap.stats .stats-body { padding: 6px 12px 12px; overflow: visible; }
+.stats-table { font-size: 12.5px; }
+.stats-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--bg2); font-size: 12px;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.stats-table th, .stats-table td { padding: 7px 8px; }
+.stats-table tbody tr:nth-child(even) td { background: rgba(255,255,255,.022); }
+.stats-table tbody tr:hover td { background: rgba(79,142,247,.10); }
+.stats-detail-row td { background: rgba(255,255,255,.022); }
+.metric-unit { font-size: 11px; }
+/* 派生指标的副标注（例：Jank 行上的「32.4 次/10min」） */
+.metric-sub {
+  display: block; margin-top: 2px;
+  font-size: 10.5px; color: var(--text2); opacity: .85;
+}
+.stats-toggle button { font-size: 11.5px; padding: 5px 9px; }
+
+/* ── 解读总结：风险项色条化，便于纵向扫读 ─────────────────────────────── */
+.insight { padding: 14px 16px; margin: 4px 16px 12px; }
+.insight-head { margin-bottom: 10px; }
+.insight-title { font-size: 13.5px; }
+.insight-lead { font-size: 13px; line-height: 1.8; margin-bottom: 11px; }
+.insight-list { gap: 4px 26px; }
+.insight-list li { font-size: 12.5px; line-height: 1.85; }
+.insight-risks { margin-top: 12px; padding-top: 11px; gap: 6px; }
+.insight-risk {
+  line-height: 1.75; padding: 4px 10px;
+  border-left: 2px solid currentColor; border-radius: 0 4px 4px 0;
+  background: rgba(255,255,255,.032);
+}
+/* ═══ 可读性优化 __READABILITY_V1__ end ════════════════════════════════ */
+/* ═══ 整页滚动 __SCROLL_V1__ begin ══════════════════════════════════════
+   原来 body 锁定 100vh + overflow:hidden，只有 .charts-grid 内部可滚，
+   鼠标悬在指标卡 / 解读总结上滚轮无效。改为整页自然滚动，顶栏吸顶。 */
+html, body { height: auto; min-height: 100vh; overflow: visible; }
+body { overflow-x: hidden; }
+.charts-grid { flex: none; overflow: visible; }
+.topbar { position: sticky; top: 0; z-index: 30; }
+/* 统计表表头改为相对整页吸顶（topbar 高度 ≈ 37px） */
+.stats-table thead th { top: 37px; }
+/* ═══ 整页滚动 __SCROLL_V1__ end ════════════════════════════════════════ */
+</style>
+</head>
+<body>
+  <div id="root"></div>
+
+<script>
+/* __METRIC_INFO_V1__ 参数说明：点击指标旁的「!」查看该参数含义 */
+
+(function () {
+  'use strict';
+  if (window.MetricInfo) return;
+
+  var INFO = {
+    fps: { t: 'FPS 帧率', u: '帧/s',
+      d: '每秒实际渲染并投递到屏幕的画面帧数，是衡量流畅度最直观的指标。',
+      h: '每个采样周期内统计 SurfaceFlinger / 显示管线提交的帧数，再折算到每秒；iOS 与 PC 按帧时间戳折算。',
+      g: '需结合目标帧率（常见 30 / 60 / 90 / 120）判断；均值达标但曲线抖动大，用户依然能感知到不流畅。' },
+    fpsTarget: { t: '目标帧率', u: '帧/s',
+      d: '本次测试的参考帧率基准，其余帧率派生指标都以它为分母。',
+      h: '取整段 FPS 的 P95 值后吸附到常见刷新率档位（24 / 30 / 60 / 90 / 120 / 144）。',
+      g: '由数据推断得出；若实际是锁帧场景（如锁 30 帧）请按真实目标值理解。' },
+    fpsMin: { t: 'FPS 最低', u: '帧/s',
+      d: '整段测试中的最小帧率值。',
+      h: '取所有采样点 FPS 的最小值。',
+      g: '看最差时刻跌到多少；单点极低值通常与加载、切换、GC 等瞬时事件相关。' },
+    fpsstd: { t: '帧率标准差', u: '帧/s',
+      d: 'FPS 相对自身均值的离散程度。',
+      h: '对整段 FPS 求标准差。',
+      g: '越小越稳；均值相同但标准差大，说明画面节奏忽快忽慢。' },
+    reach: { t: '达帧率', u: '%',
+      d: '平均帧率相对目标帧率的达成比例。',
+      h: '平均 FPS ÷ 目标帧率 × 100%。',
+      g: '≥95% 优秀，80%~95% 一般，低于 80% 需要优化渲染或主线程。' },
+    frametime: { t: '均帧 Avg(FTime)', u: 'ms',
+      d: '平均每帧耗时，即每一帧从开始到呈现在屏幕上的平均时间。',
+      h: '对 FPS > 0 的采样点计算 1000 / FPS，再取算术平均。',
+      g: '比 FPS 均值更线性：目标间隔 = 1000 ÷ 目标帧率（60 帧即 16.7ms），越接近说明越流畅。' },
+    ftimestd: { t: '帧耗时标准差 Std(FTime)', u: 'ms',
+      d: '帧耗时的波动幅度，反映卡顿的稳定性。',
+      h: '对每帧耗时（1000 / FPS）求标准差。',
+      g: '越小越稳；和均帧一起看可判断是「普遍偏慢」还是「偶发尖刺」。' },
+    ftimevar: { t: '帧耗时方差 Var(FTime)', u: 'ms²',
+      d: '帧耗时离散程度的平方度量，与标准差同源。',
+      h: '对每帧耗时求方差。',
+      g: '用于更细的统计建模，日常看标准差更直观。' },
+    lowpct: { t: '低帧占比', u: '%',
+      d: '帧率低于目标帧率 80% 的采样点占比。',
+      h: '统计 FPS < 目标帧率 × 0.8 的采样点数 ÷ 总采样点数。',
+      g: '超过 10% 表示明显不达标；可在曲线上框选这些区间定位具体场景。' },
+    onelow: { t: '1%Low', u: '帧/s',
+      d: '最慢的 1% 帧的平均帧率，代表场景中最差时刻的流畅度。',
+      h: '取帧耗时最长的 1% 采样点，求平均帧耗时后用 1000 折算回帧率。',
+      g: '比平均 FPS 更贴近主观卡顿感受，一般要求 ≥ 目标帧率的 85%。' },
+    drop: { t: 'Drop', u: '帧/时',
+      d: '折算到每小时的帧率骤降次数。',
+      h: 'PerfDog 口径：相邻采样点 FPS 下降超过 8 帧计一次，再按测试时长折算到每小时。',
+      g: '衡量突发掉帧的频繁程度，与卡顿次数互补。' },
+    getarget: { t: 'FPS≥目标', u: '%',
+      d: '达到目标帧率的采样点占比。',
+      h: '统计 FPS ≥ 目标帧率的采样点数 ÷ 总采样点数。',
+      g: '与达帧率的区别：这是「样本口径」，分子看的是采样点而非均值。' },
+    medrange: { t: '稳帧范围 MedRange', u: '%',
+      d: '帧率落在中位数 ±20% 区间内的采样点占比，衡量画面节奏的一致性。',
+      h: '先取 FPS 中位数，再统计落在 ±20% 范围内的采样点占比。',
+      g: '越高说明帧率越集中；低但均值高，通常是「大部分时间满帧、偶尔大掉帧」。' },
+    stutter: { t: 'Stutter 卡顿时长占比', u: '%',
+      d: '卡顿持续时间占整段测试时长的比例。',
+      h: '帧间隔超过 2 倍目标帧间隔的帧，累计其耗时 ÷ 总耗时 × 100%。',
+      g: '比卡顿「次数」更能体现卡了多久，一般要求低于 5%。' },
+
+    jank: { t: 'Jank 卡顿帧', u: '次/s',
+      d: '明显超出正常耗时的一次掉帧，是肉眼可察觉的「顿一下」。',
+      h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 2 个电影帧（约 83ms）判定为 1 次 Jank。',
+      g: '关键场景（战斗、切图、加载）中的 Jank 优先治理；≤2 次/分钟通常可接受。' },
+    bigjank: { t: 'BigJank 严重卡顿帧', u: '次/s',
+      d: '耗时特别长的卡顿帧，用户几乎必感知。',
+      h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 3 个电影帧（125ms）判定为 1 次 BigJank。',
+      g: '优先级最高：通常对应 GC、磁盘 IO、资源加载或布局重排。' },
+    smalljank: { t: 'SmallJank 轻卡顿帧', u: '次/s',
+      d: 'Jank 家族中较轻的一级，用于在整体已流畅时定位轻微抖动。',
+      h: '同 Jank 的相对判定逻辑，但阈值更宽松（帧耗时超过基线而尚未达到 Jank 门槛）。',
+      g: '数值不大时无需处理；集中出现时说明有周期性的小开销。' },
+    tinyjank: { t: 'TinyJank 微卡顿帧', u: '次/s',
+      d: '最轻一级的卡顿，粒度最细。',
+      h: '同 Jank 的相对判定逻辑，阈值最低。',
+      g: '用于对标极致流畅度的专项优化。' },
+    jank10: { t: 'Jank/10min', u: '次',
+      d: '按每 10 分钟折算的 Jank 次数。',
+      h: '整段 Jank 累计次数 ÷ 测试分钟数 × 10。',
+      g: '抹平时长差异，便于不同长度的测试横向对比。' },
+    bigjank10: { t: 'BigJank/10min', u: '次',
+      d: '按每 10 分钟折算的严重卡顿次数。',
+      h: '整段 BigJank 累计次数 ÷ 测试分钟数 × 10。',
+      g: '跨版本、跨机型对比最有价值的卡顿指标。' },
+    smalljank10: { t: 'SmallJank/10min', u: '次',
+      d: '按每 10 分钟折算的轻卡顿次数。',
+      h: '整段 SmallJank 累计次数 ÷ 测试分钟数 × 10。',
+      g: '同上，用于横向对比。' },
+    tinyjank10: { t: 'TinyJank/10min', u: '次',
+      d: '按每 10 分钟折算的微卡顿次数。',
+      h: '整段 TinyJank 累计次数 ÷ 测试分钟数 × 10。',
+      g: '同上，用于横向对比。' },
+
+    syscpu: { t: '系统 CPU', u: '%',
+      d: '整机 CPU 占用率，反映设备整体繁忙程度（含系统与其他应用）。',
+      h: 'Android 取 /proc/stat 的时间片差值，iOS 由内核 CPU 负载折算，PC 取系统 CPU 计数器。',
+      g: '持续高于 80% 说明整机负载饱和，会放大掉帧与发热；低但进程 CPU 高则说明瓶颈在自身。' },
+    cpuchart: { t: 'CPU 使用率', u: '%',
+      d: '同时展示整机（系统 CPU）与被测进程（进程 CPU）的占用率，用于区分瓶颈在系统侧还是应用侧。',
+      h: '两条曲线同源：整机取系统 CPU 计数，进程取被测进程 CPU 时间差值 ÷ 采样间隔。',
+      g: '进程 CPU 高而系统 CPU 低 = 自身代码开销大；两者都高 = 整机负载饱和。' },
+    proccpu: { t: '进程 CPU', u: '%',
+      d: '被测应用进程占用的 CPU 比例。',
+      h: '读取进程 CPU 时间（utime + stime）在采样间隔内的差值 ÷ 间隔时长。',
+      g: '长期高于 60% 需排查热点函数；注意不同平台对多核的归一口径不同，跨平台对比需留意。' },
+    cpulimit: { t: 'CPU 限频', u: '%',
+      d: 'CPU 实际运行频率相对最高频率的比例。',
+      h: '取各核心当前频率 ÷ 硬件最高频率。',
+      g: '长时间偏低说明已发生温控降频或调度限制，重负载场景会算力不足。' },
+    cpucores: { t: '各核心 CPU 使用率', u: '%',
+      d: '每个 CPU 核心各自的占用率。',
+      h: '读取 /proc/stat（或等价接口）中各核心的时间片差值。',
+      g: '大核打满而小核空闲，通常是线程亲和性或主线程瓶颈的信号。' },
+    cpufreq: { t: '各核心 CPU 频率', u: 'MHz',
+      d: '每个 CPU 核心当前的运行频率。',
+      h: '读取 cpufreq 节点的 cur_freq / cpuinfo_cur_freq。',
+      g: '持续低于最高频且伴随掉帧，说明触发了温控降频。' },
+
+    mem: { t: '内存', u: 'MB',
+      d: 'Android 为内存 PSS（按共享页比例分摊后的实际物理内存，官方推荐口径）；iOS 为物理内存足迹 phys_footprint；PC 为进程常驻内存。',
+      h: 'Android 汇总 /proc/<pid>/smaps 或 dumpsys meminfo 的 PSS；iOS 取 task_vm_info 的 phys_footprint。',
+      g: '重点看峰值与增长趋势：长时间运行持续增长通常意味着内存压力或泄漏。' },
+    memdetail: { t: '内存详情', u: 'MB',
+      d: '内存的组成部分。Android / PC：NativeHeap、JavaHeap、Code、Stack、Graphics、PrivateOther、System；iOS：私有常驻、共享常驻、匿名、压缩、可清除。',
+      h: '由 meminfo / task_vm_info 的各分项原始值换算为 MB。',
+      g: 'JavaHeap 持续增长多为对象未释放，Graphics 增长多为纹理 / RenderTarget 未回收。' },
+
+    net: { t: '网络 ↓/↑', u: 'KB/s',
+      d: '下行（接收）与上行（发送）速率。',
+      h: '取网卡流量计数（Android /proc/net/dev 或系统流量接口，iOS / PC 用系统计数器）在采样间隔内的差值。',
+      g: '下行尖刺通常对应资源下载；做弱网测试时应配合真实带宽限制一起看。' },
+
+    gpu: { t: 'GPU 使用率', u: '%',
+      d: 'GPU 计算单元的占用比例。',
+      h: '高通读取 /sys/class/kgsl 节点，Mali 读取 GPU 设备节点；部分 MTK 非 root 机型读不到，此时报告会自动改用 GPU 温度展示。',
+      g: '长期高于 90% 说明 GPU 已成瓶颈，应从分辨率、后处理、Overdraw 入手。' },
+    gputemp: { t: 'GPU 温度', u: '°C',
+      d: 'GPU 芯片温度，用于在读不到利用率时侧面反映 GPU 负载。',
+      h: '读取 GPU 温度传感器节点。',
+      g: '与温度同为降频前兆；持续升高说明渲染负载偏高。' },
+    temp: { t: '温度', u: '°C',
+      d: '机身 / 电池温度，反映设备热状态。',
+      h: '优先读取 thermal 温控节点，读不到时回退为电池温度。',
+      g: '超过 45°C 通常会开始降频，超过 50°C 会明显影响帧率与手感。' },
+
+    battery: { t: '电池', u: '%',
+      d: '设备剩余电量百分比。',
+      h: '读取系统电池电量接口。',
+      g: '用于确认测试期间的电量条件是否一致。' },
+    current: { t: '电流', u: 'mA',
+      d: '电池瞬时充放电电流。',
+      h: '读取电池电流寄存器值；负值通常代表充电状态。',
+      g: '与功耗一起评估续航影响，建议在同一电量区间对比。' },
+    power: { t: '功耗', u: 'mW',
+      d: '整机瞬时功率。',
+      h: '由电流 × 电压估算得到。',
+      g: '长时间高功耗会加速升温并触发限频。' },
+
+    disk: { t: '磁盘 I/O', u: 'KB/s',
+      d: '磁盘读 / 写速率。',
+      h: '取进程 IO 计数（read_bytes / write_bytes）在采样间隔内的差值。',
+      g: '加载期的读尖刺属正常；持续的高频写入会造成卡顿与发热。' },
+    cswitch: { t: '上下文切换', u: '次/s',
+      d: '进程每秒发生的线程上下文切换次数。',
+      h: '取进程自愿 / 非自愿上下文切换计数在采样间隔内的差值。',
+      g: '数值过高说明线程过多或锁竞争严重，会带来额外调度开销。' },
+    events: { t: '系统事件', u: '次/s',
+      d: 'iOS 的系统事件计数：上下文切换、中断唤醒、缺页中断。',
+      h: '由 iOS 系统计数器在采样间隔内的差值计算。',
+      g: '中断唤醒偏高说明 wakeup 频繁，通常与定时器或 IPC 有关。' },
+    threads: { t: '线程数', u: '个',
+      d: '被测进程当前的线程数量。',
+      h: '读取进程线程计数（iOS numThreads / Android threads）。',
+      g: '线程过多会增加调度开销与内存占用，且容易放大上下文切换。' },
+
+    gpu_occ: { t: 'GPU 占用率', u: '%',
+      d: 'Vertex / Fragment / Compute 三类管线的占用率，反映各 GPU 单元的繁忙程度。',
+      h: '来自 Apple GPU Counters（Instruments 的 AGX 计数器）采样。',
+      g: '某类接近 100% 说明该管线被打满，优化方向随之明确。' },
+    gpu_alu: { t: 'ALU 利用率', u: '%',
+      d: '算术逻辑单元利用率，即着色器指令执行单元的繁忙程度。',
+      h: '来自 Apple GPU Counters 的 ALU Utilization。',
+      g: '持续接近 100% 需简化 shader 计算量。' },
+    gpu_aluperf: { t: 'ALU 性能', u: '%',
+      d: 'ALU / F32 / F16 的利用率，以及 ALU 成为瓶颈的时间占比（Limiter）。',
+      h: '来自 Apple GPU Counters 的 Utilization 与 Limiter 系列计数。',
+      g: 'Utilization 高且 Limiter 也高 = 此处是真瓶颈；只有 Utilization 高则是负载大但还没堵死。' },
+    gpu_tex: { t: '纹理性能', u: '%',
+      d: '纹理采样器利用率，以及 Filtering / Sample / Cache 各环节成为瓶颈的比例。',
+      h: '来自 Apple GPU Counters 的 Texture 系列 Utilization 与 Limiter。',
+      g: 'Cache Limiter 偏高优先考虑纹理尺寸与压缩格式。' },
+    gpu_texlimiter: { t: '纹理采样限制', u: '%',
+      d: '纹理采样环节成为 GPU 性能瓶颈的时间占比。',
+      h: '来自 Apple GPU Counters 的 Texture Sample Limiter。',
+      g: '偏高时应减少采样次数、使用 mipmap 与压缩纹理。' },
+    gpu_vertex: { t: 'Vertex 占用', u: '%',
+      d: '顶点着色阶段的管线占用率。',
+      h: '来自 Apple GPU Counters 的 Vertex Occupancy。',
+      g: '偏高时应减少顶点数量、启用 LOD 与实例化。' },
+    gpu_frag: { t: 'Fragment 占用', u: '%',
+      d: '片元着色阶段的管线占用率。',
+      h: '来自 Apple GPU Counters 的 Fragment Occupancy。',
+      g: '偏高多数是 Overdraw 或复杂片元着色器导致。' },
+    gpu_bw: { t: 'GPU 内存带宽', u: 'GB/s',
+      d: 'GPU 与外部内存之间的读 / 写带宽。',
+      h: '来自 Apple GPU Counters 的 GPU Read / Write Bandwidth。',
+      g: '带宽打满时应降低纹理尺寸、启用压缩格式或减少 RenderTarget。' },
+    gpu_readbw: { t: 'GPU 读带宽', u: 'GB/s',
+      d: 'GPU 从显存读取数据占用的带宽。',
+      h: '来自 Apple GPU Counters 的 GPU Read Bandwidth。',
+      g: '读带宽高通常是纹理采样过多或分辨率过高。' },
+    gpu_writebw: { t: 'GPU 写带宽', u: 'GB/s',
+      d: 'GPU 写入显存占用的带宽。',
+      h: '来自 Apple GPU Counters 的 GPU Write Bandwidth。',
+      g: '写带宽高通常与多 RenderTarget、后处理链过长有关。' },
+    gpu_cache: { t: '缓存 & MMU', u: '%',
+      d: '末级缓存（LLC）与 MMU 的利用率及其成为瓶颈的比例。',
+      h: '来自 Apple GPU Counters 的 Last Level Cache / MMU Utilization 与 Limiter。',
+      g: 'Cache Limiter 偏高说明数据局部性差，应改善资源布局与访问顺序。' },
+    gpu_shader: { t: '着色器 & 插值', u: '%',
+      d: '片元插值开销，以及 Threadgroup / Imageblock 的 Load、Store 利用率。',
+      h: '来自 Apple GPU Counters 的 Interpolation 与 Threadgroup / Imageblock 系列计数。',
+      g: '插值开销高通常是 varying 传参过多或过度使用高精度浮点。' },
+  };
+
+  /** 报告里出现各种指标名 → 说明 key */
+  var ALIAS = {
+    '系统CPU': 'syscpu', '系统 CPU': 'syscpu', 'CPU': 'proccpu', '进程CPU': 'proccpu', '进程 CPU': 'proccpu',
+    '进程 CPU 平均': 'proccpu', 'CPU 使用率': 'syscpu', 'CPU 限频': 'cpulimit',
+    '各核心CPU': 'cpucores', '各核心频率': 'cpufreq',
+    '内存': 'mem', '内存 PSS': 'mem', '内存 PSS 平均': 'mem', '物理内存': 'mem', 'PSS': 'mem', 'RSS': 'mem',
+    '内存详情': 'memdetail', '内存明细': 'memdetail',
+    'FPS': 'fps', 'fps': 'fps', 'FPS 平均': 'fps', 'FPS 最低': 'fpsMin', '目标': 'fpsTarget', '目标帧率': 'fpsTarget',
+    '达帧率': 'reach', '均帧': 'frametime', '低帧': 'lowpct', '低帧占比': 'lowpct',
+    '帧率标准差': 'fpsstd', '帧耗时标准差': 'ftimestd', '帧耗时方差': 'ftimevar',
+    '1%Low': 'onelow', 'Drop': 'drop', 'FPS≥目标': 'getarget', '≥目标': 'getarget',
+    '稳帧': 'medrange', '稳帧范围': 'medrange', '卡顿时长占比': 'stutter', 'Stutter': 'stutter',
+    'Jank': 'jank', '大 Jank': 'bigjank', 'BigJank': 'bigjank', 'Jank 平均': 'jank', 'BigJank 平均': 'bigjank',
+    'SmallJank': 'smalljank', 'SmallJank 平均': 'smalljank', 'TinyJank': 'tinyjank', 'TinyJank 平均': 'tinyjank',
+    'Jank/10min': 'jank10', 'BigJank/10min': 'bigjank10', 'SmallJank/10min': 'smalljank10', 'TinyJank/10min': 'tinyjank10',
+    '网络 ↓/↑': 'net', '网络流量': 'net', '下行': 'net', '上行': 'net',
+    'GPU': 'gpu', 'GPU 平均': 'gpu', 'GPU 使用率': 'gpu', 'GPU 温度': 'gputemp',
+    '温度': 'temp', '温度 平均': 'temp', '电池': 'battery', '电流': 'current', '功耗': 'power',
+    '磁盘 I/O': 'disk', '磁盘读': 'disk', '磁盘读写': 'disk', '读 KB/s': 'disk', '写 KB/s': 'disk',
+    '上下文切换': 'cswitch', '系统事件': 'events', '线程数': 'threads',
+    // library.html 内部使用的英文指标键（对比表 / 曲线 / 归档 KPI）
+    'fpsMin': 'fpsMin', 'fpsReach': 'reach', 'fpsFrameTime': 'frametime', 'fpsLowPct': 'lowpct',
+    'fps1Low': 'onelow', 'fpsGeTarget': 'getarget', 'fpsMedRange': 'medrange',
+    'fpsStd': 'fpsstd', 'fpsStutter': 'stutter', 'fpsDrop': 'drop',
+    'bigJank': 'bigjank', 'smallJank': 'smalljank', 'tinyJank': 'tinyjank',
+    'jank10': 'jank10', 'bigJank10': 'bigjank10', 'smallJank10': 'smalljank10', 'tinyJank10': 'tinyjank10',
+    'cpuLimit': 'cpulimit', 'gpuTemp': 'gputemp', 'fpsTarget': 'fpsTarget',
+    'cpu': 'proccpu', 'syscpu': 'syscpu', 'disk': 'disk', 'bandwidth': 'gpu_bw',
+  };
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function keyOf(name) {
+    if (!name) return '';
+    var k = ALIAS[String(name).trim()];
+    if (k) return k;
+    if (INFO[String(name).trim()]) return String(name).trim();
+    return '';
+  }
+
+  /** 给带 data-info 的容器补上「!」标记（幂等，可重复调用） */
+  function decorate(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    var host = (scope === document || !scope.querySelectorAll) ? scope : scope;
+    var list = host.querySelectorAll('[data-info]');
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (el.getAttribute('data-info') === '') continue;
+      if (el.querySelector('.info-dot')) continue;
+      if (el.tagName === 'TBODY' || el.tagName === 'TABLE') continue;
+      var key = keyOf(el.getAttribute('data-info'));
+      if (!key || !INFO[key]) continue;
+      var dot = document.createElement('span');
+      dot.className = 'info-dot';
+      dot.setAttribute('data-info', key);
+      dot.setAttribute('role', 'button');
+      dot.setAttribute('tabindex', '0');
+      dot.title = '查看参数说明';
+      dot.textContent = '!';
+      el.appendChild(dot);
+    }
+  }
+
+  /** 把某个指标名改成「!」标记的属性串，供 innerHTML 拼接使用 */
+  function attr(name) {
+    var k = keyOf(name);
+    return k ? ' data-info="' + esc(k) + '"' : '';
+  }
+
+  var mask = null;
+  function ensureModal() {
+    if (mask) return mask;
+    mask = document.createElement('div');
+    mask.className = 'mi-mask';
+    mask.hidden = true;
+    mask.innerHTML =
+      '<div class="mi-modal" role="dialog" aria-modal="true">' +
+        '<div class="mi-head"><span class="mi-title"></span>' +
+        '<button type="button" class="mi-close" aria-label="关闭">✕</button></div>' +
+        '<div class="mi-body"></div>' +
+      '</div>';
+    document.body.appendChild(mask);
+    mask.addEventListener('click', function (e) {
+      if (e.target === mask || (e.target.closest && e.target.closest('.mi-close'))) hide();
+    });
+    return mask;
+  }
+
+  function row(label, text) {
+    return text ? '<div class="mi-row"><i>' + esc(label) + '</i><p>' + esc(text) + '</p></div>' : '';
+  }
+
+  function show(key) {
+    var info = INFO[key];
+    if (!info) return;
+    var box = ensureModal();
+    box.querySelector('.mi-title').innerHTML = esc(info.t) + (info.u ? '<span class="mi-unit">' + esc(info.u) + '</span>' : '');
+    box.querySelector('.mi-body').innerHTML =
+      row('是什么', info.d) + row('来源与算法', info.h) + row('怎么看', info.g);
+    box.hidden = false;
+  }
+
+  function hide() { if (mask) mask.hidden = true; }
+
+  window.MetricInfo = {
+    version: '__METRIC_INFO_V1__',
+    has: function (k) { return !!INFO[k]; },
+    keyOf: keyOf,
+    attr: attr,
+    decorate: decorate,
+    open: show,
+    close: hide,
+  };
+
+  // 点击「!」弹说明：捕获阶段处理，避免触发报告卡片本身的点击（如勾选、展开）
+  document.addEventListener('click', function (e) {
+    var dot = e.target && e.target.closest ? e.target.closest('.info-dot') : null;
+    if (!dot) return;
+    e.preventDefault();
+    e.stopPropagation();
+    show(dot.getAttribute('data-info'));
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if ((e.key === 'Escape' || e.key === 'Esc') && mask && !mask.hidden) hide();
+    if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.classList && e.target.classList.contains('info-dot')) {
+      e.preventDefault(); e.stopPropagation();
+      show(e.target.getAttribute('data-info'));
+    }
+  }, true);
+})();
+</script>
+
+
+  <!-- external: 全局 data；默认读同目录 data.js（最近一次采集）。
+       带 ?r=<id> 时改读 history/<id>.js —— 报告库点「打开详细报告」走这条路。 -->
+  <script>
+    (function () {
+      var m = /[?&]r=([^&]+)/.exec(location.search);
+      var src = 'data.js';
+      if (m) {
+        var id = decodeURIComponent(m[1]).replace(/[^A-Za-z0-9_\-]/g, '');
+        if (id) src = 'history/' + id + '.js';
+      }
+      document.write('<script src="' + src + '"><\/script>');
+    })();
+  </script>
+  <script>
+  // --- templates: keep DOM same as html-template2 (minus dynamic features) ---
+  const TPL_ANDROID = `
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="logo-icon">⚡</span>
+    <span id="hdr-title" style="font-size:15px;font-weight:700;color:var(--accent);">android</span>
+  </div>
+
+  <div class="topbar-controls">
+    <div class="control-group">
+      <label>测试类型</label>
+      <span id="hdr-type" class="control-text">-</span>
+    </div>
+    <div class="control-group">
+      <label>包名</label>
+      <span id="hdr-bundle" class="control-text">-</span>
+    </div>
+    <div class="control-group btns" style="display:none">
+      <button id="btn-start" class="btn btn-primary">▶ 开始</button>
+      <span id="start-hint" class="start-hint" hidden></span>
+      <button id="btn-stop"  class="btn btn-danger" disabled>■ 停止</button>
+      <button id="btn-export-csv"  class="btn btn-export" disabled>↓ CSV</button>
+      <button id="btn-export-json" class="btn btn-export" disabled>↓ JSON</button>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <span id="status-badge" class="badge idle">静态</span>
+  </div>
+</header>
+
+<div id="device-info-bar" class="device-info-strip">
+  <div class="device-info-strip-inner">
+    <span id="device-info-text" class="device-info-text"></span>
+  </div>
+</div>
+
+<section class="cards">
+  <div class="card" id="card-cpu" data-metric="cpu"><div class="card-label" data-info="syscpu">系统 CPU</div><div class="card-value" id="val-syscpu">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-proccpu" data-metric="cpu"><div class="card-label" data-info="proccpu">进程 CPU</div><div class="card-value" id="val-proccpu">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-mem" data-metric="mem"><div class="card-label" data-info="mem">内存 PSS</div><div class="card-value" id="val-mem">--</div><div class="card-unit">MB</div></div>
+  <div class="card" id="card-fps" data-metric="fps"><div class="card-label" data-info="fps">FPS</div><div class="card-value" id="val-fps">--</div><div class="card-unit">帧/s</div></div>
+  <div class="card" id="card-jank" data-metric="fps"><div class="card-label" data-info="jank">Jank</div><div class="card-value" id="val-jank">--</div><div class="card-unit">帧 &nbsp;<span id="val-jankrate" style="font-size:10px;color:var(--text2)"></span></div></div>
+  <div class="card" id="card-bigjank" data-metric="fps"><div class="card-label" data-info="bigjank">BigJank</div><div class="card-value" id="val-bigjank">--</div><div class="card-unit">&gt;125ms</div></div>
+  <div class="card" id="card-net" data-metric="net"><div class="card-label" data-info="net">网络 ↓/↑</div><div class="card-value" id="val-net">--</div><div class="card-unit">KB/s</div></div>
+  <div class="card" id="card-gpu" data-metric="gpu"><div class="card-label" data-info="gpu">GPU</div><div class="card-value" id="val-gpu">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-battery" data-metric="battery"><div class="card-label" data-info="battery">电池</div><div class="card-value" id="val-battery">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-temp" data-metric="temp"><div class="card-label" data-info="temp">温度</div><div class="card-value" id="val-temp">--</div><div class="card-unit">°C</div></div>
+</section>
+
+<section class="charts-grid">
+  <div class="chart-wrap stats" id="wrap-stats-global">
+    <div class="stats-head">
+      <div class="chart-title">整体统计（均值 / 峰值 / P98）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-global">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <table class="stats-table" id="tbl-global">
+        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap stats" id="wrap-stats-selected">
+    <div class="stats-head">
+      <div class="chart-title">选中区域统计（均值 / 峰值 / P98）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-selected">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="sel-hint">拖动鼠标左键框选 X 轴区域（全图同步缩放），然后释放。</div>
+      <table class="stats-table" id="tbl-selected">
+        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap stats" id="wrap-stats-tags">
+    <div class="stats-head">
+      <div class="chart-title">子场景统计（按 tag 区间：均值 / 峰值）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-tags">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="tag-hint">tag 为空则不显示子场景统计。</div>
+      <table class="stats-table" id="tbl-tags">
+        <thead><tr><th>子场景</th><th>指标</th><th>均值</th><th>峰值</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap" data-metric="cpu"><div class="chart-title" data-info="cpuchart">CPU 使用率 (%)</div><div id="chart-cpu" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="mem"><div class="chart-title" data-info="mem">内存 PSS (MB)</div><div id="chart-mem" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="mem"><div class="chart-title" data-info="memdetail">内存详情 (MB)</div><div id="chart-memdetail" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="fps"><div class="chart-title" data-info="fps">FPS (帧/s)</div><div id="chart-fps" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="net"><div class="chart-title" data-info="net">网络流量 (KB/s)</div><div id="chart-net" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="gpu"><div class="chart-title" data-info="gpu">GPU 使用率 (%)</div><div id="chart-gpu" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="temp"><div class="chart-title" data-info="temp">温度 (°C)</div><div id="chart-temp" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="battery"><div class="chart-title" data-info="current">电流 (mA)</div><div id="chart-current" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="battery"><div class="chart-title" data-info="power">功耗 (mW)</div><div id="chart-power" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="cpu"><div class="chart-title" data-info="cpucores">各核心 CPU 使用率 (%)</div><div id="chart-cpu-cores" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="cpu"><div class="chart-title" data-info="cpufreq">各核心 CPU 频率 (MHz)</div><div id="chart-cpu-freq" class="chart"></div></div>
+  <div class="chart-wrap"><div class="chart-title" data-info="cswitch">上下文切换 (次/s)</div><div id="chart-cswitch" class="chart"></div></div>
+</section>
+`;
+
+  // PC：与 android 相同布局，额外增加磁盘 I/O 图（由 TPL_ANDROID 派生，不改动 TPL_ANDROID 字面量）
+  const TPL_PC = (() => {
+    const diskBlock = '\n  <div class="chart-wrap" data-metric="disk"><div class="chart-title" data-info="disk">磁盘 I/O (KB/s)</div><div id="chart-disk" class="chart"></div></div>';
+    const i = TPL_ANDROID.lastIndexOf('</section>');
+    if (i === -1) return TPL_ANDROID;
+    return TPL_ANDROID.slice(0, i) + diskBlock + TPL_ANDROID.slice(i);
+  })();
+
+  const TPL_IOS = `
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="logo-icon">⚡</span>
+    <span id="hdr-title" style="font-size:15px;font-weight:700;color:var(--accent);">Perf-iPhone</span>
+  </div>
+
+  <div class="topbar-controls">
+    <div class="control-group">
+      <label>测试类型</label>
+      <span id="hdr-type" class="control-text">-</span>
+    </div>
+    <div class="control-group">
+      <label>包名</label>
+      <span id="hdr-bundle" class="control-text">-</span>
+    </div>
+    <div class="control-group btns" style="display:none">
+      <button id="btn-start" class="btn btn-primary">▶ 开始</button>
+      <span id="start-hint" class="start-hint" hidden></span>
+      <button id="btn-stop"  class="btn btn-danger" disabled>■ 停止</button>
+      <button id="btn-export-csv"  class="btn btn-export" disabled>↓ CSV</button>
+      <button id="btn-export-json" class="btn btn-export" disabled>↓ JSON</button>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <span id="status-badge" class="badge idle">静态</span>
+    <span id="elapsed" class="elapsed"></span>
+  </div>
+</header>
+
+<div id="device-info-bar" class="device-info-strip">
+  <div class="device-info-strip-inner">
+    <span id="device-info-text" class="device-info-text"></span>
+  </div>
+</div>
+
+<section class="cards">
+  <div class="card" id="card-fps" data-metric="fps"><div class="card-label" data-info="fps">FPS</div><div class="card-value" id="val-fps">--</div><div class="card-unit">帧/s</div></div>
+  <div class="card" id="card-jank" data-metric="fps"><div class="card-label" data-info="jank">Jank</div><div class="card-value" id="val-jank">--</div><div class="card-unit">次/s</div></div>
+  <div class="card" id="card-big-jank" data-metric="fps"><div class="card-label" data-info="bigjank">大 Jank</div><div class="card-value" id="val-big-jank">--</div><div class="card-unit">次/s</div></div>
+  <div class="card" id="card-stutter" data-metric="fps"><div class="card-label" data-info="stutter">Stutter</div><div class="card-value" id="val-stutter">--</div><div class="card-unit">ratio</div></div>
+  <div class="card" id="card-cpu" data-metric="cpu"><div class="card-label" data-info="proccpu">进程 CPU</div><div class="card-value" id="val-cpu">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-syscpu" data-metric="cpu"><div class="card-label" data-info="syscpu">系统 CPU</div><div class="card-value" id="val-syscpu">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-mem" data-metric="mem"><div class="card-label" data-info="mem">物理内存</div><div class="card-value" id="val-mem">--</div><div class="card-unit">MB</div></div>
+  <div class="card" id="card-thread" data-metric="proc"><div class="card-label" data-info="threads">线程数</div><div class="card-value" id="val-thread">--</div><div class="card-unit">个</div></div>
+  <div class="card" id="card-disk" data-metric="disk"><div class="card-label" data-info="disk">磁盘读</div><div class="card-value" id="val-disk">--</div><div class="card-unit">KB/s</div></div>
+</section>
+
+<section class="charts-grid">
+  <div class="chart-wrap stats" id="wrap-stats-global">
+    <div class="stats-head">
+      <div class="chart-title">整体统计（均值 / 峰值 / P98）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-global">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <table class="stats-table" id="tbl-global">
+        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap stats" id="wrap-stats-selected">
+    <div class="stats-head">
+      <div class="chart-title">选中区域统计（均值 / 峰值 / P98）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-selected">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="sel-hint">拖动鼠标左键框选 X 轴区域（全图同步缩放），然后释放。</div>
+      <table class="stats-table" id="tbl-selected">
+        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap stats" id="wrap-stats-tags">
+    <div class="stats-head">
+      <div class="chart-title">子场景统计（按 tag 区间：均值 / 峰值）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-tags">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="tag-hint">tag 为空则不显示子场景统计。</div>
+      <table class="stats-table" id="tbl-tags">
+        <thead><tr><th>子场景</th><th>指标</th><th>均值</th><th>峰值</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap" data-metric="cpu"><div class="chart-title" data-info="cpuchart">CPU 使用率 (%)</div><div id="chart-cpu" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="fps"><div class="chart-title" data-info="fps">FPS (帧/s)</div><div id="chart-fps" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="mem"><div class="chart-title" data-info="mem">物理内存 (MB)</div><div id="chart-mem" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="mem"><div class="chart-title" data-info="memdetail">内存详情 (MB)</div><div id="chart-memdetail" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="disk"><div class="chart-title" data-info="disk">磁盘 I/O (KB/s)</div><div id="chart-disk" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="events"><div class="chart-title" data-info="events">系统事件 (次/s)</div><div id="chart-events" class="chart"></div></div>
+</section>
+`;
+
+  const TPL_IOS_GPU = `
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="logo-icon">⚡</span>
+    <span id="hdr-title" style="font-size:15px;font-weight:700;color:var(--accent);">Perf-iPhoneGpu</span>
+  </div>
+
+  <div class="topbar-controls">
+    <div class="control-group">
+      <label>测试类型</label>
+      <span id="hdr-type" class="control-text">-</span>
+    </div>
+    <div class="control-group">
+      <label>包名</label>
+      <span id="hdr-bundle" class="control-text">-</span>
+    </div>
+    <div class="control-group btns" style="display:none">
+      <button id="btn-start" class="btn btn-primary">▶ 开始</button>
+      <span id="start-hint" class="start-hint" hidden></span>
+      <button id="btn-stop"  class="btn btn-danger" disabled>■ 停止</button>
+      <button id="btn-export-csv"  class="btn btn-export" disabled>↓ CSV</button>
+      <button id="btn-export-json" class="btn btn-export" disabled>↓ JSON</button>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <span id="status-badge" class="badge idle">静态</span>
+    <span id="elapsed" class="elapsed"></span>
+  </div>
+</header>
+
+<div id="device-info-bar" class="device-info-strip">
+  <div class="device-info-strip-inner">
+    <span id="device-info-text" class="device-info-text"></span>
+  </div>
+</div>
+
+<section class="cards">
+  <div class="card" id="card-alu"><div class="card-label" data-info="gpu_alu">ALU 利用率</div><div class="card-value" id="val-alu">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-frag"><div class="card-label" data-info="gpu_frag">Fragment 占用</div><div class="card-value" id="val-frag">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-vert"><div class="card-label" data-info="gpu_vertex">Vertex 占用</div><div class="card-value" id="val-vert">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-tex"><div class="card-label" data-info="gpu_texlimiter">纹理采样限制</div><div class="card-value" id="val-tex">--</div><div class="card-unit">%</div></div>
+  <div class="card" id="card-rbw"><div class="card-label" data-info="gpu_readbw">GPU 读带宽</div><div class="card-value" id="val-rbw">--</div><div class="card-unit">GB/s</div></div>
+  <div class="card" id="card-wbw"><div class="card-label" data-info="gpu_writebw">GPU 写带宽</div><div class="card-value" id="val-wbw">--</div><div class="card-unit">GB/s</div></div>
+</section>
+
+<section class="charts-grid">
+  <div class="chart-wrap stats" id="wrap-stats-global">
+    <div class="stats-head">
+      <div class="chart-title">整体统计（均值 / 峰值 / P98）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-global">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <table class="stats-table" id="tbl-global">
+        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap stats" id="wrap-stats-selected">
+    <div class="stats-head">
+      <div class="chart-title">选中区域统计（均值 / 峰值 / P98）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-selected">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="sel-hint">拖动鼠标左键框选 X 轴区域（全图同步缩放），然后释放。</div>
+      <table class="stats-table" id="tbl-selected">
+        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap stats" id="wrap-stats-tags">
+    <div class="stats-head">
+      <div class="chart-title">子场景统计（按 tag 区间：均值 / 峰值）</div>
+      <div class="stats-actions">
+        <button type="button" class="btn btn-sm" id="btn-copy-tags">复制</button>
+      </div>
+    </div>
+    <div class="stats-body">
+      <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="tag-hint">tag 为空则不显示子场景统计。</div>
+      <table class="stats-table" id="tbl-tags">
+        <thead><tr><th>子场景</th><th>指标</th><th>均值</th><th>峰值</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-wrap"><div class="chart-title" data-info="gpu_occ">GPU 占用率 (%)</div><div id="chart-occupancy" class="chart"></div></div>
+  <div class="chart-wrap"><div class="chart-title" data-info="gpu_aluperf">ALU 性能 (%)</div><div id="chart-alu-perf" class="chart"></div></div>
+  <div class="chart-wrap"><div class="chart-title" data-info="gpu_tex">纹理性能 (%)</div><div id="chart-texture" class="chart"></div></div>
+  <div class="chart-wrap"><div class="chart-title" data-info="gpu_bw">GPU 内存带宽</div><div id="chart-bandwidth" class="chart"></div></div>
+  <div class="chart-wrap"><div class="chart-title" data-info="gpu_cache">缓存 & MMU (%)</div><div id="chart-cache" class="chart"></div></div>
+  <div class="chart-wrap"><div class="chart-title" data-info="gpu_shader">着色器 & 插值 (%)</div><div id="chart-shader" class="chart"></div></div>
+</section>
+`;
+
+  // --- unit conversion rules (per your spec) ---
+  const KB = 1024;
+  const MB_BYTES = 1024 * 1024;
+  /**
+   * 内存单位自适应。
+   * 本地采集器写入的 totalPss 已经是 MB（见 adb.js: parseInt(KB)/1024）；
+   * 早期服务端上报的数据是 KB。以整份报告的最大 totalPss 判断：
+   * 真实应用 PSS 用 KB 表示时必然远大于 10000，用 MB 表示时通常远小于该值。
+   */
+  let _MEM_DIV = null;
+  function memDivisor() {
+    if (_MEM_DIV != null) return _MEM_DIV;
+    const rows = (typeof data !== 'undefined' && data && Array.isArray(data.perf)) ? data.perf : [];
+    let mx = 0;
+    for (const r of rows) {
+      const v = r && r.mem && r.mem.totalPss;
+      if (typeof v === 'number' && v > mx) mx = v;
+    }
+    _MEM_DIV = mx > 10000 ? KB : 1;
+    return _MEM_DIV;
+  }
+  function a_mem(v){ return (typeof v === 'number' && !isNaN(v)) ? (v / memDivisor()) : null; }
+  function a_temp(v){ if(typeof v!=='number'||isNaN(v)) return null; if(v>=200&&v<=900&&Number.isInteger(v)) return v/10; return v; }
+  /** 整机温度：优先采集到的 thermal 值；为 0/缺失时回退电池温度（老数据也能出值） */
+  function pickTemp(thermalRaw, batteryRaw){
+    const t = a_temp(thermalRaw);
+    if (t != null && t > 0) return t;
+    const b = a_temp(batteryRaw);
+    return (b != null && b > 0) ? b : t;
+  }
+  function a_ua_to_ma(v){ return (typeof v === 'number' && !isNaN(v)) ? (v / 1000) : null; }
+  function a_freq(v){ if(typeof v!=='number'||isNaN(v)) return null; return v>=10000 ? v/1000 : v; }
+
+  function i_mem(v){ return (typeof v === 'number' && !isNaN(v)) ? (v / MB_BYTES) : null; }
+
+  function isBandwidthKey(k){ return /Bandwidth/i.test(k || ''); }
+  function isPartialRendersKey(k){ return /Partial Renders/i.test(k || ''); }
+  function g_bw(v){
+    if(typeof v!=='number'||isNaN(v)) return null;
+    if(v>50000) return v/KB/KB;
+    if(v>500) return v/KB;
+    return v;
+  }
+  function g_ratio(v){
+    if(typeof v!=='number'||isNaN(v)) return null;
+    if(v>=0 && v<=1.5) return v*100;
+    return v;
+  }
+  function g_time_ms(raw, idx){
+    if(raw==null) return NaN;
+    const n = (typeof raw==='number') ? raw : Date.parse(String(raw));
+    if(isNaN(n)) return NaN;
+    if(Number.isInteger(n)) return n + idx * 1e-3;
+    return n;
+  }
+
+  // --- charts.js: minimal ChartManager (keeps same look/behavior for charts) ---
+  const COLORS = {
+    cpu:       ['#4f8ef7', '#79d4f7'],
+    mem:       ['#3ecf8e'],
+    memDetail: ['#3ecf8e', '#4f8ef7', '#f5d020', '#c77dff', '#f5a623', '#ff79a8', '#79d4f7'],
+    fps:       ['#f5d020', '#f5a623', '#f85151'],
+    net:       ['#c77dff', '#ff79a8'],
+    gpu:       ['#f5a623'],
+    temp:      ['#f85151'],
+    current:   ['#79d4f7'],
+    power:     ['#f5a623'],
+    cpuCores:  ['#4f8ef7','#79d4f7','#3ecf8e','#a8e6cf','#f5a623','#f5d020','#f85151','#c77dff',
+               '#ff79a8','#b5e853','#53e8e8','#ffa552','#e87bff','#5effd6','#ff5e5e','#b0b8ff'],
+    cpuFreq:   ['#4f8ef7','#79d4f7','#3ecf8e','#a8e6cf','#f5a623','#f5d020','#f85151','#c77dff',
+               '#ff79a8','#b5e853','#53e8e8','#ffa552','#e87bff','#5effd6','#ff5e5e','#b0b8ff'],
+  };
+
+  const CHART_CONFIGS = {};
+
+  /**
+   * GPU 图配置：优先画利用率；机型读不到利用率（MTK 非 root 常见）但能读到 GPU 温度时，
+   * 改用温度补位，避免整块图表空白。标题与卡片由 annotateMetricCards 同步改写。
+   */
+  function gpuChartCfg() {
+    const rows = (typeof data !== 'undefined' && data && Array.isArray(data.perf)) ? data.perf : [];
+    const hasUtil = rows.some(r => typeof r.gpu === 'number' && r.gpu > 0);
+    const hasTemp = rows.some(r => typeof r.gpuTemp === 'number' && r.gpuTemp > 0);
+    if (!hasUtil && hasTemp) {
+      return { el: 'chart-gpu', series: [{ name: 'GPU 温度', key: d => d.gpuTemp }], type: 'line', yMax: null, fmt: v => v + '\u00b0C' };
+    }
+    return { el: 'chart-gpu', series: [{ name: 'GPU', key: d => d.gpu }], type: 'line', yMax: 100, fmt: v => v + '%' };
+  }
+
+  class ChartManager {
+    constructor() { this._charts = {}; this._data = {}; this._ready = false; this._onReadyCbs = []; }
+    onReady(cb) {
+      if (typeof cb !== 'function') return;
+      if (this._ready) { try { cb(); } catch (_) {} return; }
+      this._onReadyCbs.push(cb);
+    }
+    init() { requestAnimationFrame(() => setTimeout(() => this._doInit(), 120)); }
+    _doInit() {
+      for (const [name, cfg] of Object.entries(CHART_CONFIGS)) {
+        const el = document.getElementById(cfg.el);
+        if (!el) continue;
+        const chart = echarts.init(el, 'dark');
+        this._charts[name] = chart;
+        this._data[name] = { times: [], series: (cfg.series || []).map(() => []) };
+        if (!cfg.dynamic) chart.setOption(this._buildOption(name, cfg));
+      }
+      this._ready = true;
+      const ro = new ResizeObserver(() => { for (const c of Object.values(this._charts)) c.resize(); });
+      const grid = document.querySelector('.charts-grid');
+      if (grid) ro.observe(grid);
+      window.addEventListener('resize', () => { for (const c of Object.values(this._charts)) c.resize(); });
+      // flush queued updates that arrived before init
+      if (this._queued && this._queued.length) {
+        const q = this._queued.slice();
+        this._queued.length = 0;
+        for (const d of q) this.update(d);
+      }
+      // notify ready callbacks
+      if (this._onReadyCbs && this._onReadyCbs.length) {
+        const cbs = this._onReadyCbs.slice();
+        this._onReadyCbs.length = 0;
+        for (const cb of cbs) {
+          try { cb(); } catch (e) { console.error('[chartMgr] onReady 回调执行失败:', e && e.stack || e); }
+        }
+      }
+    }
+    update(d) {
+      if (!this._ready) {
+        if (!this._queued) this._queued = [];
+        this._queued.push(d);
+        return;
+      }
+      for (const [name, cfg] of Object.entries(CHART_CONFIGS)) {
+        try { this._updateOne(name, cfg, d); } catch (_) {}
+      }
+    }
+    _updateOne(name, cfg, d) {
+      const state = this._data[name];
+      const chart = this._charts[name];
+      if (!state || !chart) return;
+      if (cfg.dynamic) {
+        const vals = (cfg.keyFn(d) || []);
+        const count = vals.length;
+        if (count === 0) return;
+        if (state.series.length !== count) {
+          cfg.series = Array.from({ length: count }, (_, i) => ({ name: `Core ${i}` }));
+          state.times = [];
+          state.series = Array.from({ length: count }, () => []);
+          chart.setOption(this._buildLineOption(name, cfg), true);
+        }
+        state.times.push(d.time);
+        vals.forEach((v, i) => state.series[i].push((v == null || isNaN(+v)) ? null : +v));
+        chart.setOption({ xAxis: [{ data: state.times }], series: state.series.map(s => ({ data: s })) });
+        return;
+      }
+      state.times.push(d.time);
+      cfg.series.forEach((s, i) => {
+        const v = s.key(d);
+        state.series[i].push((v == null || isNaN(+v)) ? null : +v);
+      });
+      chart.setOption({ xAxis: [{ data: state.times }], series: cfg.series.map((_, i) => ({ data: state.series[i] })) });
+    }
+    _buildLineOption(name, cfg) {
+      const colors = COLORS[name] || COLORS.cpu;
+      return {
+        color: colors,
+        tooltip: { trigger: 'axis' },
+        legend: { top: 0, textStyle: { color: '#bcd3ff' } },
+        grid: { left: 44, right: 16, top: 32, bottom: 28 },
+        xAxis: [{ type: 'category', data: [], axisLabel: { color: '#96a8c8' } }],
+        yAxis: [{ type: 'value', max: null, axisLabel: { color: '#96a8c8' } }],
+        dataZoom: [
+          { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+          { type: 'slider', xAxisIndex: 0, height: 16, bottom: 4, showDetail: false },
+        ],
+        series: (cfg.series || []).map(s => ({ name: s.name, type: 'line', smooth: true, showSymbol: false, data: [] })),
+      };
+    }
+    _buildMixedOption(name, cfg) {
+      const colors = COLORS[name] || COLORS.fps;
+      return {
+        color: colors,
+        tooltip: { trigger: 'axis' },
+        legend: { top: 0, textStyle: { color: '#bcd3ff' } },
+        grid: { left: 44, right: 16, top: 32, bottom: 28 },
+        xAxis: [{ type: 'category', data: [], axisLabel: { color: '#96a8c8' } }],
+        yAxis: [
+          { type: 'value', max: null, axisLabel: { color: '#96a8c8' } },
+          { type: 'value', max: null, axisLabel: { color: '#96a8c8' } },
+        ],
+        dataZoom: [
+          { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+          { type: 'slider', xAxisIndex: 0, height: 16, bottom: 4, showDetail: false },
+        ],
+        series: (cfg.series || []).map(s => ({
+          name: s.name,
+          type: s.type || 'line',
+          yAxisIndex: s.yAxisIndex ?? 0,
+          smooth: s.type === 'line',
+          showSymbol: false,
+          data: [],
+        })),
+      };
+    }
+    _buildOption(name, cfg) { return cfg.mixed ? this._buildMixedOption(name, cfg) : this._buildLineOption(name, cfg); }
+  }
+
+  function setText(id, text) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = (text == null || text === '') ? '--' : String(text);
+  }
+
+  function pickDeviceText(payload) {
+    const d = payload.device || {};
+    const parts = [];
+    if (d.name) parts.push(`名称：${d.name}`);
+    if (d.brand) parts.push(`品牌：${d.brand}`);
+    if (d.model) parts.push(`型号：${d.model}`);
+    if (d.osVersion) parts.push(`系统：${d.osVersion}`);
+    if (d.bundleId) parts.push(`包名：${d.bundleId}`);
+    if (d.appName) parts.push(`应用：${d.appName}`);
+    return parts.filter(Boolean).join('   ');
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  function pad2(n) { return String(n).padStart(2, '0'); }
+
+  function fmtDateTime(dt) {
+    if (!(dt instanceof Date) || isNaN(dt.getTime())) return '';
+    return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())} ${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
+  }
+
+  function durText(sec) {
+    if (sec == null) return '--';
+    if (sec < 60) return sec + ' 秒';
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return s ? `${m} 分 ${s} 秒` : `${m} 分钟`;
+  }
+
+  /** 报告起始时间：优先首条采样的 timestamp */
+  function reportStartTime() {
+    const rows = (typeof data !== 'undefined' && data && Array.isArray(data.perf)) ? data.perf : [];
+    const t = rows[0] && rows[0].timestamp;
+    if (typeof t === 'number') return new Date(t);
+    const p = Date.parse(String(t || ''));
+    return isNaN(p) ? null : new Date(p);
+  }
+
+  function reportDurationSec() {
+    const rows = (typeof data !== 'undefined' && data && Array.isArray(data.perf)) ? data.perf : [];
+    if (rows.length < 2) return null;
+    const a = rows[0].timestamp, b = rows[rows.length - 1].timestamp;
+    if (typeof a !== 'number' || typeof b !== 'number') return null;
+    return Math.max(1, Math.round((b - a) / 1000));
+  }
+
+  /**
+   * 顶部概要条：设备名 / 应用 / 平台 / 采样数 / 时长 / 开始时间。
+   * 原来是一整行灰色小字（名称：… 品牌：… 包名：…），关键信息不突出。
+   */
+  function renderReportMeta(category) {
+    const el = document.getElementById('device-info-text');
+    if (!el) return;
+    const d = (data && data.device) || {};
+    const rows = (Array.isArray(data.perf)) ? data.perf : [];
+    const n = rows.length;
+    const durSec = reportDurationSec();
+    const start = reportStartTime();
+
+    const platName = category === 'android' ? 'Android'
+      : category === 'ios' ? 'iOS'
+      : category === 'ios_gpu' ? 'iOS GPU'
+      : category === 'pc' ? 'PC'
+      : (category || '—');
+
+    const chips = [];
+    chips.push(`<span class="rm-chip rm-chip--plat"><i>平台</i>${escapeHtml(platName)}</span>`);
+    if (n) chips.push(`<span class="rm-chip"><i>采样</i>${n} 点</span>`);
+    if (durSec != null) chips.push(`<span class="rm-chip"><i>时长</i>${durText(durSec)}</span>`);
+    if (start) chips.push(`<span class="rm-chip"><i>开始</i>${fmtDateTime(start)}</span>`);
+
+    const subParts = [];
+    if (d.brand) subParts.push('品牌 ' + d.brand);
+    if (d.model && d.model !== d.name) subParts.push('型号 ' + d.model);
+    if (d.osVersion) subParts.push('系统 ' + d.osVersion);
+    if (d.deviceId) subParts.push('设备ID ' + d.deviceId);
+    if (category === 'pc' && rows[0] && rows[0].pcExtra && rows[0].pcExtra.exe) {
+      subParts.push('路径 ' + rows[0].pcExtra.exe);
+    }
+
+    el.innerHTML =
+      '<div class="report-meta">' +
+        '<div class="rm-main">' +
+          '<span class="rm-device">' + escapeHtml(d.name || '未知设备') + '</span>' +
+          '<span class="rm-app">' + escapeHtml(d.bundleId || d.appName || '—') + '</span>' +
+        '</div>' +
+        '<div class="rm-chips">' + chips.join('') + '</div>' +
+        (subParts.length ? '<div class="rm-sub">' + escapeHtml(subParts.join('   ·   ')) + '</div>' : '') +
+      '</div>';
+  }
+
+  function fmtN(v, digits) {
+    if (typeof v !== 'number' || isNaN(v)) return '--';
+    const m = Math.pow(10, digits);
+    return String(Math.round(v * m) / m);
+  }
+
+  function mean(vals) {
+    let s = 0;
+    let n = 0;
+    for (const v of vals || []) {
+      if (typeof v === 'number' && !isNaN(v)) { s += v; n += 1; }
+    }
+    return n ? (s / n) : null;
+  }
+
+  function render() {
+    if (typeof data === 'undefined' || !data) {
+      document.getElementById('root').innerHTML = '<div class="device-info-strip"><div class="device-info-strip-inner"><span class="device-info-text">未找到全局变量 data。请确认同目录 data.js 内容为：var data = {...};</span></div></div>';
+      return;
+    }
+
+    const category = String((data.device && (data.device.category)) || data.category || '').toLowerCase();
+    const root = document.getElementById('root');
+    if (category === 'ios') root.innerHTML = TPL_IOS;
+    else if (category === 'ios_gpu') root.innerHTML = TPL_IOS_GPU;
+    else if (category === 'pc') root.innerHTML = TPL_PC;
+    else root.innerHTML = TPL_ANDROID;
+
+    const d = data.device || {};
+    setText('hdr-type', category || '-');
+    setText('hdr-bundle', d.bundleId || d.appName || '-');
+    const title = `${category || 'perf'} · ${d.bundleId || d.appName || '-'}`;
+    const tEl = document.getElementById('hdr-title');
+    if (tEl) tEl.textContent = title;
+    document.title = title;
+    const infoTextEl = document.getElementById('device-info-text');
+    if (infoTextEl) {
+      renderReportMeta(category);
+    }
+
+    // patch chart configs for platform (matches html-template2/iphone.js & iphone_gpu.js)
+    Object.keys(CHART_CONFIGS).forEach(k => delete CHART_CONFIGS[k]);
+    if (category === 'ios') {
+      Object.assign(CHART_CONFIGS, {
+        cpu: { el:'chart-cpu', series:[
+          { name:'进程CPU', key: d => d.cpuUsage ?? null },
+          { name:'系统内核CPU', key: d => d.cpuTotalSystem ?? null },
+          { name:'系统用户CPU', key: d => d.cpuTotalUser ?? null },
+        ], type:'line', yMax:100, fmt:v=>v+'%' },
+        fps: { el:'chart-fps', series:[
+          { name:'FPS', key:d=>d.fps ?? null, type:'line', yAxisIndex:0 },
+          { name:'Jank', key:d=>d.jank ?? null, type:'bar', yAxisIndex:1 },
+          { name:'BigJank', key:d=>d.bigjank ?? null, type:'bar', yAxisIndex:1 },
+          { name:'SmallJank', key:d=>d.smallJank ?? null, type:'bar', yAxisIndex:1 },
+          { name:'TinyJank', key:d=>d.tinyJank ?? null, type:'bar', yAxisIndex:1 },
+        ], yMax:120, fmt:v=>v, mixed:true },
+        mem: { el:'chart-mem', series:[
+          { name:'物理内存', key:d=>d.physFootprint ?? null },
+          { name:'RSS', key:d=>d.memResidentSize ?? null },
+        ], type:'line', yMax:null, fmt:v=>v+' MB' },
+        memdetail: { el:'chart-memdetail', series:[
+          { name:'私有常驻', key:d=>d.memRPrvt ?? null },
+          { name:'共享常驻', key:d=>d.memRShrd ?? null },
+          { name:'匿名', key:d=>d.memAnon ?? null },
+          { name:'压缩', key:d=>d.memCompressed ?? null },
+          { name:'可清除', key:d=>d.memPurgeable ?? null },
+        ], type:'line', yMax:null, fmt:v=>v+' MB' },
+        disk: { el:'chart-disk', series:[
+          { name:'读 KB/s', key:d=>d._diskReadKBps ?? null },
+          { name:'写 KB/s', key:d=>d._diskWriteKBps ?? null },
+        ], type:'line', yMax:null, fmt:v=>v+' KB/s' },
+        events: { el:'chart-events', series:[
+          { name:'上下文切换', key:d=>d._ctxSwitchPs ?? null },
+          { name:'中断唤醒', key:d=>d._intWakeupsPs ?? null },
+          { name:'缺页中断', key:d=>d._vmPageInsPs ?? null },
+        ], type:'line', yMax:null, fmt:v=>v },
+      });
+    } else if (category === 'ios_gpu') {
+      Object.assign(CHART_CONFIGS, {
+        occupancy: { el:'chart-occupancy', series:[
+          { name:'Vertex', key:d=>d['Vertex Occupancy'] ?? null },
+          { name:'Fragment', key:d=>d['Fragment Occupancy'] ?? null },
+          { name:'Compute', key:d=>d['Compute Occupancy'] ?? null },
+        ], type:'line', yMax:100, fmt:v=>v.toFixed(1)+'%' },
+        aluPerf: { el:'chart-alu-perf', series:[
+          { name:'ALU 利用率', key:d=>d['ALU Utilization'] ?? null },
+          { name:'F32', key:d=>d['F32 Utilization'] ?? null },
+          { name:'F16', key:d=>d['F16 Utilization'] ?? null },
+          { name:'ALU 限制器', key:d=>d['ALU Limiter'] ?? null },
+        ], type:'line', yMax:100, fmt:v=>v.toFixed(1)+'%' },
+        texture: { el:'chart-texture', series:[
+          { name:'采样利用率', key:d=>d['Texture Sample Utilization'] ?? null },
+          { name:'过滤限制器', key:d=>d['Texture Filtering Limiter'] ?? null },
+          { name:'采样限制器', key:d=>d['Texture Sample Limiter'] ?? null },
+          { name:'缓存限制器', key:d=>d['Texture Cache Limiter'] ?? null },
+        ], type:'line', yMax:100, fmt:v=>v.toFixed(1)+'%' },
+        bandwidth: { el:'chart-bandwidth', series:[
+          { name:'读 GB/s', key:d=>d['GPU Read Bandwidth'] ?? null },
+          { name:'写 GB/s', key:d=>d['GPU Write Bandwidth'] ?? null },
+        ], type:'line', yMax:null, fmt:v=>v.toFixed(3)+' GB/s' },
+        cache: { el:'chart-cache', series:[
+          { name:'LLC 利用率', key:d=>d['GPU Last Level Cache Utilization'] ?? null },
+          { name:'LLC 限制器', key:d=>d['GPU Last Level Cache Limiter'] ?? null },
+          { name:'MMU 利用率', key:d=>d['MMU Utilization'] ?? null },
+          { name:'MMU 限制器', key:d=>d['MMU Limiter'] ?? null },
+        ], type:'line', yMax:100, fmt:v=>v.toFixed(1)+'%' },
+        shader: { el:'chart-shader', series:[
+          { name:'插值限制器', key:d=>d['Fragment Input Interpolation Limiter'] ?? null },
+          { name:'插值利用率', key:d=>d['Fragment Input Interpolation Utilization'] ?? null },
+          { name:'TG加载', key:d=>d['Threadgroup/Imageblock Load Utilization'] ?? null },
+          { name:'TG存储', key:d=>d['Threadgroup/Imageblock Store Utilization'] ?? null },
+        ], type:'line', yMax:100, fmt:v=>v.toFixed(1)+'%' },
+      });
+    } else if (category === 'pc') {
+      Object.assign(CHART_CONFIGS, {
+        cpu: { el:'chart-cpu', series:[{name:'系统CPU',key:d=>d.cpu.sysCpu},{name:'进程CPU',key:d=>d.cpu.procCpu}], type:'line', yMax:100, fmt:v=>v+'%' },
+        mem: { el:'chart-mem', series:[{name:'RSS',key:d=>d.mem.totalPss}], type:'line', yMax:null, fmt:v=>v+' MB' },
+        memDetail: { el:'chart-memdetail', series:[
+          { name:'NativeHeap', key:d=>d.mem.nativeHeap },
+          { name:'JavaHeap', key:d=>d.mem.javaHeap },
+          { name:'Code', key:d=>d.mem.code },
+          { name:'Stack', key:d=>d.mem.stack },
+          { name:'Graphics', key:d=>d.mem.graphics },
+          { name:'PrivateOther', key:d=>d.mem.privateOther },
+          { name:'System', key:d=>d.mem.system },
+        ], type:'line', yMax:null, fmt:v=>v+' MB' },
+        fps: { el:'chart-fps', series:[
+          { name:'FPS', key:d=>d.fps, type:'line', yAxisIndex:0 },
+          { name:'Jank', key:d=>d.jank, type:'bar', yAxisIndex:1 },
+          { name:'BigJank', key:d=>d.bigJank, type:'bar', yAxisIndex:1 },
+          { name:'SmallJank', key:d=>d.smallJank, type:'bar', yAxisIndex:1 },
+          { name:'TinyJank', key:d=>d.tinyJank, type:'bar', yAxisIndex:1 },
+        ], yMax:120, fmt:v=>v, mixed:true },
+        net: { el:'chart-net', series:[{name:'下行',key:d=>d.net.rxKBps},{name:'上行',key:d=>d.net.txKBps}], type:'line', yMax:null, fmt:v=>v+' KB/s' },
+        gpu: gpuChartCfg(),
+        temp: { el:'chart-temp', series:[{name:'温度',key:d=>d.temperature}], type:'line', yMax:null, fmt:v=>v+'°C' },
+        current: { el:'chart-current', series:[{name:'电流',key:d=>d.battery.currentNow ?? 0}], type:'line', yMax:null, fmt:v=>v+' mA' },
+        power: { el:'chart-power', series:[{name:'功耗',key:d=>d.battery.power ?? 0}], type:'line', yMax:null, fmt:v=>v+' mW' },
+        disk: { el:'chart-disk', series:[
+          { name:'读 KB/s', key:d=>d._diskReadKBps ?? null },
+          { name:'写 KB/s', key:d=>d._diskWriteKBps ?? null },
+        ], type:'line', yMax:null, fmt:v=>v+' KB/s' },
+        cpuCores: { el:'chart-cpu-cores', series:[], dynamic:true, keyFn:d=>d.cpuCores?d.cpuCores.usage:[], yMax:100, fmt:v=>v+'%' },
+        cpuFreq: { el:'chart-cpu-freq', series:[], dynamic:true, keyFn:d=>d.cpuCores?d.cpuCores.freq:[], yMax:null, fmt:v=>v+' MHz' },
+        cswitch: { el:'chart-cswitch', series:[{name:'上下文切换',key:d=>d.cswitch}], type:'bar', yMax:null, fmt:v=>v+' 次/s' },
+      });
+    } else {
+      Object.assign(CHART_CONFIGS, {
+        cpu: { el:'chart-cpu', series:[{name:'系统CPU',key:d=>d.cpu.sysCpu},{name:'进程CPU',key:d=>d.cpu.procCpu}], type:'line', yMax:100, fmt:v=>v+'%' },
+        mem: { el:'chart-mem', series:[{name:'PSS',key:d=>d.mem.totalPss}], type:'line', yMax:null, fmt:v=>v+' MB' },
+        memDetail: { el:'chart-memdetail', series:[
+          { name:'NativeHeap', key:d=>d.mem.nativeHeap },
+          { name:'JavaHeap', key:d=>d.mem.javaHeap },
+          { name:'Code', key:d=>d.mem.code },
+          { name:'Stack', key:d=>d.mem.stack },
+          { name:'Graphics', key:d=>d.mem.graphics },
+          { name:'PrivateOther', key:d=>d.mem.privateOther },
+          { name:'System', key:d=>d.mem.system },
+        ], type:'line', yMax:null, fmt:v=>v+' MB' },
+        fps: { el:'chart-fps', series:[
+          { name:'FPS', key:d=>d.fps, type:'line', yAxisIndex:0 },
+          { name:'Jank', key:d=>d.jank, type:'bar', yAxisIndex:1 },
+          { name:'BigJank', key:d=>d.bigJank, type:'bar', yAxisIndex:1 },
+          { name:'SmallJank', key:d=>d.smallJank, type:'bar', yAxisIndex:1 },
+          { name:'TinyJank', key:d=>d.tinyJank, type:'bar', yAxisIndex:1 },
+        ], yMax:120, fmt:v=>v, mixed:true },
+        net: { el:'chart-net', series:[{name:'下行',key:d=>d.net.rxKBps},{name:'上行',key:d=>d.net.txKBps}], type:'line', yMax:null, fmt:v=>v+' KB/s' },
+        gpu: gpuChartCfg(),
+        temp: { el:'chart-temp', series:[{name:'温度',key:d=>d.temperature}], type:'line', yMax:null, fmt:v=>v+'°C' },
+        current: { el:'chart-current', series:[{name:'电流',key:d=>d.battery.currentNow ?? 0}], type:'line', yMax:null, fmt:v=>v+' mA' },
+        power: { el:'chart-power', series:[{name:'功耗',key:d=>d.battery.power ?? 0}], type:'line', yMax:null, fmt:v=>v+' mW' },
+        cpuCores: { el:'chart-cpu-cores', series:[], dynamic:true, keyFn:d=>d.cpuCores?d.cpuCores.usage:[], yMax:100, fmt:v=>v+'%' },
+        cpuFreq: { el:'chart-cpu-freq', series:[], dynamic:true, keyFn:d=>d.cpuCores?d.cpuCores.freq:[], yMax:null, fmt:v=>v+' MHz' },
+        cswitch: { el:'chart-cswitch', series:[{name:'上下文切换',key:d=>d.cswitch}], type:'bar', yMax:null, fmt:v=>v+' 次/s' },
+      });
+    }
+
+    // ── 采集参数适配：被移除的指标不建图、不占位、不统计 ──────────────────────
+    // data.metricConfig 为采集时保存的勾选项；缺失（旧报告）时全部启用
+    const _mcNorm = (function () {
+      const cfg = (data && typeof data.metricConfig === 'object' && data.metricConfig) || null;
+      if (!cfg) return null;
+      const out = {};
+      for (const k of Object.keys(cfg)) out[k] = !!cfg[k];
+      return out;
+    })();
+    const CHART_GROUP = {
+      cpu: 'cpu', mem: 'mem', memDetail: 'mem', fps: 'fps', net: 'net',
+      gpu: 'gpu', temp: 'temp', current: 'battery', power: 'battery',
+      cpuCores: 'cpu', cpuFreq: 'cpu', disk: 'disk', events: 'events',
+    };
+    if (_mcNorm) {
+      for (const name of Object.keys(CHART_CONFIGS)) {
+        const g = CHART_GROUP[name];
+        if (g && _mcNorm[g] === false) {
+          const el = document.getElementById(CHART_CONFIGS[name].el);
+          const wrap = el && el.closest('.chart-wrap');
+          if (wrap) wrap.hidden = true;
+          delete CHART_CONFIGS[name];
+        }
+      }
+      // 指标卡同样按 data-metric 隐藏（各端模板已标注）
+      document.querySelectorAll('[data-metric]').forEach((el) => {
+        if (_mcNorm[el.getAttribute('data-metric')] === false) el.hidden = true;
+      });
+    }
+
+    const chartMgr = new ChartManager();
+    chartMgr.init();
+
+    const perf = Array.isArray(data.perf) ? data.perf : [];
+    if (!perf.length) return;
+
+    const tags = Array.isArray(data.tag)
+      ? data.tag
+      : (Array.isArray(data.tags) ? data.tags
+        : (Array.isArray(data.device && data.device.tag) ? data.device.tag : []));
+
+    function buildTagMarkAreas(times) {
+      if (!Array.isArray(times) || times.length === 0) return [];
+      const out = [];
+      for (const seg of tags) {
+        if (!Array.isArray(seg) || seg.length < 2) continue;
+        let s = seg[0], e = seg[1];
+        if (s == null || e == null) continue;
+        s = Math.max(0, Math.min(times.length - 1, s | 0));
+        e = Math.max(0, Math.min(times.length - 1, e | 0));
+        if (e < s) continue;
+        out.push([{ xAxis: times[s] }, { xAxis: times[e] }]);
+      }
+      return out;
+    }
+
+    function applyTagBackgroundToCharts() {
+      const markColor = 'rgba(121, 212, 247, 0.14)'; // light blue
+      for (const [chartName, cfg] of Object.entries(CHART_CONFIGS)) {
+        const state = chartMgr._data[chartName];
+        const chart = chartMgr._charts[chartName];
+        if (!state || !chart) continue;
+        const dataArr = buildTagMarkAreas(state.times);
+        const markArea = dataArr.length
+          ? { silent: true, itemStyle: { color: markColor }, data: dataArr }
+          : { data: [] };
+        chart.setOption({
+          series: (cfg.series || []).map(() => ({ markArea })),
+        });
+      }
+    }
+
+    /** 整段是否都没有有效数值（null / NaN 一律视为无数据） */
+    function seriesAllEmpty(vals) {
+      return !(vals || []).some(v => typeof v === 'number' && !isNaN(v));
+    }
+
+    /**
+     * 无数据判定。
+     * gpu / temperature 这类指标在"取不到"时会被旧版本写成 0，
+     * 因此 zeroAsEmpty=true 时把"全为 0"也当作无数据，避免显示一条贴底的假曲线。
+     */
+    function seriesNoData(vals, zeroAsEmpty) {
+      const nums = (vals || []).filter(v => typeof v === 'number' && !isNaN(v));
+      if (!nums.length) return true;
+      return zeroAsEmpty ? nums.every(v => v <= 0) : false;
+    }
+
+    /** 某张图整段无数据时，在图中央盖一条说明，避免被误认为"没渲染出来" */
+    function annotateEmptyCharts() {
+      const tips = {
+        gpu: '该机型未开放 GPU 利用率读取（需 root），也未暴露 GPU 温度',
+        temp: '本次采集未获取到温度数据',
+        cswitch: '本次采集未获取到上下文切换数据',
+        current: '本次采集未获取到电流数据',
+        power: '本次采集未获取到功耗数据',
+        net: '本次采集未获取到网络速率数据',
+        disk: '本次采集未获取到磁盘 I/O 数据',
+        events: '本次采集未获取到系统事件数据',
+        occupancy: 'iOS GPU 专项指标，本次数据未包含',
+        aluPerf: 'iOS GPU 专项指标，本次数据未包含',
+        texture: 'iOS GPU 专项指标，本次数据未包含',
+        bandwidth: 'iOS GPU 专项指标，本次数据未包含',
+        cache: 'iOS GPU 专项指标，本次数据未包含',
+        shader: 'iOS GPU 专项指标，本次数据未包含',
+      };
+      for (const [name, cfg] of Object.entries(CHART_CONFIGS)) {
+        const el = document.getElementById(cfg.el);
+        if (!el) continue;
+        const state = chartMgr._data[name];
+        if (!state) continue;
+        const flat = (state.series || []).flat();
+        if (!flat.length) continue;
+        const wrap = el.closest('.chart-wrap');
+        if (!wrap) continue;
+        let tip = wrap.querySelector('.chart-empty-tip');
+        const zeroAsEmpty = (name === 'gpu' || name === 'temp');
+        if (!seriesNoData(flat, zeroAsEmpty)) { if (tip) tip.remove(); continue; }
+        if (tip) continue;
+        tip = document.createElement('div');
+        tip.className = 'chart-empty-tip';
+        tip.textContent = tips[name] || '本次采集无该指标数据';
+        wrap.appendChild(tip);
+      }
+    }
+
+    /** P95 吸附到常见刷新率 */
+    function snapFpsTarget(p95) {
+      if (!(p95 > 0)) return null;
+      for (const c of [30, 45, 60, 90, 120, 144, 165]) { if (c >= p95 * 0.97) return c; }
+      return Math.ceil(p95 / 30) * 30;
+    }
+
+    function fpsSeriesOf(pts) {
+      // 0 是有效值（那一秒没有渲染出帧），必须参与均值与低帧统计；只排除 null / NaN
+      return (pts || []).map(p => p.fps).filter(v => typeof v === 'number' && !isNaN(v) && v >= 0);
+    }
+
+    function fpsTargetOfSeries(arr) {
+      const a = (arr || []).filter(v => typeof v === 'number' && !isNaN(v)).sort((x, y) => x - y);
+      if (!a.length) return null;
+      const i = (a.length - 1) * 0.95;
+      const lo = Math.floor(i), hi = Math.ceil(i);
+      const p95 = lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
+      return snapFpsTarget(p95);
+    }
+
+    /** 目标帧率：P95 吸附到常见刷新率 */
+    function fpsTargetOf(pts) {
+      return fpsTargetOfSeries(fpsSeriesOf(pts));
+    }
+
+    /**
+     * PerfDog 口径的帧率质量派生指标（整段统计，不随框选区变化）。
+     * 返回一组可直接塞进统计表的行：1%Low / Drop / FPS≥目标 / 稳帧范围 / 标准差 / 卡顿时长占比
+     * 以及 Jank / BigJank / SmallJank / TinyJank 的「每 10 分钟」次数与帧耗时标准差/方差。
+     * 这些口径与 src/reports-data-js.js 的 summarizePerf 完全一致。
+     */
+    function perfFpsQualityRows(fpsArr, jankArr, bjArr, sjArr, tjArr, target, durSec) {
+      const rows = [];
+      const nums = (fpsArr || []).filter(v => typeof v === 'number' && !isNaN(v) && v >= 0);
+      if (!nums.length || !target) return rows;
+      const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+      const moving = nums.filter(v => v > 0);
+
+      const push = (metric, unit, v) =>
+        rows.push({ metric, raw: metric, unit, mean: v, max: v, p98: v });
+
+      // 达帧率（均值口径）
+      push('达帧率', '%', +(avg / target * 100).toFixed(1));
+      // 均帧 Avg(FTime)
+      if (moving.length) {
+        const ft = moving.reduce((a, v) => a + 1000 / v, 0) / moving.length;
+        push('均帧', 'ms', +ft.toFixed(1));
+        // Std(FTime) / Var(FTime)：帧耗时标准差/方差（PerfDog FTime 统计族）
+        const varFt = moving.reduce((a, v) => a + (1000 / v - ft) * (1000 / v - ft), 0) / moving.length;
+        push('帧耗时标准差', 'ms', +Math.sqrt(varFt).toFixed(2));
+        push('帧耗时方差', 'ms²', +varFt.toFixed(1));
+      }
+      // 低帧占比（FPS < 目标 80%）
+      const low = nums.filter(v => v < target * 0.8).length;
+      push('低帧占比', '%', +((low / nums.length) * 100).toFixed(1));
+
+      // 1%Low
+      if (moving.length) {
+        const ftList = moving.map(v => 1000 / v).sort((a, b) => b - a);
+        const k = Math.max(1, Math.round(ftList.length * 0.01));
+        const worstFt = ftList.slice(0, k).reduce((a, b) => a + b, 0) / k;
+        push('1%Low', '帧/s', +(1000 / worstFt).toFixed(1));
+      }
+
+      // Drop(FPS)：相邻两点下降 > 8 帧的次数，按小时折算（PerfDog 定义）
+      const durHour = durSec ? durSec / 3600 : null;
+      let drop = 0;
+      for (let i = 1; i < nums.length; i++) if (nums[i - 1] - nums[i] > 8) drop++;
+      push('Drop', '帧/时', durHour ? +(drop / durHour).toFixed(1) : drop);
+
+      // FPS≥目标：样本口径（达到目标帧率的采样占比）
+      const ge = nums.filter(v => v >= target).length;
+      push('FPS≥目标', '%', +((ge / nums.length) * 100).toFixed(1));
+
+      // 稳帧范围 MedRange：偏离中位数 ±20% 内的占比
+      const sorted = nums.slice().sort((a, b) => a - b);
+      const mi = (sorted.length - 1) / 2;
+      const median = sorted.length % 2 ? sorted[mi]
+        : (sorted[Math.floor(mi)] + sorted[Math.ceil(mi)]) / 2;
+      const inMed = nums.filter(v => Math.abs(v - median) <= median * 0.2).length;
+      push('稳帧范围', '%', +((inMed / nums.length) * 100).toFixed(1));
+
+      // 帧率标准差
+      const variance = nums.reduce((a, v) => a + (v - avg) * (v - avg), 0) / nums.length;
+      push('帧率标准差', '帧/s', +Math.sqrt(variance).toFixed(2));
+
+      // Stutter（卡顿时长占比）：帧间隔 > 2×目标帧间隔 的时间 ÷ 总时间
+      const targetFt = 1000 / target;
+      let slow = 0, total = 0;
+      for (const v of moving) { const t = 1000 / v; total += t; if (t > targetFt * 2) slow += t; }
+      if (total > 0) push('卡顿时长占比', '%', +((slow / total) * 100).toFixed(1));
+
+      // Jank / BigJank / SmallJank 每 10 分钟次数
+      const per10 = (arr) => {
+        const n = (arr || []).filter(v => typeof v === 'number' && !isNaN(v) && v >= 0);
+        if (!n.length) return null;
+        const sum = n.reduce((a, b) => a + b, 0);
+        const durMin = durSec ? durSec / 60 : null;
+        return durMin > 0 ? +(sum / durMin * 10).toFixed(1) : +sum.toFixed(1);
+      };
+      const j10 = per10(jankArr), bj10 = per10(bjArr), sj10 = per10(sjArr), tj10 = per10(tjArr);
+      if (j10 != null) push('Jank/10min', '次', j10);
+      if (bj10 != null) push('BigJank/10min', '次', bj10);
+      if (sj10 != null) push('SmallJank/10min', '次', sj10);
+      if (tj10 != null) push('TinyJank/10min', '次', tj10);
+
+      return rows;
+    }
+
+    /** 解读总结用的精简版帧率质量指标（返回对象，不直接出表） */
+    function perfFpsQualityInsight(fpsNums, target, durSec) {
+      const nums = (fpsNums || []).filter(v => typeof v === 'number' && !isNaN(v) && v >= 0);
+      if (!nums.length || !target) return null;
+      const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+      const moving = nums.filter(v => v > 0);
+
+      // 1%Low
+      let oneLow = null;
+      if (moving.length) {
+        const ftList = moving.map(v => 1000 / v).sort((a, b) => b - a);
+        const k = Math.max(1, Math.round(ftList.length * 0.01));
+        const worstFt = ftList.slice(0, k).reduce((a, b) => a + b, 0) / k;
+        oneLow = 1000 / worstFt;
+      }
+
+      // Drop / 时
+      const durHour = durSec ? durSec / 3600 : null;
+      let drop = 0;
+      for (let i = 1; i < nums.length; i++) if (nums[i - 1] - nums[i] > 8) drop++;
+      const dropRate = durHour ? drop / durHour : drop;
+
+      // 稳帧范围 MedRange
+      const sorted = nums.slice().sort((a, b) => a - b);
+      const mi = (sorted.length - 1) / 2;
+      const median = sorted.length % 2 ? sorted[mi]
+        : (sorted[Math.floor(mi)] + sorted[Math.ceil(mi)]) / 2;
+      const inMed = nums.filter(v => Math.abs(v - median) <= median * 0.2).length;
+      const medRange = (inMed / nums.length) * 100;
+
+      // Stutter
+      const targetFt = 1000 / target;
+      let slow = 0, total = 0;
+      for (const v of moving) { const t = 1000 / v; total += t; if (t > targetFt * 2) slow += t; }
+      const stutter = total > 0 ? (slow / total) * 100 : null;
+
+      return { oneLow, drop: dropRate, medRange, stutter };
+    }
+
+    /**
+     * FPS 派生指标（与卡片、解读总结同一口径）：
+     *  - 达帧率   = 平均 FPS ÷ 目标帧率 × 100
+     *  - 均帧     = 各采样点帧间隔（1000 / FPS）的平均，ms
+     *  - 低帧占比 = FPS 低于目标 80% 的采样点占比
+     */
+    function fpsDerivedMetrics(arr, target) {
+      // 0 帧是真实掉到 0 的情况：计入均值与低帧；只有均帧（1000/FPS）要除，需排除 0
+      const nums = (arr || []).filter(v => typeof v === 'number' && !isNaN(v) && v >= 0);
+      if (!nums.length || !target) return null;
+      const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+      const moving = nums.filter(v => v > 0);
+      const frameTime = moving.length ? moving.reduce((a, v) => a + 1000 / v, 0) / moving.length : null;
+      const low = nums.filter(v => v < target * 0.8).length;
+      // 1%Low：帧耗时最长的 1% 求平均，再 1000 ÷ 该均值（业界主流流畅度指标）
+      let oneLow = null;
+      if (moving.length) {
+        const ftList = moving.map(v => 1000 / v).sort((a, b) => b - a);
+        const k = Math.max(1, Math.round(ftList.length * 0.01));
+        const worstFt = ftList.slice(0, k).reduce((a, b) => a + b, 0) / k;
+        oneLow = 1000 / worstFt;
+      }
+      return {
+        target, avg,
+        reach: (avg / target) * 100,
+        frameTime,
+        lowPct: (low / nums.length) * 100,
+        lowCount: low,
+        oneLow,
+      };
+    }
+
+    /** 达帧率 / 均帧 / 低帧 三张补充卡片（插在原有指标卡后面） */
+    function renderFpsKpiCards(fm) {
+      const cards = document.querySelector('section.cards');
+      if (!cards) return;
+      const ids = ['card-reach', 'card-ft', 'card-low', 'card-1low'];
+      if (!fm) {
+        ids.forEach(id => { const c = document.getElementById(id); if (c) c.hidden = true; });
+        return;
+      }
+      const defs = [
+        { id: 'card-reach', val: 'val-reach', label: '达帧率', info: 'reach', unit: '% · 目标 ' + fm.target },
+        { id: 'card-ft',    val: 'val-ft',    label: '均帧',   info: 'frametime', unit: 'ms' },
+        { id: 'card-low',   val: 'val-low',   label: '低帧占比', info: 'lowpct', unit: '% · <' + Math.round(fm.target * 0.8) + ' 帧' },
+        { id: 'card-1low',  val: 'val-1low',  label: '1%Low',  info: 'onelow', unit: '帧/s' },
+      ];
+      for (const d of defs) {
+        let card = document.getElementById(d.id);
+        if (!card) {
+          card = document.createElement('div');
+          card.id = d.id;
+          card.className = 'card';
+          card.innerHTML = '<div class="card-label"></div><div class="card-value" id="' + d.val + '"></div><div class="card-unit"></div>';
+          cards.appendChild(card);
+        }
+        card.hidden = false;
+        const _lb = card.querySelector('.card-label');
+        _lb.textContent = d.label;
+        if (d.info && window.MetricInfo) { _lb.setAttribute('data-info', d.info); MetricInfo.decorate(_lb); }
+        card.querySelector('.card-unit').textContent = d.unit;
+      }
+      setText('val-reach', fm.reach.toFixed(1));
+      setText('val-ft', fm.frameTime == null ? '--' : fm.frameTime.toFixed(1));
+      setText('val-low', fm.lowPct.toFixed(1));
+      setText('val-1low', fm.oneLow == null ? '--' : fm.oneLow.toFixed(1));
+      paintCard('card-reach', fm.reach >= 95 ? 'good' : (fm.reach >= 80 ? 'warn' : 'bad'));
+      const idealFt = 1000 / fm.target;
+      paintCard('card-ft', fm.frameTime == null ? null
+        : (fm.frameTime <= idealFt * 1.05 ? 'good' : (fm.frameTime <= idealFt * 1.2 ? 'warn' : 'bad')));
+      paintCard('card-low', fm.lowPct <= 2 ? 'good' : (fm.lowPct <= 10 ? 'warn' : 'bad'));
+      paintCard('card-1low', fm.oneLow == null ? null
+        : (fm.oneLow >= fm.target * 0.95 ? 'good' : (fm.oneLow >= fm.target * 0.85 ? 'warn' : 'bad')));
+    }
+
+    /** 给卡片打状态色（good / warn / bad），一眼看出好坏 */
+    function paintCard(cardId, state) {
+      const card = document.getElementById(cardId);
+      if (!card) return;
+      if (!state) {
+        card.removeAttribute('data-state');
+        card.style.removeProperty('--card-color');
+        return;
+      }
+      card.setAttribute('data-state', state);
+      const color = state === 'good' ? 'var(--green)'
+        : state === 'warn' ? 'var(--orange)'
+        : state === 'bad' ? 'var(--red)' : '';
+      if (color) card.style.setProperty('--card-color', color);
+      else card.style.removeProperty('--card-color');
+    }
+
+    /** 分区标题：关键指标 / 统计与曲线 */
+    function insertSectionLabels() {
+      const cards = document.querySelector('section.cards');
+      if (cards && cards.parentNode && !document.getElementById('lbl-cards')) {
+        const l = document.createElement('div');
+        l.id = 'lbl-cards';
+        l.className = 'section-label';
+        l.innerHTML = '关键指标 <span class="hint">数值为本次采集均值；绿 / 橙 / 红表示达标程度</span>';
+        cards.parentNode.insertBefore(l, cards);
+      }
+      const grid = document.querySelector('.charts-grid');
+      if (grid && !document.getElementById('lbl-charts')) {
+        const l = document.createElement('div');
+        l.id = 'lbl-charts';
+        l.className = 'section-label';
+        l.style.padding = '6px 0 4px';
+        l.innerHTML = '统计与曲线 <span class="hint">在图表上拖拽可框选区间，左侧「选中区域统计」随之更新</span>';
+        grid.insertBefore(l, grid.firstChild);
+      }
+    }
+
+    /** 图表标题补上均值 / 峰值，不用靠读图估数 */
+    function decorateChartTitles() {
+      for (const [name, cfg] of Object.entries(CHART_CONFIGS)) {
+        const el = document.getElementById(cfg.el);
+        if (!el) continue;
+        const wrap = el.closest('.chart-wrap');
+        if (!wrap) continue;
+        const title = wrap.querySelector('.chart-title');
+        if (!title) continue;
+        if (!title.dataset.base) {
+          const _dot = title.querySelector('.info-dot');
+          if (_dot) _dot.remove();
+          title.dataset.base = title.textContent.trim();
+        }
+
+        const st = chartMgr._data[name];
+        const defs = cfg.series || [];
+        if (cfg.dynamic || !st || !st.series || !st.series.length) { title.textContent = title.dataset.base; continue; }
+
+        // 多系列时优先取名为 FPS 的那条（帧率图里还混了 Jank / BigJank 柱状）
+        let idx = defs.findIndex(s => s && s.name === 'FPS');
+        if (idx < 0) idx = 0;
+        const s0 = (st.series[idx] || []).filter(v => typeof v === 'number');
+        if (!s0.length) { title.textContent = title.dataset.base; continue; }
+
+        const avg = s0.reduce((a, b) => a + b, 0) / s0.length;
+        const mx = Math.max.apply(null, s0);
+        const f = (v) => { try { return String(cfg.fmt(Math.round(v * 10) / 10)); } catch (_) { return String(v); } };
+        const who = (defs.length > 1 && defs[idx] && defs[idx].name) ? defs[idx].name + ' ' : '';
+        title.innerHTML = escapeHtml(title.dataset.base) +
+          ' <span style="color:var(--text);font-weight:600">' + escapeHtml(who + '均值 ' + f(avg)) + '</span>' +
+          ' <span style="color:var(--text2);font-weight:400">峰值 ' + escapeHtml(f(mx)) + '</span>';
+      }
+        // 标题被改写后，参数说明「!」标记需要重新补回（__METRIC_INFO_V1__）
+        if (window.MetricInfo) {
+          for (const [n2, c2] of Object.entries(CHART_CONFIGS)) {
+            const _e = document.getElementById(c2.el);
+            const _w = _e && _e.closest('.chart-wrap');
+            if (_w) MetricInfo.decorate(_w);
+          }
+        }
+
+    }
+
+    /** 关键图加参考线：FPS 目标帧率、温度 45/50℃ 警戒线 */
+    function addReferenceLines() {
+      const fpsChart = chartMgr._charts.fps;
+      const fpsState = chartMgr._data.fps;
+      if (fpsChart && fpsState && fpsState.series && fpsState.series[0]) {
+        const nums = fpsState.series[0].filter(v => typeof v === 'number');
+        const target = nums.length ? fpsTargetOf(nums.map(v => ({ fps: v }))) : null;
+        if (target) {
+          fpsChart.setOption({
+            series: [{
+              markLine: {
+                silent: true, symbol: 'none',
+                lineStyle: { color: '#f5d020', type: 'dashed', width: 1, opacity: 0.75 },
+                label: { color: '#f5d020', fontSize: 10, position: 'insideEndTop', formatter: '目标 ' + target },
+                data: [{ yAxis: target }],
+              },
+            }],
+          });
+        }
+      }
+      const tChart = chartMgr._charts.temp;
+      if (tChart) {
+        tChart.setOption({
+          series: [{
+            markLine: {
+              silent: true, symbol: 'none',
+              label: { fontSize: 10, position: 'insideEndTop', formatter: (p) => p.value + '\u00b0C' },
+              data: [
+                { yAxis: 45, lineStyle: { color: '#f5a623', type: 'dashed', width: 1, opacity: 0.65 }, label: { color: '#f5a623' } },
+                { yAxis: 50, lineStyle: { color: '#f85151', type: 'dashed', width: 1, opacity: 0.65 }, label: { color: '#f85151' } },
+              ],
+            },
+          }],
+        });
+      }
+    }
+
+    /** 图表就绪后统一收尾（分区标题 + 标题均值 + 参考线） */
+    function finalizeReportView() {
+      insertSectionLabels();
+      decorateChartTitles();
+      addReferenceLines();
+      hideEmptyCharts();
+    }
+
+    /** 某图表的所有系列都没有任何数值 → 隐藏整块图表（如 PC/iOS 无 上下文切换 数据） */
+    function hideEmptyCharts() {
+      for (const [name, cfg] of Object.entries(CHART_CONFIGS)) {
+        const el = document.getElementById(cfg.el);
+        if (!el) continue;
+        const st = chartMgr._data[name];
+        const hasData = st && (st.series || []).some(s =>
+          (s || []).some(v => typeof v === 'number' && !isNaN(v)));
+        if (!hasData) {
+          const wrap = el.closest('.chart-wrap');
+          if (wrap) wrap.hidden = true;
+        }
+      }
+    }
+
+    /** 卡片补充说明：GPU 不支持 / 温度无数据 / BigJank 本次为 0 */
+    function annotateMetricCards(pts) {
+      const setUnit = (cardId, unit) => {
+        const el = document.querySelector('#' + cardId + ' .card-unit');
+        if (el) el.textContent = unit;
+      };
+      const setValue = (valId, text) => {
+        const el = document.getElementById(valId);
+        if (el) el.textContent = text;
+      };
+      if (seriesNoData(pts.map(p => p.gpu), true)) {
+        const gt = pts.map(p => p.gpuTemp);
+        if (!seriesNoData(gt, true)) {
+          // 利用率读不到，但 GPU 温度可得：卡片与图表标题都改用温度，避免整块空白
+          const nums = gt.filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
+          const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+          setValue('val-gpu', avg.toFixed(1));
+          setUnit('card-gpu', '\u00b0C \u00b7 \u5229\u7528\u7387\u9700root');
+          const gpuLabel = document.querySelector('#card-gpu .card-label');
+          if (gpuLabel) {
+            gpuLabel.textContent = 'GPU \u6e29\u5ea6';
+            gpuLabel.setAttribute('data-info', 'gputemp');
+            if (window.MetricInfo) MetricInfo.decorate(gpuLabel);
+          }
+          const el = document.getElementById('chart-gpu');
+          const title = el && el.closest('.chart-wrap')
+            ? el.closest('.chart-wrap').querySelector('.chart-title') : null;
+          if (title) {
+            title.textContent = 'GPU \u6e29\u5ea6\uff08\u5229\u7528\u7387\u9700 root\uff09';
+            title.setAttribute('data-info', 'gputemp');
+            if (window.MetricInfo) MetricInfo.decorate(title);
+          }
+        } else {
+          setUnit('card-gpu', '需 root');
+          setValue('val-gpu', '--');
+        }
+      }
+      if (seriesNoData(pts.map(p => p.temperature), true)) {
+        setUnit('card-temp', '无数据');
+        setValue('val-temp', '--');
+      }
+      const bj = pts.map(p => p.bigJank).filter(v => typeof v === 'number' && !isNaN(v));
+      if (bj.length && bj.every(v => v === 0)) {
+        const lab = document.querySelector('#card-bigjank .card-label');
+        if (lab) {
+          lab.textContent = 'BigJank · 无>125ms帧';
+          if (window.MetricInfo) MetricInfo.decorate(lab);
+        }
+      }
+
+      /* ---- 阈值着色：把「好 / 一般 / 差」直接画到卡片上 ---- */
+      const target = fpsTargetOf(pts);
+      const fpsArr = pts.map(p => p.fps).filter(v => typeof v === 'number' && !isNaN(v));
+      if (fpsArr.length && target) {
+        const avg = fpsArr.reduce((a, b) => a + b, 0) / fpsArr.length;
+        const r = avg / target;
+        paintCard('card-fps', r >= 0.95 ? 'good' : (r >= 0.8 ? 'warn' : 'bad'));
+      }
+      const cpuArr = pts.map(p => p.cpu && p.cpu.sysCpu).filter(v => typeof v === 'number' && !isNaN(v));
+      if (cpuArr.length) {
+        const avg = cpuArr.reduce((a, b) => a + b, 0) / cpuArr.length;
+        paintCard('card-cpu', avg >= 85 ? 'bad' : (avg >= 65 ? 'warn' : 'good'));
+      }
+      const jankRates = pts.map(p => {
+        const j = p.jank, f = p.fps;
+        return (typeof j === 'number' && typeof f === 'number' && f > 0) ? (j / f) * 100 : null;
+      }).filter(v => v != null && !isNaN(v));
+      if (jankRates.length) {
+        const avg = jankRates.reduce((a, b) => a + b, 0) / jankRates.length;
+        paintCard('card-jank', avg <= 2 ? 'good' : (avg <= 8 ? 'warn' : 'bad'));
+      }
+      if (bj.length) {
+        const sum = bj.reduce((a, b) => a + b, 0);
+        paintCard('card-bigjank', sum === 0 ? 'good' : (sum <= 2 ? 'warn' : 'bad'));
+      }
+      const temps = pts.map(p => p.temperature).filter(v => typeof v === 'number' && v > 0);
+      if (temps.length) {
+        const mx = Math.max.apply(null, temps);
+        paintCard('card-temp', mx < 42 ? 'good' : (mx < 48 ? 'warn' : 'bad'));
+      }
+    }
+
+    function calcMeanMax(arr) {
+      const nums = (arr || []).filter(v => typeof v === 'number' && !isNaN(v));
+      if (!nums.length) return { mean: null, max: null };
+      let sum = 0;
+      let mx = -Infinity;
+      for (const v of nums) { sum += v; if (v > mx) mx = v; }
+      return { mean: sum / nums.length, max: mx };
+    }
+
+    /* ==========================================================
+     * 解读总结
+     * 纯前端根据已渲染的 pts 推导结论，不依赖服务端。
+     * 输出：总评徽章 + 一句话结论 + 分项解读 + 风险提示。
+     * ========================================================== */
+
+    function iNums(vals) {
+      return (vals || []).filter(v => typeof v === 'number' && !isNaN(v));
+    }
+
+    function iMean(vals) {
+      const a = iNums(vals);
+      if (!a.length) return null;
+      let s = 0;
+      for (const v of a) s += v;
+      return s / a.length;
+    }
+
+    function iPct(vals, p) {
+      const a = iNums(vals).slice().sort((x, y) => x - y);
+      if (!a.length) return null;
+      const i = (a.length - 1) * p;
+      const lo = Math.floor(i), hi = Math.ceil(i);
+      return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
+    }
+
+    /** 按候选路径取一列数值（同一列内逐点回退，兼容 android/pc/ios 不同字段名） */
+    function iCol(pts, paths) {
+      return (pts || []).map(p => {
+        for (const path of paths) {
+          let cur = p;
+          for (const k of path.split('.')) cur = (cur == null ? undefined : cur[k]);
+          if (typeof cur === 'number' && !isNaN(cur)) return cur;
+        }
+        return null;
+      });
+    }
+
+    function iFmt(v, d) {
+      return (typeof v === 'number' && !isNaN(v)) ? v.toFixed(d == null ? 1 : d) : '--';
+    }
+
+    /** 报告时长（秒）：优先用原始时间戳差值 */
+    function iDurationSec() {
+      const rows = (typeof perf !== 'undefined' && Array.isArray(perf)) ? perf : [];
+      const ts = iNums(rows.map(it => {
+        if (!it) return null;
+        const t = it.timestamp;
+        if (typeof t === 'number') return t;
+        const p = Date.parse(String(t));
+        return isNaN(p) ? null : p;
+      }));
+      if (ts.length >= 2) return Math.max(1, Math.round((Math.max.apply(null, ts) - Math.min.apply(null, ts)) / 1000));
+      return null;
+    }
+
+    function iDurationText(sec) {
+      if (sec == null) return '--';
+      if (sec < 60) return sec + ' 秒';
+      const m = Math.floor(sec / 60), s = sec % 60;
+      return s ? (m + ' 分 ' + s + ' 秒') : (m + ' 分钟');
+    }
+
+    /** 首段 vs 末段（各取 30%）均值差，用于判断内存增长趋势 */
+    function iTrend(vals) {
+      const a = iNums(vals);
+      if (a.length < 6) return null;
+      const k = Math.max(2, Math.round(a.length * 0.3));
+      const head = iMean(a.slice(0, k));
+      const tail = iMean(a.slice(a.length - k));
+      if (head == null || tail == null || head === 0) return null;
+      return { head, tail, delta: tail - head, pct: ((tail - head) / head) * 100 };
+    }
+
+    function iLevelOfScore(score) {
+      if (score >= 88) return { level: 'great', text: '优秀' };
+      if (score >= 72) return { level: 'good',  text: '良好' };
+      if (score >= 55) return { level: 'warn',  text: '一般' };
+      return { level: 'bad', text: '较差' };
+    }
+
+    function iToneOfJank(rate) {
+      if (rate == null) return 'info';
+      if (rate <= 1) return 'good';
+      if (rate <= 5) return 'warn';
+      return 'bad';
+    }
+
+    /**
+     * 生成解读数据。
+     * @returns {{level:string,levelText:string,lead:string,items:Array,risks:Array}}
+     */
+    function buildInsight(pts, category) {
+      const out = { level: 'good', levelText: '良好', lead: '', items: [], risks: [] };
+      const n = (pts || []).length;
+      const durSec = iDurationSec();
+      out.n = n;
+      out.durSec = durSec;
+
+      if (!n) {
+        out.level = 'warn';
+        out.levelText = '无数据';
+        out.lead = '本次报告没有任何采样点，无法给出解读。请确认采集过程中设备保持连接。';
+        return out;
+      }
+
+      /* ---------- iOS GPU 专项：只有 GPU 计数器，单独解读 ---------- */
+      if (category === 'ios_gpu') {
+        const alu  = iMean(iCol(pts, ['ALU Utilization']));
+        const frag = iMean(iCol(pts, ['Fragment Occupancy']));
+        const vert = iMean(iCol(pts, ['Vertex Occupancy']));
+        const tex  = iMean(iCol(pts, ['Texture Sample Limiter']));
+        const rbw  = iMean(iCol(pts, ['GPU Read Bandwidth']));
+        const wbw  = iMean(iCol(pts, ['GPU Write Bandwidth']));
+        const pr   = iMean(iCol(pts, ['Partial Renders']));
+
+        const pushItem = (k, v, note, tone) => out.items.push({ k, v, note, tone });
+
+        let hot = null;
+        if (alu != null) {
+          const tone = alu >= 90 ? 'warn' : (alu >= 60 ? 'info' : 'good');
+          const note = alu >= 90 ? '着色器算力接近饱和' : (alu >= 60 ? '算力占用较高' : '算力仍有余量');
+          pushItem('ALU', '均值 ' + iFmt(alu, 1) + '%', note, tone);
+          hot = hot == null || alu > hot ? 'ALU' : hot;
+        }
+        if (frag != null) {
+          const tone = frag >= 85 ? 'warn' : (frag >= 50 ? 'info' : 'good');
+          pushItem('Fragment', '均值 ' + iFmt(frag, 1) + '%',
+            frag >= 85 ? '片元阶段压力大，注意过度绘制' : (frag >= 50 ? '片元占用中等' : '片元阶段轻松'), tone);
+          if (frag >= 85) hot = hot || 'Fragment';
+        }
+        if (vert != null) pushItem('Vertex', '均值 ' + iFmt(vert, 1) + '%',
+          vert >= 80 ? '顶点处理接近上限' : '顶点处理正常', vert >= 80 ? 'warn' : 'good');
+        if (tex != null) pushItem('纹理采样', '均值 ' + iFmt(tex, 1) + '%',
+          tex >= 80 ? '采样受限，可能是带宽或缓存瓶颈' : '采样限制正常', tex >= 80 ? 'warn' : 'good');
+        if (rbw != null || wbw != null) {
+          pushItem('带宽', '读 ' + iFmt(rbw, 2) + ' / 写 ' + iFmt(wbw, 2) + ' GB/s',
+            '反映显存访问压力', 'info');
+        }
+        if (pr != null) pushItem('Partial Renders', '均值 ' + iFmt(pr, 0),
+          pr > 0 ? '存在分块渲染，通常与混合/遮罩有关' : '未出现分块渲染', pr > 0 ? 'info' : 'good');
+
+        const lv = (alu != null && alu >= 90) || (frag != null && frag >= 85)
+          ? { level: 'warn', text: 'GPU 高负载' }
+          : (alu != null || frag != null ? { level: 'good', text: 'GPU 正常' } : { level: 'warn', text: '数据不足' });
+        out.level = lv.level;
+        out.levelText = lv.text;
+        out.lead = '本次为 iOS GPU 专项采集，共 <b>' + n + '</b> 个采样点，时长 ' + iDurationText(durSec)
+          + '。' + (alu != null ? ('ALU 利用率均值 <b>' + iFmt(alu, 1) + '%</b>') : '')
+          + (frag != null ? ('，Fragment 占用 <b>' + iFmt(frag, 1) + '%</b>') : '')
+          + (rbw != null ? ('，读带宽 <b>' + iFmt(rbw, 2) + ' GB/s</b>') : '')
+          + '。' + (hot ? (hot + ' 是本次采集的主要压力点。') : '各阶段占用均衡，未发现明显瓶颈。');
+
+        if (alu != null && alu >= 90) out.risks.push({ tone: 'high', text: 'ALU 利用率长期高于 90%，着色器指令数或循环次数可能需要优化。' });
+        if (frag != null && frag >= 85) out.risks.push({ tone: 'mid', text: 'Fragment 占用 ' + iFmt(frag, 1) + '%，建议检查过度绘制、透明混合与后处理链路。' });
+        if (tex != null && tex >= 80) out.risks.push({ tone: 'mid', text: '纹理采样限制偏高，可考虑压缩纹理、降低采样次数或开启 mipmap。' });
+        if (!out.risks.length) out.risks.push({ tone: 'info', text: '未发现明显 GPU 瓶颈，各阶段占用处于合理区间。' });
+        return out;
+      }
+
+      /* ---------- 取值 ---------- */
+      const fpsCol   = iCol(pts, ['fps']);
+      const jankCol  = iCol(pts, ['jankRate', 'jank_rate']);
+      const bjCol    = iCol(pts, ['bigJank', 'bigjank', 'big_jank']);
+      const cpuSys   = iCol(pts, ['cpu.sysCpu', 'cpuTotalSystem', 'cpuUsage']);
+      const cpuProc  = iCol(pts, ['cpu.procCpu']);
+      const memCol   = iCol(pts, ['mem.totalPss', 'physFootprint', 'memResidentSize']);
+      const tempCol  = iCol(pts, ['temperature']);
+      const gpuCol   = iCol(pts, ['gpu']);
+      const gpuTCol  = iCol(pts, ['gpuTemp']);
+
+      const fpsMean = iMean(fpsCol);
+      const fpsP5   = iPct(fpsCol, 0.05);
+      const fpsP95  = iPct(fpsCol, 0.95);
+      const fpsMax  = fpsP95;
+      const jankMean = iMean(jankCol);
+      const bjNums  = iNums(bjCol);
+      const bjSum   = bjNums.reduce((a, b) => a + b, 0);
+      const cpuSysMean  = iMean(cpuSys);
+      const cpuProcMean = iMean(cpuProc);
+      const memMean  = iMean(memCol);
+      const memMax   = iPct(memCol, 1);
+      const memTrend = iTrend(memCol);
+      const tempMean = iMean(tempCol);
+      const tempMax  = iPct(tempCol, 1);
+      const gpuMean  = iMean(gpuCol);
+      const gpuTMean = iMean(gpuTCol);
+      const gpuTMax  = iPct(gpuTCol, 1);
+      const hasGpuUtil = gpuMean != null && iNums(gpuCol).some(v => v > 0);
+      const hasGpuTemp = gpuTMean != null && iNums(gpuTCol).some(v => v > 0);
+
+      /* ---------- 帧率目标：从 P95 吸附到常见刷新率 ---------- */
+      let fpsTarget = null;
+      if (fpsP95 != null && fpsP95 > 0) {
+        const cands = [30, 45, 60, 90, 120, 144, 165];
+        for (const c of cands) { if (c >= fpsP95 * 0.97) { fpsTarget = c; break; } }
+        if (fpsTarget == null) fpsTarget = Math.ceil(fpsP95 / 30) * 30;
+      }
+
+      /* ---------- 评分 ---------- */
+      let score = null;
+      if (fpsMean != null && fpsTarget) {
+        const fpsScore = Math.max(0, Math.min(100, (fpsMean / fpsTarget) * 100));
+        const jankScore = jankMean == null ? 85 : Math.max(0, Math.min(100, 100 - jankMean * 9));
+        const lowRatio = fpsP5 != null ? Math.max(0, Math.min(1, fpsP5 / fpsTarget)) : 0.85;
+        const stabScore = Math.max(0, Math.min(100, lowRatio * 100));
+        let bjPenalty = 0;
+        if (bjNums.length) {
+          const perMin = durSec ? (bjSum / Math.max(1, durSec / 60)) : bjSum;
+          bjPenalty = Math.min(25, perMin * 2);
+        }
+        score = Math.round(0.5 * fpsScore + 0.28 * jankScore + 0.22 * stabScore - bjPenalty);
+        score = Math.max(0, Math.min(100, score));
+      }
+
+      /* ================= 分项解读 ================= */
+
+      // FPS
+      if (fpsMean != null) {
+        let tone = 'info', note = '';
+        if (fpsTarget) {
+          const r = fpsMean / fpsTarget;
+          if (r >= 0.97) { tone = 'good'; note = '基本满帧'; }
+          else if (r >= 0.85) { tone = 'good'; note = '轻微掉帧'; }
+          else if (r >= 0.7) { tone = 'warn'; note = '掉帧明显'; }
+          else { tone = 'bad'; note = '帧率严重不足'; }
+        }
+        const range = (fpsP5 != null && fpsMax != null)
+          ? ('（P5 ' + iFmt(fpsP5, 0) + ' / 峰值 ' + iFmt(fpsMax, 0) + '）') : '';
+        out.items.push({
+          k: 'FPS',
+          v: '均值 ' + iFmt(fpsMean, 1) + (fpsTarget ? (' / 目标 ' + fpsTarget) : ''),
+          note: note + range,
+          tone,
+        });
+      }
+
+      // 达帧率 / 均帧 / 低帧
+      const fpsNums = fpsCol.filter(v => v != null);
+      const fm = fpsDerivedMetrics(fpsNums, fpsTarget);
+      if (fm) {
+        const tone = fm.reach >= 95 ? 'good' : (fm.reach >= 80 ? 'warn' : 'bad');
+        out.items.push({
+          k: '帧率质量',
+          v: '达帧率 ' + iFmt(fm.reach, 1) + '% · 均帧 ' + (fm.frameTime == null ? '--' : iFmt(fm.frameTime, 1) + 'ms') + ' · 低帧 ' + iFmt(fm.lowPct, 1) + '%',
+          note: '低帧 = FPS < ' + Math.round(fm.target * 0.8) + ' 的采样（' + fm.lowCount + '/' + fpsNums.length + ' 点）',
+          tone,
+        });
+      }
+
+      // 帧率质量补充（PerfDog 口径）：1%Low / 卡顿时长 / 降帧 / 稳帧范围
+      if (fm) {
+        const q = perfFpsQualityInsight(fpsNums, fpsTarget, durSec);
+        if (q) {
+          if (q.oneLow != null) {
+            const tone = q.oneLow >= fpsTarget * 0.95 ? 'good' : (q.oneLow >= fpsTarget * 0.85 ? 'warn' : 'bad');
+            out.items.push({
+              k: '1%Low', v: iFmt(q.oneLow, 1) + ' 帧/s',
+              note: '最差 1% 帧段的平均帧率，越低越卡', tone,
+            });
+          }
+          if (q.stutter != null) {
+            const tone = q.stutter >= 15 ? 'bad' : (q.stutter >= 8 ? 'warn' : 'good');
+            out.items.push({
+              k: '卡顿时长', v: '占比 ' + iFmt(q.stutter, 1) + '%',
+              note: '帧间隔 > 2×目标帧间隔 的时间占比', tone,
+            });
+          }
+          if (q.drop != null) {
+            const tone = q.drop >= 30 ? 'bad' : (q.drop >= 10 ? 'warn' : 'good');
+            out.items.push({
+              k: '降帧', v: q.drop.toFixed(1) + ' 次/时',
+              note: '相邻采样 FPS 骤降 >8 帧（PerfDog Drop 口径）', tone,
+            });
+          }
+          if (q.medRange != null) {
+            const tone = q.medRange >= 80 ? 'good' : (q.medRange >= 60 ? 'warn' : 'bad');
+            out.items.push({
+              k: '稳帧范围', v: iFmt(q.medRange, 1) + '%',
+              note: '落在中位数 ±20% 内的采样占比', tone,
+            });
+          }
+        }
+      }
+
+      // 上下文切换 / CPU 限频（PerfDog 对齐：CSwitch > 14000/s 会被系统 kill）
+      const csCol = iCol(pts, ['cswitch']);
+      const csNums = iNums(csCol);
+      const csAvg = csNums.length ? csNums.reduce((a, b) => a + b, 0) / csNums.length : null;
+      const limitCol = iCol(pts, ['cpuLimit']);
+      const limitNums = iNums(limitCol);
+      const limitMin = limitNums.length ? Math.min.apply(null, limitNums) : null;
+      if (csAvg != null) {
+        const tone = csAvg >= 14000 ? 'bad' : (csAvg >= 8000 ? 'warn' : 'info');
+        out.items.push({
+          k: '上下文切换', v: '均值 ' + iFmt(csAvg, 0) + ' 次/s',
+          note: csAvg >= 14000 ? '超过 14000/s，存在被系统 kill 风险' : '参考阈值 14000/s',
+          tone,
+        });
+        if (csAvg >= 14000) out.risks.push({ tone: 'high', text: '上下文切换均值 ' + iFmt(csAvg, 0) + ' 次/s，超过 PerfDog 阈值 14000/s，进程可能被系统终止。' });
+        else if (csAvg >= 8000) out.risks.push({ tone: 'mid', text: '上下文切换 ' + iFmt(csAvg, 0) + ' 次/s 偏高，线程调度开销大，可排查频繁唤醒。' });
+      }
+      if (limitMin != null && limitMin < 100) {
+        out.risks.push({
+          tone: 'mid',
+          text: 'CPU 可调度最大频率被限制在硬件上限的 ' + iFmt(limitMin, 0) + '%（疑似温控降频），高负载场景帧率会受影响。',
+        });
+      }
+
+      // CPU
+      if (cpuSysMean != null || cpuProcMean != null) {
+        const parts = [];
+        if (cpuSysMean != null) parts.push('系统 ' + iFmt(cpuSysMean, 1) + '%');
+        if (cpuProcMean != null) parts.push('进程 ' + iFmt(cpuProcMean, 1) + '%');
+        let tone = 'good', note = '负载轻';
+        const load = cpuSysMean != null ? cpuSysMean : cpuProcMean;
+        if (load >= 85) { tone = 'bad'; note = '系统 CPU 接近满载，存在瓶颈'; }
+        else if (load >= 65) { tone = 'warn'; note = 'CPU 负载偏高'; }
+        else if (load >= 40) { tone = 'info'; note = '负载中等'; }
+        out.items.push({ k: 'CPU', v: parts.join('，'), note, tone });
+      }
+
+      // 内存
+      if (memMean != null) {
+        let note = '峰值 ' + iFmt(memMax, 0) + ' MB';
+        let tone = 'good';
+        if (memTrend) {
+          note += '，首段→末段 ' + (memTrend.delta >= 0 ? '+' : '') + iFmt(memTrend.pct, 1) + '%';
+          if (memTrend.pct >= 20 && memTrend.delta >= 30) { tone = 'bad'; note += '，疑似内存泄漏'; }
+          else if (memTrend.pct >= 8 && memTrend.delta >= 15) { tone = 'warn'; note += '，有持续增长'; }
+          else if (memTrend.pct <= -8) { tone = 'good'; note += '，有回落'; }
+        }
+        out.items.push({ k: '内存', v: '均值 ' + iFmt(memMean, 0) + ' MB', note, tone });
+      }
+
+      // 温度
+      if (tempMean != null && iNums(tempCol).some(v => v > 0)) {
+        let tone = 'good', note = '';
+        if (tempMax != null && tempMax >= 50) { tone = 'bad'; note = '峰值偏高，可能触发温控降频'; }
+        else if (tempMax != null && tempMax >= 45) { tone = 'warn'; note = '峰值偏高'; }
+        else if (tempMax != null && tempMax >= 40) { tone = 'info'; note = '温度正常'; }
+        else { tone = 'good'; note = '温度良好'; }
+        out.items.push({
+          k: '温度',
+          v: '均值 ' + iFmt(tempMean, 1) + '°C / 峰值 ' + iFmt(tempMax, 1) + '°C',
+          note, tone,
+        });
+      }
+
+      // GPU
+      if (hasGpuUtil) {
+        let tone = 'info', note = '占用中等';
+        if (gpuMean >= 85) { tone = 'warn'; note = 'GPU 高负载，可能成为瓶颈'; }
+        else if (gpuMean >= 60) { tone = 'info'; note = 'GPU 负载较高'; }
+        else { tone = 'good'; note = 'GPU 有余量'; }
+        out.items.push({ k: 'GPU', v: '利用率均值 ' + iFmt(gpuMean, 1) + '%', note, tone });
+      } else if (hasGpuTemp) {
+        out.items.push({
+          k: 'GPU',
+          v: '温度均值 ' + iFmt(gpuTMean, 1) + '°C / 峰值 ' + iFmt(gpuTMax, 1) + '°C',
+          note: '利用率不可读（需 root），已改用温度',
+          tone: (gpuTMax != null && gpuTMax >= 70) ? 'warn' : 'info',
+        });
+      } else {
+        out.items.push({ k: 'GPU', v: '--', note: '该机型未开放 GPU 数据读取', tone: 'info' });
+      }
+
+      // Jank
+      if (jankMean != null) {
+        let note = '轻微掉帧';
+        if (jankMean <= 1) note = '几乎无掉帧';
+        else if (jankMean <= 5) note = '轻微掉帧';
+        else if (jankMean <= 12) note = '掉帧较多，可感知';
+        else note = '掉帧严重，体验明显受损';
+        out.items.push({
+          k: 'Jank 率',
+          v: '均值 ' + iFmt(jankMean, 2) + '%',
+          note, tone: iToneOfJank(jankMean),
+        });
+      }
+
+      // BigJank
+      if (bjNums.length) {
+        let tone = 'good', note = '无 >125ms 卡顿帧';
+        if (bjSum > 0) {
+          const perMin = durSec ? (bjSum / Math.max(1, durSec / 60)) : bjSum;
+          if (perMin >= 6) { tone = 'bad'; note = '严重卡顿频繁'; }
+          else if (perMin >= 1) { tone = 'warn'; note = '偶发严重卡顿'; }
+          else { tone = 'info'; note = '极少严重卡顿'; }
+          note += '（约 ' + iFmt(perMin, 1) + ' 次/分钟）';
+        }
+        out.items.push({ k: 'BigJank', v: '共 ' + iFmt(bjSum, 0) + ' 帧', note, tone });
+      }
+
+      /* ================= 风险提示 ================= */
+      if (fpsTarget && fpsMean != null && fpsMean / fpsTarget < 0.85) {
+        out.risks.push({ tone: 'high', text: '帧率仅达目标 ' + Math.round((fpsMean / fpsTarget) * 100) + '%，建议排查渲染耗时与主线程阻塞。' });
+      }
+      if (fm && fm.lowPct >= 20) {
+        out.risks.push({
+          tone: 'mid',
+          text: '低帧占比 ' + iFmt(fm.lowPct, 1) + '%（' + fm.lowCount + ' 个采样点 FPS < ' + Math.round(fm.target * 0.8) + '），可在曲线图上框选这些时段定位原因。',
+        });
+      }
+      if (fm && fm.reach < 80 && fm.frameTime != null) {
+        out.risks.push({ tone: 'mid', text: '均帧 ' + iFmt(fm.frameTime, 1) + 'ms，高于目标帧间隔（' + iFmt(1000 / fm.target, 1) + 'ms），存在系统性超时。' });
+      }
+      if (jankMean != null && jankMean > 8) {
+        out.risks.push({ tone: 'high', text: 'Jank 率 ' + iFmt(jankMean, 1) + '%，掉帧已可被用户明显感知。' });
+      }
+      if (bjNums.length && bjSum > 0 && durSec) {
+        const perMin = bjSum / Math.max(1, durSec / 60);
+        if (perMin >= 1) {
+          out.risks.push({ tone: 'mid', text: '出现 ' + iFmt(bjSum, 0) + ' 次 >125ms 卡顿帧（约 ' + iFmt(perMin, 1) + ' 次/分钟），通常对应 GC、IO 或布局重排。' });
+        }
+      }
+      if (memTrend && memTrend.pct >= 8 && memTrend.delta >= 15) {
+        out.risks.push({ tone: 'mid', text: '内存首段→末段增长 ' + iFmt(memTrend.pct, 1) + '%（+' + iFmt(memTrend.delta, 0) + ' MB），长时间运行存在内存压力。' });
+      }
+      if (tempMax != null && tempMax >= 45) {
+        out.risks.push({ tone: tempMax >= 50 ? 'high' : 'mid', text: '温度峰值 ' + iFmt(tempMax, 1) + '°C，接近温控阈值，长时间测试可能降频。' });
+      }
+      if (cpuSysMean != null && cpuSysMean >= 80) {
+        out.risks.push({ tone: 'mid', text: '系统 CPU 均值 ' + iFmt(cpuSysMean, 1) + '%，整机负载饱和会放大掉帧。' });
+      }
+      if (!hasGpuUtil && !hasGpuTemp) {
+        out.risks.push({ tone: 'info', text: 'GPU 数据不可读：该机型节点未开放（需 root），本报告 GPU 部分为空属正常现象。' });
+      } else if (!hasGpuUtil && hasGpuTemp) {
+        out.risks.push({ tone: 'info', text: 'GPU 利用率需 root 才能读取，已改用 GPU 温度反映负载趋势。' });
+      }
+      if (!out.risks.length) {
+        out.risks.push({ tone: 'info', text: '未发现明显性能风险，各项指标均在合理区间。' });
+      }
+
+      /* ================= 总评 ================= */
+      if (score == null) {
+        out.level = 'good';
+        out.levelText = '已解读';
+        out.lead = '本报告为专项采集（无 FPS 数据），共 <b>' + n + '</b> 个采样点，时长 ' + iDurationText(durSec) + '。以下为各指标的实际表现。';
+        return out;
+      }
+
+      const lv = iLevelOfScore(score);
+      out.level = lv.level;
+      out.levelText = lv.text;
+      out.score = score;
+
+      const bits = [];
+      bits.push('整体流畅度<b>' + lv.text + '</b>（综合得分 ' + score + '）');
+      if (fpsMean != null) bits.push('FPS 均值 <b>' + iFmt(fpsMean, 1) + '</b>' + (fpsTarget ? '（目标 ' + fpsTarget + '）' : ''));
+      if (fm) bits.push('达帧率 <b>' + iFmt(fm.reach, 1) + '%</b>');
+      if (jankMean != null) bits.push('Jank 率 <b>' + iFmt(jankMean, 1) + '%</b>');
+      let tail = '';
+      if (bjSum > 0) tail = '期间出现 ' + iFmt(bjSum, 0) + ' 次 >125ms 严重卡顿。';
+      else if (tempMax != null && tempMax >= 45) tail = '全程无 >125ms 严重卡顿，但机身温度峰值 ' + iFmt(tempMax, 1) + '°C 偏高。';
+      else if (memTrend && memTrend.pct >= 8) tail = '全程无 >125ms 严重卡顿，内存有持续增长趋势。';
+      else tail = '全程无 >125ms 严重卡顿，表现稳定。';
+      out.lead = bits.join('，') + '。' + tail;
+
+      return out;
+    }
+
+    /** 把解读渲染成区块，插到指标卡片下方（各平台模板通用） */
+    function renderInsight(pts, category) {
+      // 达帧率 / 均帧 / 低帧 三张补充卡片（无 FPS 数据的平台自动隐藏）
+      renderFpsKpiCards(fpsDerivedMetrics(fpsSeriesOf(pts), fpsTargetOf(pts)));
+
+      const cards = document.querySelector('section.cards');
+      if (!cards || !cards.parentNode) return;
+      let box = document.getElementById('insight-box');
+      if (!box) {
+        box = document.createElement('section');
+        box.id = 'insight-box';
+        box.className = 'insight';
+        cards.parentNode.insertBefore(box, cards.nextSibling);
+      }
+      const r = buildInsight(pts, category);
+      const sub = [];
+      sub.push(r.n + ' 个采样点');
+      if (r.durSec != null) sub.push(iDurationText(r.durSec));
+      const esc = (s) => String(s);
+
+      let html = ''
+        + '<div class="insight-head">'
+        +   '<span class="insight-title">解读总结</span>'
+        +   '<span class="insight-badge insight-badge--' + r.level + '">' + esc(r.levelText) + '</span>'
+        +   '<span class="insight-sub">' + sub.join(' · ') + '</span>'
+        + '</div>'
+        + '<div class="insight-lead">' + r.lead + '</div>';
+
+      if (r.items.length) {
+        html += '<ul class="insight-list">';
+        for (const it of r.items) {
+          html += '<li><b>' + it.k + '</b>' + it.v
+            + (it.note ? '<span class="insight-note insight-note--' + (it.tone || 'info') + '"> · ' + it.note + '</span>' : '')
+            + '</li>';
+        }
+        html += '</ul>';
+      }
+
+      if (r.risks.length) {
+        html += '<div class="insight-risks">';
+        for (const rk of r.risks) {
+          const flag = rk.tone === 'high' ? '⚠ 风险' : (rk.tone === 'mid' ? '△ 注意' : 'ℹ 提示');
+          html += '<div class="insight-risk insight-risk--' + rk.tone + '">' + flag + '：' + rk.text + '</div>';
+        }
+        html += '</div>';
+      }
+
+      box.innerHTML = html;
+    }
+
+    function pickNum(obj, keys) {
+      for (const k of keys) {
+        const v = obj && obj[k];
+        if (typeof v === 'number' && !isNaN(v)) return v;
+      }
+      return null;
+    }
+
+    function buildTagStatsRows() {
+      if (!Array.isArray(tags) || tags.length === 0) return [];
+      const rows = [];
+      const firstName = Object.keys(CHART_CONFIGS)[0];
+      const times = chartMgr._data[firstName]?.times || [];
+      const n = times.length || 0;
+      if (!n) return rows;
+      const segs = tags
+        .filter(t => Array.isArray(t) && t.length >= 2)
+        .map(t => [Math.max(0, Math.min(n - 1, (t[0] | 0))), Math.max(0, Math.min(n - 1, (t[1] | 0)))])
+        .filter(t => t[1] >= t[0]);
+      for (let si = 0; si < segs.length; si++) {
+        const [fromIdx, toIdx] = segs[si];
+        const segName = `子场景${si + 1}`;
+        for (const [chartName, cfg] of Object.entries(CHART_CONFIGS)) {
+          const state = chartMgr._data[chartName];
+          if (!state) continue;
+          const seriesDefs = cfg.series || [];
+          for (let i = 0; i < seriesDefs.length; i++) {
+            const metric = seriesDefs[i].name || `${chartName}.${i}`;
+            const full = state.series[i] || [];
+            const slice = full.slice(fromIdx, toIdx + 1);
+            const st = calcMeanMax(slice);
+            rows.push({ seg: segName, metric, mean: st.mean, max: st.max, fromIdx, toIdx });
+          }
+        }
+      }
+      return rows;
+    }
+
+    function renderTagStats() {
+      const hint = document.getElementById('tag-hint');
+      const tb = document.querySelector('#tbl-tags tbody');
+      const wrap = document.getElementById('wrap-stats-tags');
+      if (!tb) return;
+      tb.innerHTML = '';
+      if (!tags || !tags.length) {
+        // 没有子场景就别占一大块空白
+        if (wrap) wrap.hidden = true;
+        if (hint) hint.textContent = '未找到 tag（请确认 data.js 内包含 data.tag 或 data.tags）。';
+        return;
+      }
+      if (wrap) wrap.hidden = false;
+      if (hint) {
+        const mapping = tags
+          .filter(t => Array.isArray(t) && t.length >= 2)
+          .map((t, i) => `子场景${i + 1}=[${t[0]},${t[1]}]`)
+          .join('，');
+        hint.textContent = `共 ${tags.length} 个子场景：${mapping}`;
+      }
+      const rows = buildTagStatsRows();
+      if (!rows.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="4" style="color:var(--text2)">无法生成子场景统计（可能还未渲染出数据序列）</td>`;
+        tb.appendChild(tr);
+        return;
+      }
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        const _ta = (window.MetricInfo ? MetricInfo.attr(r.metric) : '');
+        tr.innerHTML = `<td>${r.seg}</td><td${_ta}>${r.metric}</td><td>${fmtStat(r.mean)}</td><td>${fmtStat(r.max)}</td>`;
+        tb.appendChild(tr);
+      });
+      if (window.MetricInfo) MetricInfo.decorate(tb);
+    }
+
+    // selection state (by x-axis index)
+    let selection = null; // {fromIdx,toIdx}
+
+    function calcStats(arr) {
+      const nums = (arr || []).filter(v => typeof v === 'number' && !isNaN(v));
+      if (!nums.length) return { mean: null, max: null, p98: null };
+      let sum = 0;
+      let mx = -Infinity;
+      for (const v of nums) { sum += v; if (v > mx) mx = v; }
+      const sorted = nums.slice().sort((a,b)=>a-b);
+      const idx = Math.max(0, Math.ceil(sorted.length * 0.98) - 1);
+      return { mean: sum / nums.length, max: mx, p98: sorted[idx] };
+    }
+
+    function fmtStat(v) {
+      if (v == null || typeof v !== 'number' || isNaN(v)) return '--';
+      return String(Math.round(v * 1000) / 1000);
+    }
+
+    /** 图表短名：动态系列（各核心）在统计表里需要带上归属，否则会出现多个同名「Core 0」 */
+    const CHART_LABELS = {
+      cpu: 'CPU', mem: '内存', memDetail: '内存明细', memdetail: '内存明细',
+      fps: '帧率', net: '网络', gpu: 'GPU', temp: '温度', current: '电流', power: '功耗',
+      disk: '磁盘', events: '系统事件', cpuCores: '各核心CPU', cpuFreq: '各核心频率',
+      occupancy: 'GPU占用', aluPerf: 'ALU', texture: '纹理', bandwidth: '带宽',
+      cache: '缓存', shader: '着色器',
+    };
+
+    /** 统计表「主表」保留的关键指标，其余（内存分项 / 各核心）折叠到明细里 */
+    const MAIN_METRICS = new Set([
+      '系统CPU', '进程CPU', 'FPS', 'PSS', '物理内存', 'RSS',
+      'Jank', 'BigJank', 'SmallJank', 'TinyJank', '上下文切换', 'GPU', 'GPU 温度', '温度',
+      '下行', '上行', '读 KB/s', '写 KB/s',
+      '达帧率', '均帧', '帧耗时标准差', '帧耗时方差', '低帧占比', '1%Low', 'Drop',
+      'FPS≥目标', '稳帧范围', '帧率标准差', '卡顿时长占比',
+      'Jank/10min', 'BigJank/10min', 'SmallJank/10min', 'TinyJank/10min',
+    ]);
+
+    /** 从各图表的 fmt 反推单位（fmt(1) 形如 "1.0%" / "1 MB"） */
+    function metricUnitOf(cfg) {
+      try {
+        const s = String(cfg.fmt(1));
+        const u = s.replace(/^-?[\d.]+/, '').trim();
+        return u.length <= 8 ? u : '';
+      } catch (_) { return ''; }
+    }
+
+      function buildTableRows(scope) {
+        return dedupeStatRows(buildTableRowsRaw(scope));
+      }
+
+      function buildTableRowsRaw(scope) {
+        // scope: {fromIdx,toIdx} inclusive indices on any chart's times array
+        const rows = [];
+      for (const [chartName, cfg] of Object.entries(CHART_CONFIGS)) {
+        const state = chartMgr._data[chartName];
+        if (!state) continue;
+        const seriesDefs = cfg.series || [];
+        const unit = metricUnitOf(cfg);
+        for (let i = 0; i < seriesDefs.length; i++) {
+          const rawName = seriesDefs[i].name || `${chartName}.${i}`;
+          // 各核心 CPU / 频率两图都叫 Core N，加前缀区分
+          const name = cfg.dynamic ? `${CHART_LABELS[chartName] || chartName} · ${rawName}` : rawName;
+          const full = state.series[i] || [];
+          const slice = (scope && scope.fromIdx != null && scope.toIdx != null)
+            ? full.slice(scope.fromIdx, scope.toIdx + 1)
+            : full;
+          const st = calcStats(slice);
+          rows.push({ metric: name, raw: rawName, unit, mean: st.mean, max: st.max, p98: st.p98, dynamic: !!cfg.dynamic });
+        }
+      }
+
+      // FPS 派生指标：达帧率 / 均帧 / 低帧占比。
+      // 下面 perfFpsQualityRows 已经给整段统计算过同名的三行（PerfDog 口径），
+      // 所以整段模式下这里不再追加，否则表格里会出现两条同名行；
+      // 只有用户框选了区间（整段行不参与统计）时才用这里的随选区版本顶上。
+      const fpsState2 = chartMgr._data.fps;
+      if (scope && fpsState2 && fpsState2.series && fpsState2.series[0]) {
+        const full = fpsState2.series[0] || [];
+        const slice = (scope.fromIdx != null && scope.toIdx != null)
+          ? full.slice(scope.fromIdx, scope.toIdx + 1)
+          : full;
+        // 目标帧率按整段算，不随选区变化
+        const fm = fpsDerivedMetrics(slice, fpsTargetOfSeries(full));
+        if (fm) {
+          rows.push({ metric: '达帧率', raw: '达帧率', unit: '%', mean: fm.reach, max: fm.reach, p98: fm.reach });
+          rows.push({ metric: '均帧', raw: '均帧', unit: 'ms', mean: fm.frameTime, max: fm.frameTime, p98: fm.frameTime });
+          rows.push({ metric: '低帧占比', raw: '低帧占比', unit: '%', mean: fm.lowPct, max: fm.lowPct, p98: fm.lowPct });
+        }
+      }
+
+      // PerfDog 口径的其余帧率质量指标（整段统计，不随框选区变化）
+      if (!scope) {
+        const durSec = reportDurationSec();
+        // 这里要在本作用域自取（写在别处的 const 会因作用域报错、被 onReady 静默吞掉）
+        const _fps = chartMgr._data.fps;
+        const fpsFull = (_fps && _fps.series && _fps.series[0]) || [];
+        const qRows = perfFpsQualityRows(
+          _fps ? (_fps.series[0] || []) : [],
+          _fps ? (_fps.series[1] || []) : [],
+          _fps ? (_fps.series[2] || []) : [],
+          _fps ? (_fps.series[3] || []) : [],
+          _fps ? (_fps.series[4] || []) : [],
+          fpsTargetOfSeries(fpsFull), durSec
+        );
+      for (const r of qRows) rows.push(r);
+        }
+        return rows;
+      }
+
+      /**
+       * 统计表去重：报告里有些指标彼此是派生/同源关系，全部平铺会显得重复。
+       *   1) Jank/10min 四行 → 并入对应 Jank 行作为副标注（数值不丢，行数减半）
+       *   2) GPU 温度与「温度」同源同值时只保留「温度」一行（GPU 图表照常画）
+       *   3) 兜底：同名指标行只留第一条
+       */
+      function dedupeStatRows(rows) {
+        const MERGE = {
+          'Jank/10min': 'Jank', 'BigJank/10min': 'BigJank',
+          'SmallJank/10min': 'SmallJank', 'TinyJank/10min': 'TinyJank',
+        };
+        const keyOf = (r) => r.raw || r.metric;
+        const sameNums = (a, b) => ['mean', 'max', 'p98'].every(f => a[f] === b[f]);
+
+        const first = new Map();
+        const out = [];
+        for (const r of rows) {
+          const k = keyOf(r);
+          if (!first.has(k)) first.set(k, r);
+        }
+        for (const r of rows) {
+          const k = keyOf(r);
+          if (first.get(k) !== r) continue;              // 同名重复行
+          const hostKey = MERGE[k];
+          if (hostKey) {                                  // 派生行并入宿主
+            const host = first.get(hostKey);
+            if (host && host !== r) {
+              // 10min 计数本身没有独立单位，副标注要写清口径
+              const is10 = /\/\s*10min/.test(k);
+              const sub = fmtStat(r.mean) + (is10 ? ' 次/10min' : (r.unit ? ' ' + r.unit : ''));
+              host.sub = host.sub ? host.sub + ' · ' + sub : sub;
+              continue;
+            }
+          }
+          out.push(r);
+        }
+        const gpuT = out.find(r => keyOf(r) === 'GPU 温度');
+        const temp = out.find(r => keyOf(r) === '温度');
+        if (gpuT && temp && sameNums(gpuT, temp)) out.splice(out.indexOf(gpuT), 1);
+        return out;
+      }
+
+    function isMainMetric(r) {
+      if (r.dynamic) return false;
+      return MAIN_METRICS.has(r.raw || r.metric);
+    }
+
+    function renderTable(tableId, rows) {
+      const tb = document.querySelector(`#${tableId} tbody`);
+      if (!tb) return;
+
+      const _miAttr = (r) => (window.MetricInfo ? MetricInfo.attr(r.raw || r.metric) : '');
+      const cell = (r) =>
+        `<tr><td${_miAttr(r)}>${r.metric}${r.unit ? `<span class="metric-unit">${r.unit}</span>` : ''}` +
+        `${r.sub ? `<span class="metric-sub">${r.sub}</span>` : ''}</td>` +
+        `<td>${fmtStat(r.mean)}</td><td>${fmtStat(r.max)}</td><td>${fmtStat(r.p98)}</td></tr>`;
+
+      const main = rows.filter(isMainMetric);
+      const detail = rows.filter(r => !isMainMetric(r));
+
+      // 主表按 MAIN_METRICS 的语义顺序排：CPU → 内存 → 帧率 → 网络 → GPU/温度 → 功耗
+      const ORDER = ['系统CPU', '进程CPU', 'FPS', '达帧率', '均帧', '帧耗时标准差', '帧耗时方差', '低帧占比', '1%Low', 'Drop',
+        'FPS≥目标', '稳帧范围', '帧率标准差', '卡顿时长占比',
+        'Jank', 'BigJank', 'SmallJank', 'TinyJank', 'Jank/10min', 'BigJank/10min', 'SmallJank/10min', 'TinyJank/10min',
+        'PSS', '物理内存', 'RSS', '上下文切换',
+        '下行', '上行', 'GPU', 'GPU 温度', '温度', '读 KB/s', '写 KB/s'];
+      main.sort((a, b) => {
+        const ia = ORDER.indexOf(a.raw || a.metric), ib = ORDER.indexOf(b.raw || b.metric);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      });
+
+      let html = main.map(cell).join('');
+      if (detail.length) {
+        html += `<tr class="stats-toggle"><td colspan="4">` +
+          `<button type="button" data-detail-toggle="${tableId}">▾ 展开明细 ${detail.length} 项（内存分项 / 各核心）</button>` +
+          `</td></tr>`;
+        html += detail.map(r => cell(r).replace('<tr>', '<tr class="stats-detail-row" hidden>')).join('');
+      }
+      tb.innerHTML = html;
+      if (window.MetricInfo) MetricInfo.decorate(tb);
+    }
+
+    // 明细折叠：事件委托，一次绑定
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest && e.target.closest('[data-detail-toggle]');
+      if (!btn) return;
+      const tb = document.querySelector(`#${btn.getAttribute('data-detail-toggle')} tbody`);
+      if (!tb) return;
+      const rows = tb.querySelectorAll('.stats-detail-row');
+      const willShow = rows.length && rows[0].hidden;
+      rows.forEach(tr => { tr.hidden = !willShow; });
+      btn.textContent = willShow
+        ? `▴ 收起明细（${rows.length} 项）`
+        : `▾ 展开明细 ${rows.length} 项（内存分项 / 各核心）`;
+    });
+
+    function tableText(tableId) {
+      const rows = [];
+      const t = document.getElementById(tableId);
+      if (!t) return '';
+      const tr = t.querySelectorAll('tr');
+      tr.forEach(row => {
+        const cols = Array.from(row.querySelectorAll('th,td')).map(c => (c.textContent || '').trim());
+        rows.push(cols.join('\t'));
+      });
+      return rows.join('\n');
+    }
+
+    async function copyTable(tableId) {
+      const text = tableText(tableId);
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        window.prompt('复制下面内容：', text);
+      }
+    }
+
+    function zoomToRangeIdx(fromIdx, toIdx) {
+      const charts = Object.values(chartMgr._charts || {});
+      const a = Math.max(0, Math.min(fromIdx, toIdx));
+      const b = Math.max(0, Math.max(fromIdx, toIdx));
+      const firstName = Object.keys(CHART_CONFIGS)[0];
+      const times = chartMgr._data[firstName]?.times || [];
+      const startVal = (times[a] != null) ? times[a] : a;
+      const endVal = (times[b] != null) ? times[b] : b;
+      charts.forEach(ch => {
+        // Prefer setOption to guarantee both inside/slider zoom sync.
+        try {
+          ch.setOption(
+            {
+              dataZoom: [
+                { startValue: startVal, endValue: endVal },
+                { startValue: startVal, endValue: endVal },
+              ],
+            },
+            { notMerge: false }
+          );
+        } catch (_) {
+          try { ch.dispatchAction({ type: 'dataZoom', startValue: startVal, endValue: endVal }); } catch (_) {}
+        }
+      });
+    }
+
+    function resetZoomFull() {
+      const charts = Object.values(chartMgr._charts || {});
+      charts.forEach(ch => {
+        try {
+          ch.setOption(
+            {
+              dataZoom: [
+                { start: 0, end: 100 },
+                { start: 0, end: 100 },
+              ],
+            },
+            { notMerge: false }
+          );
+        } catch (_) {
+          try { ch.dispatchAction({ type: 'dataZoom', start: 0, end: 100 }); } catch (_) {}
+        }
+      });
+    }
+
+    function renderStats() {
+      // global
+      renderTable('tbl-global', buildTableRows(null));
+      // selected
+      if (selection) {
+        const firstName = Object.keys(CHART_CONFIGS)[0];
+        const state = chartMgr._data[firstName];
+        const times = state?.times || [];
+        const fromIdx = Math.max(0, Math.min(selection.fromIdx, selection.toIdx));
+        const toIdx = Math.max(0, Math.max(selection.fromIdx, selection.toIdx));
+        renderTable('tbl-selected', buildTableRows({ fromIdx, toIdx }));
+        const tbl = document.getElementById('tbl-selected');
+        if (tbl) tbl.hidden = false;
+        const hint = document.getElementById('sel-hint');
+        if (hint) hint.textContent = `选中：${times[fromIdx] ?? fromIdx} ~ ${times[toIdx] ?? toIdx}`;
+      } else {
+        renderTable('tbl-selected', []);
+        // 没框选时不显示空表头，避免一大块空白
+        const tbl = document.getElementById('tbl-selected');
+        if (tbl) tbl.hidden = true;
+      }
+    }
+
+    function toIndexFromValue(v, times) {
+      const t = times || [];
+      if (v == null) return null;
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        const idx = Math.max(0, Math.min(t.length - 1, Math.round(v)));
+        return Number.isFinite(idx) ? idx : null;
+      }
+      if (typeof v === 'string' && t.length) {
+        const i = t.indexOf(v);
+        return i >= 0 ? i : null;
+      }
+      return null;
+    }
+
+    function installZoomAsSelection(anyChart, getTimes) {
+      if (!anyChart || typeof anyChart.on !== 'function') return;
+      anyChart.on('dataZoom', (evt) => {
+        const times = typeof getTimes === 'function' ? (getTimes() || []) : [];
+        // evt may provide startValue/endValue or start/end
+        let a = null;
+        let b = null;
+        if (evt && ('startValue' in evt || 'endValue' in evt)) {
+          a = toIndexFromValue(evt.startValue, times);
+          b = toIndexFromValue(evt.endValue, times);
+        }
+        if ((a == null || b == null) && evt && typeof evt.start === 'number' && typeof evt.end === 'number' && times.length) {
+          const from = Math.floor((evt.start / 100) * (times.length - 1));
+          const to = Math.ceil((evt.end / 100) * (times.length - 1));
+          a = Math.max(0, Math.min(times.length - 1, from));
+          b = Math.max(0, Math.min(times.length - 1, to));
+        }
+        if (a == null || b == null) return;
+        selection = { fromIdx: a, toIdx: b };
+        renderStats();
+      });
+    }
+
+    function installMouseDownUpSelection(anyChart, getTimes) {
+      if (!anyChart || typeof anyChart.getZr !== 'function') return;
+      let downIdx = null;
+      const zr = anyChart.getZr();
+
+      function isLeftButton(e) {
+        // zrender event: e.event is the native MouseEvent
+        const ne = e && e.event;
+        if (ne && typeof ne.button === 'number') return ne.button === 0;
+        if (typeof e.which === 'number') return e.which === 1;
+        return true;
+      }
+
+      function indexAtEvent(e) {
+        try {
+          const ne = (e && e.event) ? e.event : e;
+          const x = ne?.offsetX ?? ne?.zrX ?? ne?.x ?? e?.offsetX;
+          const y = ne?.offsetY ?? ne?.zrY ?? ne?.y ?? e?.offsetY;
+          if (typeof x !== 'number' || typeof y !== 'number') return null;
+          const pt = [x, y];
+          const v = anyChart.convertFromPixel({ xAxisIndex: 0 }, pt);
+          if (v == null) return null;
+          // category axis returns label (string) or index (number)
+          const raw = Array.isArray(v) ? v[0] : v;
+          const times = typeof getTimes === 'function' ? (getTimes() || []) : [];
+          return toIndexFromValue(raw, times);
+        } catch {
+          return null;
+        }
+      }
+
+      zr.on('mousedown', (e) => {
+        if (!isLeftButton(e)) return;
+        downIdx = indexAtEvent(e);
+      });
+      zr.on('mouseup', (e) => {
+        if (!isLeftButton(e)) return;
+        const upIdx = indexAtEvent(e);
+        if (downIdx == null || upIdx == null) return;
+        // Only zoom here. Selected-area stats are driven by the zoom event (installZoomAsSelection).
+        zoomToRangeIdx(downIdx, upIdx);
+        downIdx = null;
+      });
+    }
+
+    // hook copy buttons + reset button
+    const btnCG = document.getElementById('btn-copy-global');
+    if (btnCG) btnCG.onclick = () => copyTable('tbl-global');
+    const btnCS = document.getElementById('btn-copy-selected');
+    if (btnCS) btnCS.onclick = () => copyTable('tbl-selected');
+    const btnCT = document.getElementById('btn-copy-tags');
+    if (btnCT) btnCT.onclick = () => copyTable('tbl-tags');
+
+    // Add reset button to topbar-right
+    const topRight = document.querySelector('.topbar-right');
+    if (topRight && !document.getElementById('btn-reset-zoom')) {
+      const btn = document.createElement('button');
+      btn.id = 'btn-reset-zoom';
+      btn.type = 'button';
+      btn.className = 'btn btn-sm';
+      btn.textContent = '恢复范围';
+      btn.title = '恢复全局时间范围（不清除已标记区域）';
+      btn.onclick = () => resetZoomFull();
+      topRight.appendChild(btn);
+    }
+
+    if (category === 'android') {
+      const pts = perf.map((it) => {
+        const cpu = it.cpu || {};
+        const mem = it.mem || {};
+        const net = it.net || {};
+        const bat = it.battery || {};
+        const cores = it.cpuCores || {};
+        const tempRaw = (it.temperature != null) ? it.temperature : (bat.temperature != null ? bat.temperature : null);
+        return {
+          time: it.time || new Date(it.timestamp).toLocaleTimeString(),
+          cpu: { sysCpu: cpu.sysCpu ?? null, procCpu: cpu.procCpu ?? null },
+          mem: {
+            totalPss: a_mem(mem.totalPss),
+            nativeHeap: a_mem(mem.nativeHeap),
+            javaHeap: a_mem(mem.javaHeap),
+            code: a_mem(mem.code),
+            stack: a_mem(mem.stack),
+            graphics: a_mem(mem.graphics),
+            privateOther: a_mem(mem.privateOther),
+            system: a_mem(mem.system),
+          },
+          fps: it.fps ?? null,
+          jank: it.jank ?? null,
+          bigJank: it.bigJank ?? null,
+          smallJank: it.smallJank ?? null,
+          tinyJank: it.tinyJank ?? null,
+          cswitch: it.cswitch ?? null,
+          cpuLimit: it.cpuLimit ?? null,
+          net: { rxKBps: net.rxKBps ?? null, txKBps: net.txKBps ?? null },
+          gpu: it.gpu ?? null,
+          gpuTemp: it.gpuTemp ?? null,
+          temperature: pickTemp(tempRaw, bat.temperature),
+          battery: { currentNow: a_ua_to_ma(bat.currentNow), power: bat.power ?? null, temperature: a_temp(bat.temperature), level: bat.level ?? null },
+          cpuCores: {
+            usage: Array.isArray(cores.usage) ? cores.usage.map(v => (typeof v === 'number' ? v : 0)) : [],
+            freq: Array.isArray(cores.freq) ? cores.freq.map(a_freq).map(v => v == null ? 0 : v) : [],
+          }
+        };
+      });
+      pts.forEach(p => chartMgr.update(p));
+      setText('val-syscpu', fmtN(mean(pts.map(p => p.cpu.sysCpu)), 1));
+      setText('val-proccpu', fmtN(mean(pts.map(p => p.cpu.procCpu)), 1));
+      setText('val-mem', fmtN(mean(pts.map(p => p.mem.totalPss)), 0));
+      setText('val-fps', fmtN(mean(pts.map(p => p.fps)), 0));
+      setText('val-jank', fmtN(mean(pts.map(p => p.jank)), 2));
+      setText('val-bigjank', fmtN(mean(pts.map(p => p.bigJank)), 2));
+      setText('val-net', `${fmtN(mean(pts.map(p => p.net.rxKBps)), 0)}/${fmtN(mean(pts.map(p => p.net.txKBps)), 0)}`);
+      setText('val-gpu', fmtN(mean(pts.map(p => p.gpu)), 0));
+      setText('val-battery', fmtN(mean(pts.map(p => p.battery.level)), 0));
+      setText('val-temp', fmtN(mean(pts.map(p => p.temperature)), 1));
+      annotateMetricCards(pts);
+      renderInsight(pts, category);
+      chartMgr.onReady(() => {
+        const charts = Object.values(chartMgr._charts || {});
+        charts.forEach(ch => ch.group = 'sync');
+        if (charts.length) echarts.connect('sync');
+        const any = charts[0];
+        if (any) {
+          const getTimes = () => chartMgr._data[Object.keys(CHART_CONFIGS)[0]]?.times;
+          installMouseDownUpSelection(any, getTimes);
+          installZoomAsSelection(any, getTimes);
+        }
+        // initial render (global only; selected will update on first zoom/selection)
+        renderStats();
+        finalizeReportView();
+        applyTagBackgroundToCharts();
+        renderTagStats();
+        annotateEmptyCharts();
+      });
+      return;
+    }
+
+    if (category === 'pc') {
+      const numMb = (v) => ((typeof v === 'number' && !isNaN(v)) ? v : null);
+      const pts = perf.map((it) => {
+        const cpu = it.cpu || {};
+        const mem = it.mem || {};
+        const net = it.net || {};
+        const bat = it.battery || {};
+        const cores = it.cpuCores || {};
+        const px = it.pcExtra || {};
+        const tempRaw = (it.temperature != null) ? it.temperature : (bat.temperature != null ? bat.temperature : null);
+        return {
+          time: it.time || new Date(it.timestamp).toLocaleTimeString(),
+          cpu: { sysCpu: cpu.sysCpu ?? null, procCpu: cpu.procCpu ?? null },
+          mem: {
+            totalPss: numMb(mem.totalPss),
+            nativeHeap: numMb(mem.nativeHeap),
+            javaHeap: numMb(mem.javaHeap),
+            code: numMb(mem.code),
+            stack: numMb(mem.stack),
+            graphics: numMb(mem.graphics),
+            privateOther: numMb(mem.privateOther),
+            system: numMb(mem.system),
+          },
+          fps: it.fps ?? null,
+          jank: it.jank ?? null,
+          bigJank: it.bigJank ?? null,
+          smallJank: it.smallJank ?? null,
+          tinyJank: it.tinyJank ?? null,
+          cswitch: it.cswitch ?? null,
+          cpuLimit: it.cpuLimit ?? null,
+          net: { rxKBps: net.rxKBps ?? null, txKBps: net.txKBps ?? null },
+          gpu: it.gpu ?? null,
+          gpuTemp: it.gpuTemp ?? null,
+          temperature: pickTemp(tempRaw, bat.temperature),
+          battery: { currentNow: a_ua_to_ma(bat.currentNow), power: bat.power ?? null, temperature: a_temp(bat.temperature), level: bat.level ?? null },
+          cpuCores: {
+            usage: Array.isArray(cores.usage) ? cores.usage.map(v => (typeof v === 'number' ? v : 0)) : [],
+            freq: Array.isArray(cores.freq) ? cores.freq.map(a_freq).map(v => v == null ? 0 : v) : [],
+          },
+          _diskReadKBps: (typeof px.diskReadKBps === 'number' && !isNaN(px.diskReadKBps)) ? px.diskReadKBps : null,
+          _diskWriteKBps: (typeof px.diskWriteKBps === 'number' && !isNaN(px.diskWriteKBps)) ? px.diskWriteKBps : null,
+        };
+      });
+      pts.forEach(p => chartMgr.update(p));
+      setText('val-syscpu', fmtN(mean(pts.map(p => p.cpu.sysCpu)), 1));
+      setText('val-proccpu', fmtN(mean(pts.map(p => p.cpu.procCpu)), 1));
+      setText('val-mem', fmtN(mean(pts.map(p => p.mem.totalPss)), 0));
+      setText('val-fps', fmtN(mean(pts.map(p => p.fps)), 0));
+      setText('val-jank', fmtN(mean(pts.map(p => p.jank)), 2));
+      setText('val-bigjank', fmtN(mean(pts.map(p => p.bigJank)), 2));
+      setText('val-net', `${fmtN(mean(pts.map(p => p.net.rxKBps)), 0)}/${fmtN(mean(pts.map(p => p.net.txKBps)), 0)}`);
+      setText('val-gpu', fmtN(mean(pts.map(p => p.gpu)), 0));
+      setText('val-battery', fmtN(mean(pts.map(p => p.battery.level)), 0));
+      setText('val-temp', fmtN(mean(pts.map(p => p.temperature)), 1));
+      annotateMetricCards(pts);
+      renderInsight(pts, category);
+      chartMgr.onReady(() => {
+        const charts = Object.values(chartMgr._charts || {});
+        charts.forEach(ch => ch.group = 'sync');
+        if (charts.length) echarts.connect('sync');
+        const any = charts[0];
+        if (any) {
+          const getTimes = () => chartMgr._data[Object.keys(CHART_CONFIGS)[0]]?.times;
+          installMouseDownUpSelection(any, getTimes);
+          installZoomAsSelection(any, getTimes);
+        }
+        renderStats();
+        finalizeReportView();
+        applyTagBackgroundToCharts();
+        renderTagStats();
+        annotateEmptyCharts();
+      });
+      return;
+    }
+
+    if (category === 'ios') {
+      // iOS 原始采样多为累计计数（diskBytesRead/ctxSwitch 等），报表里补算 “/s” 增量字段
+      let _prevTs = null;
+      let _prevDisk = null;   // { r, w }
+      let _prevEvents = null; // { ctx, int, pg }
+      const pts = perf.map((it) => {
+        const ts = (typeof it.timestamp === 'number') ? it.timestamp : Date.parse(it.timestamp);
+        const dtSec = (_prevTs != null && typeof ts === 'number' && !isNaN(ts))
+          ? Math.max(0.001, (ts - _prevTs) / 1000)
+          : 1;
+
+        // Disk KB/s
+        let dr = it._diskReadKBps;
+        let dw = it._diskWriteKBps;
+        const diskR = pickNum(it, ['diskBytesRead','disk_bytes_read','diskReadBytes','disk_read_bytes']);
+        const diskW = pickNum(it, ['diskBytesWritten','disk_bytes_written','diskWriteBytes','disk_write_bytes']);
+        if ((dr == null || dw == null) && _prevDisk && diskR != null && diskW != null) {
+          dr = Math.max(0, (diskR - _prevDisk.r) / 1024 / dtSec);
+          dw = Math.max(0, (diskW - _prevDisk.w) / 1024 / dtSec);
+        }
+
+        // System events /s
+        let cps = it._ctxSwitchPs;
+        let ips = it._intWakeupsPs;
+        let vps = it._vmPageInsPs;
+        const ctx = pickNum(it, ['ctxSwitch','ctx_switch','contextSwitch','context_switch']);
+        const iw  = pickNum(it, ['intWakeups','int_wakeups','interruptWakeups','interrupt_wakeups']);
+        const vm  = pickNum(it, ['vmPageIns','vm_page_ins','pageIns','page_ins']);
+        if ((cps == null || ips == null || vps == null) && _prevEvents && ctx != null) {
+          cps = Math.max(0, (ctx - _prevEvents.ctx) / dtSec);
+          ips = Math.max(0, ((iw || 0) - _prevEvents.int) / dtSec);
+          vps = Math.max(0, ((vm || 0) - _prevEvents.pg) / dtSec);
+        }
+
+        if (typeof ts === 'number' && !isNaN(ts)) _prevTs = ts;
+        if (diskR != null) _prevDisk = { r: diskR, w: diskW || 0 };
+        if (ctx != null) _prevEvents = { ctx: ctx, int: iw || 0, pg: vm || 0 };
+
+        return {
+          time: it.time || (typeof ts === 'number' && !isNaN(ts) ? new Date(ts).toLocaleTimeString() : new Date(it.timestamp).toLocaleTimeString()),
+          cpuUsage: it.cpuUsage ?? null,
+          cpuTotalSystem: it.cpuTotalSystem ?? null,
+          cpuTotalUser: it.cpuTotalUser ?? null,
+          fps: it.fps ?? null,
+          jank: it.jank ?? null,
+          bigjank: (it.bigjank != null) ? it.bigjank : (it.big_jank ?? null),
+          smallJank: (it.smallJank != null) ? it.smallJank : (it.small_jank ?? null),
+          tinyJank: (it.tinyJank != null) ? it.tinyJank : (it.tiny_jank ?? null),
+          cswitch: it.cswitch ?? null,
+          cpuLimit: it.cpuLimit ?? null,
+          stutter: it.stutter ?? null,
+          physFootprint: i_mem(it.physFootprint),
+          memResidentSize: i_mem(it.memResidentSize),
+          memRPrvt: i_mem(it.memRPrvt),
+          memRShrd: i_mem(it.memRShrd),
+          memAnon: i_mem(it.memAnon),
+          memCompressed: i_mem(it.memCompressed),
+          memPurgeable: i_mem(it.memPurgeable),
+          _diskReadKBps: (typeof dr === 'number' && !isNaN(dr)) ? dr : null,
+          _diskWriteKBps: (typeof dw === 'number' && !isNaN(dw)) ? dw : null,
+          _ctxSwitchPs: (typeof cps === 'number' && !isNaN(cps)) ? cps : null,
+          _intWakeupsPs: (typeof ips === 'number' && !isNaN(ips)) ? ips : null,
+          _vmPageInsPs: (typeof vps === 'number' && !isNaN(vps)) ? vps : null,
+          threadCount: it.threadCount ?? it.threads ?? null,
+        };
+      });
+      pts.forEach(p => chartMgr.update(p));
+      setText('val-fps', fmtN(mean(pts.map(p => p.fps)), 0));
+      setText('val-jank', fmtN(mean(pts.map(p => p.jank)), 2));
+      setText('val-big-jank', fmtN(mean(pts.map(p => p.bigjank)), 2));
+      const st = mean(pts.map(p => p.stutter));
+      setText('val-stutter', (typeof st === 'number' && !isNaN(st)) ? (Math.round(st * 10000) / 10000).toFixed(4) : '--');
+      setText('val-cpu', fmtN(mean(pts.map(p => p.cpuUsage)), 1));
+      setText('val-syscpu', fmtN(mean(pts.map(p => p.cpuTotalSystem)), 1));
+      setText('val-mem', fmtN(mean(pts.map(p => p.physFootprint)), 0));
+      setText('val-thread', fmtN(mean(pts.map(p => p.threadCount)), 0));
+      setText('val-disk', fmtN(mean(pts.map(p => p._diskReadKBps)), 0));
+      renderInsight(pts, category);
+      chartMgr.onReady(() => {
+        const charts = Object.values(chartMgr._charts || {});
+        charts.forEach(ch => ch.group = 'sync');
+        if (charts.length) echarts.connect('sync');
+        const any = charts[0];
+        if (any) {
+          const getTimes = () => chartMgr._data[Object.keys(CHART_CONFIGS)[0]]?.times;
+          installMouseDownUpSelection(any, getTimes);
+          installZoomAsSelection(any, getTimes);
+        }
+        renderStats();
+        finalizeReportView();
+        applyTagBackgroundToCharts();
+        renderTagStats();
+      });
+      return;
+    }
+
+    if (category === 'ios_gpu') {
+      const pts = perf.map((it, idx) => {
+        const o = { time: it.time || '', timestamp: g_time_ms(it.timestamp, idx) };
+        for (const [k, v] of Object.entries(it || {})) {
+          if (k === 'timestamp' || k === 'time') continue;
+          if (typeof v !== 'number' || isNaN(v)) continue;
+          if (isBandwidthKey(k)) o[k] = g_bw(v);
+          else if (isPartialRendersKey(k)) o[k] = v;
+          else o[k] = g_ratio(v);
+        }
+        if (!o.time) o.time = isNaN(o.timestamp) ? String(it.timestamp) : new Date(Math.trunc(o.timestamp)).toLocaleTimeString();
+        return o;
+      });
+      pts.forEach(p => chartMgr.update(p));
+      setText('val-alu', fmtN(mean(pts.map(p => p['ALU Utilization'])), 1));
+      setText('val-frag', fmtN(mean(pts.map(p => p['Fragment Occupancy'])), 1));
+      setText('val-vert', fmtN(mean(pts.map(p => p['Vertex Occupancy'])), 1));
+      setText('val-tex', fmtN(mean(pts.map(p => p['Texture Sample Limiter'])), 1));
+      setText('val-rbw', fmtN(mean(pts.map(p => p['GPU Read Bandwidth'])), 3));
+      setText('val-wbw', fmtN(mean(pts.map(p => p['GPU Write Bandwidth'])), 3));
+      renderInsight(pts, category);
+      chartMgr.onReady(() => {
+        const charts = Object.values(chartMgr._charts || {});
+        charts.forEach(ch => ch.group = 'sync');
+        if (charts.length) echarts.connect('sync');
+        const any = charts[0];
+        if (any) {
+          const getTimes = () => chartMgr._data[Object.keys(CHART_CONFIGS)[0]]?.times;
+          installMouseDownUpSelection(any, getTimes);
+          installZoomAsSelection(any, getTimes);
+        }
+        renderStats();
+        finalizeReportView();
+        applyTagBackgroundToCharts();
+        renderTagStats();
+      });
+      return;
+    }
+
+    document.getElementById('root').innerHTML = '<div class="device-info-strip"><div class="device-info-strip-inner"><span class="device-info-text">不支持的 category</span></div></div>';
+  }
+
+  render();
+  if (window.MetricInfo) MetricInfo.decorate(document);
+  </script>
+</body>
+</html>

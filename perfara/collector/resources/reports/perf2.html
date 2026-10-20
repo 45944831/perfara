@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>性能数据</title>
+  <!-- echarts：优先本地（离线可用），缺失回退 CDN，都失败则空实现兜底 -->
+  <script src="echarts.min.js"></script>
+  <script>
+    if (typeof echarts === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"><\/script>');
+    }
+  </script>
+  <script>
+    if (typeof echarts === 'undefined') {
+      window.echarts = {
+        init: function () {
+          return {
+            setOption: function () {}, resize: function () {}, dispose: function () {},
+            on: function () {}, off: function () {}, getDom: function () { return null; },
+            getZr: function () { return { on: function () {} }; }
+          };
+        },
+        connect: function () {},
+        registerTheme: function () {}
+      };
+    }
+  </script>
+  <style>
+    :root {
+      --card-bg: #0f1526;
+      --card-border: #1f2940;
+      --muted: #96a8c8;
+      --primary: #4da3ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background: #0b0f1a;
+      color: #e6eefc;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      gap: 16px;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .aside {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 12px;
+      position: sticky;
+      top: 12px;
+      height: fit-content;
+    }
+    .aside-title { font-weight: 700; margin-bottom: 8px; color: #cfe3ff; }
+    .aside a {
+      display: block;
+      color: #bcd3ff;
+      text-decoration: none;
+      padding: 6px 0;
+    }
+    .aside a:hover { color: #fff; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+    .header-row {
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .pill {
+      background: #10213a;
+      color: #bcd3ff;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+    }
+    .muted { color: var(--muted); font-size: 13px; }
+    .btn {
+      background: var(--primary);
+      color: #081225;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-ghost {
+      background: #1e3a5f;
+      color: #e6eefc;
+      border: 1px solid #2d5080;
+    }
+    .btn-sm { padding: 6px 12px; font-size: 13px; }
+    .stats-section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .stats-section-title { font-weight: 700; font-size: 15px; color: #e6eefc; margin-bottom: 4px; }
+    .stats-table-wrap { overflow: auto; max-height: min(420px, 50vh); }
+    .stats-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .stats-table th, .stats-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--card-border);
+      text-align: left;
+    }
+    .stats-table th:nth-child(n + 3), .stats-table td:nth-child(n + 3) {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .stats-table thead th { color: #cfe3ff; font-weight: 600; }
+    .stats-empty { text-align: center; color: var(--muted); padding: 16px !important; }
+    .group-header { font-weight: 700; margin-bottom: 8px; color: #e6eefc; }
+    .chart-host { width: 100%; user-select: none; }
+    .err { color: #f88; padding: 12px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="card" style="margin: 20px auto 0; max-width: 1400px;">
+      <div class="header-row">
+        <div>
+          <div style="font-weight: 700; font-size: 18px" id="titleName">性能数据</div>
+          <div class="muted" id="titleMeta"></div>
+        </div>
+        <div>
+          <button type="button" class="btn btn-sm btn-ghost" id="btnReset" disabled title="清除框选与缩放，恢复全时间范围">重置范围</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="errBox" class="err" style="display: none; max-width: 1400px; margin: 0 auto;"></div>
+
+    <div class="layout" id="mainLayout" style="display: none">
+      <aside class="aside">
+        <div class="aside-title">分组导航</div>
+        <div id="asideNav"></div>
+      </aside>
+      <section>
+        <div id="statsGlobal" class="card"></div>
+        <div id="statsSelected" class="card"></div>
+        <div id="chartGroups"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="metric-display.js"></script>
+  <script src="ios-gpu-time.js"></script>
+  <script>
+(function () {
+  const CONFIG = {
+    android: {"cpu":["cpu.sysCpu","cpu.procCpu"],"mem":["mem.totalPss"],"memDetail":["mem.nativeHeap","mem.javaHeap","mem.code","mem.stack","mem.graphics","mem.privateOther","mem.system"],"fps":["fps","jank","bigJank"],"net":["net.rxKBps","net.txKBps"],"gpu":["gpu"],"temp":["temperature","battery.temperature"],"current":["battery.currentNow"],"power":["battery.power"],"cpuCores":["cpuCores.usage[*]"],"cpuFreq":["cpuCores.freq[*]"]},
+    ios: {"cpu":["cpuUsage","cpuTotalSystem","cpuTotalUser"],"fps":["fps","jank","bigjank"],"mem":["physFootprint","memResidentSize"],"memdetail":["memRPrvt","memRShrd","memAnon","memCompressed","memPurgeable"],"disk":["_diskReadKBps","_diskWriteKBps"],"events":["_ctxSwitchPs","_intWakeupsPs","_vmPageInsPs"]},
+    ios_gpu: {
+      groups: {"occupancy":["Vertex Occupancy","Fragment Occupancy","Compute Occupancy"],"aluPerf":["ALU Utilization","F32 Utilization","F16 Utilization","ALU Limiter"],"texture":["Texture Sample Utilization","Texture Filtering Limiter","Texture Sample Limiter","Texture Cache Limiter"],"bandwidth":["GPU Read Bandwidth","GPU Write Bandwidth"],"cache":["GPU Last Level Cache Utilization","GPU Last Level Cache Limiter","MMU Utilization","MMU Limiter"],"shader":["Fragment Input Interpolation Limiter","Fragment Input Interpolation Utilization","Threadgroup/Imageblock Load Utilization","Threadgroup/Imageblock Store Utilization"]},
+      low_gpu_groups: {"texture":["texture/*"],"bandwidth":["bandwidth/*"],"compute":["compute/*"],"cache":["cache/*"],"buffer":["buffer/*"],"threadgroup":["threadgroup/*"],"fragment":["fragment/*"]}
+    }
+  };
+
+  const GROUP_ORDER_GPU = ['occupancy','aluPerf','texture','bandwidth','cache','shader','compute','buffer','threadgroup','fragment'];
+  const TITLE_MAP = {
+    cpu: 'CPU', mem: '内存（MB / 概览）', memDetail: '内存明细（MB）', memdetail: '内存明细（MB）',
+    fps: '帧率 / 卡顿', net: '网络', gpu: 'GPU', temp: '温度', current: '电流', power: '功耗',
+    cpuCores: 'CPU 核心占用', cpuFreq: 'CPU 核心频率', disk: '磁盘 I/O', events: '系统事件',
+    occupancy: 'GPU 占用率', aluPerf: 'ALU 性能', texture: '纹理', bandwidth: '带宽（GB/s）',
+    cache: '缓存 & MMU', shader: '着色器 / 插值 / Threadgroup', compute: 'Compute（LowGPU）',
+    buffer: 'Buffer（LowGPU）', threadgroup: 'Threadgroup（LowGPU）', fragment: 'Fragment（LowGPU）'
+  };
+
+  function avg(arr) {
+    const nums = (arr || []).filter(function (v) { return typeof v === 'number' && !isNaN(v); });
+    return nums.length ? nums.reduce(function (a, b) { return a + b; }, 0) / nums.length : null;
+  }
+  function p98(arr) {
+    const nums = (arr || []).filter(function (v) { return typeof v === 'number' && !isNaN(v); }).sort(function (a, b) { return a - b; });
+    if (!nums.length) return null;
+    const idx = Math.min(nums.length - 1, Math.ceil(nums.length * 0.98) - 1);
+    return nums[idx];
+  }
+  function vmax(arr) {
+    const nums = (arr || []).filter(function (v) { return typeof v === 'number' && !isNaN(v); });
+    return nums.length ? Math.max.apply(null, nums) : null;
+  }
+  function statsForPointsInRange(points, t0, t1) {
+    const lo = Math.min(t0, t1), hi = Math.max(t0, t1);
+    const vs = [];
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (!p || p.length < 2) continue;
+      const t = p[0], v = p[1];
+      if (typeof t !== 'number' || isNaN(t)) continue;
+      if (t < lo || t > hi) continue;
+      vs.push(v);
+    }
+    return { mean: avg(vs), p98: p98(vs), max: vmax(vs) };
+  }
+
+  function getSeriesArray(series, path) {
+    if (!series || path == null) return undefined;
+    if (Object.prototype.hasOwnProperty.call(series, path)) return series[path];
+    return path.split('.').reduce(function (acc, k) { return acc != null ? acc[k] : undefined; }, series);
+  }
+  function expandWildcardPath(pattern, series) {
+    if (pattern.indexOf('[*]') === -1) return [pattern];
+    const base = pattern.slice(0, pattern.indexOf('[*]'));
+    const re = new RegExp('^' + base.replace(/\./g, '\\.') + '\\.(\\d+)$');
+    const keys = Object.keys(series || {}).filter(function (k) { return re.test(k); });
+    keys.sort(function (a, b) {
+      const ma = a.match(/\.(\d+)$/); const mb = b.match(/\.(\d+)$/);
+      return (parseInt(ma && ma[1] || '0', 10)) - (parseInt(mb && mb[1] || '0', 10));
+    });
+    return keys;
+  }
+  function resolveMetricPaths(metricPaths, series) {
+    const out = [];
+    for (let i = 0; i < metricPaths.length; i++) {
+      const m = metricPaths[i];
+      if (m.indexOf('[*]') !== -1) {
+        const exp = expandWildcardPath(m, series);
+        for (let j = 0; j < exp.length; j++) out.push(exp[j]);
+      } else if (Array.isArray(getSeriesArray(series, m))) out.push(m);
+    }
+    return out;
+  }
+  function filterGroupsWithData(groupMap, series) {
+    const out = {};
+    for (const g in groupMap) {
+      const resolved = resolveMetricPaths(groupMap[g], series);
+      if (resolved.length) out[g] = resolved;
+    }
+    return out;
+  }
+  function collectLowGpuPattern(seriesKeys, pattern) {
+    if (pattern.slice(-2) === '/*') {
+      const prefix = pattern.slice(0, -1);
+      return seriesKeys.filter(function (k) { return k.indexOf(prefix) === 0; });
+    }
+    return seriesKeys.indexOf(pattern) >= 0 ? [pattern] : [];
+  }
+  function buildIosGpuMetricGroups(series, cfg) {
+    const groupsDef = cfg.groups || {};
+    const lowGpu = cfg.low_gpu_groups || {};
+    const seriesKeys = Object.keys(series || {});
+    const merged = {};
+    for (const gid in groupsDef) {
+      const names = groupsDef[gid];
+      const keys = names.filter(function (k) { return seriesKeys.indexOf(k) >= 0; });
+      if (keys.length) merged[gid] = keys.slice();
+    }
+    for (const gid in lowGpu) {
+      const patterns = lowGpu[gid];
+      const matched = [];
+      for (let p = 0; p < patterns.length; p++) {
+        const m = collectLowGpuPattern(seriesKeys, patterns[p]);
+        for (let i = 0; i < m.length; i++) if (matched.indexOf(m[i]) < 0) matched.push(m[i]);
+      }
+      if (!matched.length) continue;
+      if (!merged[gid]) merged[gid] = [];
+      for (let i = 0; i < matched.length; i++) {
+        if (merged[gid].indexOf(matched[i]) < 0) merged[gid].push(matched[i]);
+      }
+    }
+    for (const gid in merged) merged[gid].sort();
+    const ordered = {};
+    for (let i = 0; i < GROUP_ORDER_GPU.length; i++) {
+      const g = GROUP_ORDER_GPU[i];
+      if (merged[g] && merged[g].length) ordered[g] = merged[g];
+    }
+    for (const gid in merged) if (!ordered[gid]) ordered[gid] = merged[gid];
+    return ordered;
+  }
+  function formatSeriesLabel(path) {
+    if (/^cpuCores\.usage\.\d+$/.test(path)) return 'Core ' + (path.match(/(\d+)$/) || ['', '?'])[1] + ' usage';
+    if (/^cpuCores\.freq\.\d+$/.test(path)) return 'Core ' + (path.match(/(\d+)$/) || ['', '?'])[1] + ' freq';
+    return path;
+  }
+  function fmtStat(cat, path, n) {
+    if (typeof MetricDisplay === 'undefined') {
+      if (n === null || n === undefined) return '-';
+      const v = Math.round(n * 1000) / 1000;
+      return isNaN(v) ? '-' : String(v);
+    }
+    return MetricDisplay.formatStatWithUnit(cat, path, n);
+  }
+
+  /** 与后端 parsers.py 对齐，得到 { timestamp, series, meta } */
+  function parsePayloadToBlob(payload) {
+    const device = payload.device || {};
+    const perf = payload.perf;
+    const cat = (device.category || payload.category || '').toLowerCase();
+    if (!Array.isArray(perf) || !perf.length) throw new Error('perf 必须为非空数组');
+    const timestamps = [];
+    const series = {};
+
+    function ensureArr(key) {
+      if (!series[key]) series[key] = [];
+    }
+
+    if (cat === 'android') {
+      for (let i = 0; i < perf.length; i++) {
+        const it = perf[i];
+        timestamps.push(it.timestamp);
+        const cpu = it.cpu || {}, mem = it.mem || {}, net = it.net || {}, battery = it.battery || {}, cores = it.cpuCores || {};
+        ensureArr('cpu.sysCpu'); ensureArr('cpu.procCpu'); ensureArr('mem.totalPss');
+        ['mem.nativeHeap','mem.javaHeap','mem.code','mem.stack','mem.graphics','mem.privateOther','mem.system'].forEach(function (k) { ensureArr(k); });
+        ['fps','jank','bigJank','gpu'].forEach(function (k) { ensureArr(k); });
+        ensureArr('net.rxKBps'); ensureArr('net.txKBps'); ensureArr('temperature');
+        ensureArr('battery.currentNow'); ensureArr('battery.power');
+        series['cpu.sysCpu'].push(cpu.sysCpu);
+        series['cpu.procCpu'].push(cpu.procCpu);
+        series['mem.totalPss'].push(mem.totalPss);
+        series['mem.nativeHeap'].push(mem.nativeHeap);
+        series['mem.javaHeap'].push(mem.javaHeap);
+        series['mem.code'].push(mem.code);
+        series['mem.stack'].push(mem.stack);
+        series['mem.graphics'].push(mem.graphics);
+        series['mem.privateOther'].push(mem.privateOther);
+        series['mem.system'].push(mem.system);
+        series['fps'].push(it.fps);
+        series['jank'].push(it.jank);
+        series['bigJank'].push(it.bigJank);
+        series['net.rxKBps'].push(net.rxKBps);
+        series['net.txKBps'].push(net.txKBps);
+        series['gpu'].push(it.gpu);
+        series['temperature'].push(it.temperature != null ? it.temperature : battery.temperature);
+        series['battery.currentNow'].push(battery.currentNow);
+        series['battery.power'].push(battery.power);
+        const usage = cores.usage || [];
+        for (let j = 0; j < usage.length; j++) {
+          const key = 'cpuCores.usage.' + j;
+          ensureArr(key);
+          series[key].push(usage[j]);
+        }
+        const freq = cores.freq || [];
+        for (let j = 0; j < freq.length; j++) {
+          const key = 'cpuCores.freq.' + j;
+          ensureArr(key);
+          series[key].push(freq[j]);
+        }
+      }
+    } else if (cat === 'ios') {
+      let prev_ts_ms = null, prev_disk_r = null, prev_disk_w = null, prev_ctx = null, prev_wake = null, prev_vm = null;
+      const keys = ['cpuUsage','cpuTotalSystem','cpuTotalUser','fps','jank','bigjank','physFootprint','memResidentSize','memRPrvt','memRShrd','memAnon','memCompressed','memPurgeable','_diskReadKBps','_diskWriteKBps','_ctxSwitchPs','_intWakeupsPs','_vmPageInsPs'];
+      keys.forEach(function (k) { ensureArr(k); });
+      for (let i = 0; i < perf.length; i++) {
+        const it = perf[i];
+        const ts = it.timestamp;
+        timestamps.push(ts);
+        let dt_sec = null;
+        if (prev_ts_ms != null && ts != null) {
+          const d = (Number(ts) - Number(prev_ts_ms)) / 1000;
+          if (d > 0) dt_sec = d;
+        }
+        prev_ts_ms = ts;
+        series['cpuUsage'].push(it.cpuUsage);
+        series['cpuTotalSystem'].push(it.cpuTotalSystem);
+        series['cpuTotalUser'].push(it.cpuTotalUser);
+        series['fps'].push(it.fps);
+        series['jank'].push(it.jank);
+        let bj = it.big_jank;
+        if (bj == null) bj = it.bigjank;
+        series['bigjank'].push(bj);
+        series['physFootprint'].push(it.physFootprint);
+        series['memResidentSize'].push(it.memResidentSize);
+        series['memRPrvt'].push(it.memRPrvt);
+        series['memRShrd'].push(it.memRShrd);
+        series['memAnon'].push(it.memAnon);
+        series['memCompressed'].push(it.memCompressed);
+        series['memPurgeable'].push(it.memPurgeable);
+        let dr = it._diskReadKBps, dw = it._diskWriteKBps;
+        const dbr = it.diskBytesRead, dbw = it.diskBytesWritten;
+        if (dr == null && prev_disk_r != null && dbr != null && dt_sec) dr = (dbr - prev_disk_r) / 1024 / dt_sec;
+        if (dw == null && prev_disk_w != null && dbw != null && dt_sec) dw = (dbw - prev_disk_w) / 1024 / dt_sec;
+        series['_diskReadKBps'].push(dr);
+        series['_diskWriteKBps'].push(dw);
+        if (dbr != null) prev_disk_r = dbr;
+        if (dbw != null) prev_disk_w = dbw;
+        let cps = it._ctxSwitchPs, ips = it._intWakeupsPs, vps = it._vmPageInsPs;
+        const cs = it.ctxSwitch, iw = it.intWakeups, vm = it.vmPageIns;
+        if (cps == null && cs != null && prev_ctx != null && dt_sec) cps = (cs - prev_ctx) / dt_sec;
+        if (ips == null && iw != null && prev_wake != null && dt_sec) ips = (iw - prev_wake) / dt_sec;
+        if (vps == null && vm != null && prev_vm != null && dt_sec) vps = (vm - prev_vm) / dt_sec;
+        series['_ctxSwitchPs'].push(cps);
+        series['_intWakeupsPs'].push(ips);
+        series['_vmPageInsPs'].push(vps);
+        if (cs != null) prev_ctx = cs;
+        if (iw != null) prev_wake = iw;
+        if (vm != null) prev_vm = vm;
+      }
+    } else if (cat === 'ios_gpu') {
+      const numericKeys = new Set();
+      for (let i = 0; i < perf.length; i++) {
+        const it = perf[i];
+        for (const k in it) {
+          if (k === 'timestamp' || k === 'time') continue;
+          const v = it[k];
+          if (typeof v === 'number') numericKeys.add(k);
+        }
+      }
+      numericKeys.forEach(function (k) { ensureArr(k); });
+      for (let i = 0; i < perf.length; i++) {
+        const it = perf[i];
+        var ts = it.timestamp;
+        if (typeof ts === 'number') {
+          var t = ts;
+          if (Number.isInteger(t)) t = t + i * 1e-3;
+          timestamps.push(t);
+        } else {
+          timestamps.push(ts);
+        }
+        numericKeys.forEach(function (k) {
+          series[k].push(it[k]);
+        });
+      }
+    } else {
+      throw new Error('不支持的 category: ' + cat);
+    }
+    return { timestamp: timestamps, series: series, meta: { category: cat } };
+  }
+
+  function timeExtent(tsList, category) {
+    const cat = (category || '').toLowerCase();
+    const IG = typeof IosGpuTime !== 'undefined' ? IosGpuTime : null;
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < tsList.length; i++) {
+      const t = tsList[i];
+      const n = IG ? IG.resolveChartTimeMs(cat, t, i) : (typeof t === 'number' ? t : Date.parse(t));
+      if (!isNaN(n)) { min = Math.min(min, n); max = Math.max(max, n); }
+    }
+    if (!isFinite(min)) return [0, 0];
+    return [min, max];
+  }
+
+  function buildGroupsToPlot(category, series) {
+    const c = category.toLowerCase();
+    if (c === 'android') return filterGroupsWithData(CONFIG.android, series);
+    if (c === 'ios') return filterGroupsWithData(CONFIG.ios, series);
+    if (c === 'ios_gpu') return buildIosGpuMetricGroups(series, CONFIG.ios_gpu);
+    return {};
+  }
+
+  function buildSeries(metricPaths, groupId, root, category) {
+    const ts = root.timestamp || [];
+    const seriesNode = root.series || {};
+    const cat = (category || '').toLowerCase();
+    const lines = [];
+    const MD = typeof MetricDisplay !== 'undefined' ? MetricDisplay : null;
+    for (let i = 0; i < metricPaths.length; i++) {
+      const path = metricPaths[i];
+      const values = getSeriesArray(seriesNode, path);
+      if (!Array.isArray(values)) continue;
+      const points = [];
+      for (let j = 0; j < Math.min(ts.length, values.length); j++) {
+        const t = ts[j], v = values[j];
+        const tNum = (typeof IosGpuTime !== 'undefined')
+          ? IosGpuTime.resolveChartTimeMs(cat, t, j)
+          : (typeof t === 'number' ? t : Date.parse(t));
+        if (isNaN(tNum)) continue;
+        if (v === null || v === undefined) continue;
+        const dv = MD ? MD.convertToDisplayValue(cat, path, v) : v;
+        if (dv === null || dv === undefined || (typeof dv === 'number' && isNaN(dv))) continue;
+        points.push([tNum, dv]);
+      }
+      if (!points.length) continue;
+      var chartName = formatSeriesLabel(path);
+      if (typeof MetricDisplay !== 'undefined') {
+        chartName = MetricDisplay.formatSeriesLabelForChart(cat, path, chartName);
+      }
+      lines.push({ name: chartName, path: path, data: points });
+    }
+    return lines;
+  }
+
+  function buildStatsRows(root, groupsToPlot, t0, t1, category) {
+    const ts = root.timestamp || [];
+    const seriesNode = root.series || {};
+    const cat = (category || '').toLowerCase();
+    const rows = [];
+    const MD = typeof MetricDisplay !== 'undefined' ? MetricDisplay : null;
+    for (const group in groupsToPlot) {
+      const paths = groupsToPlot[group];
+      for (let i = 0; i < paths.length; i++) {
+        const path = paths[i];
+        const values = getSeriesArray(seriesNode, path);
+        if (!Array.isArray(values)) continue;
+        const points = [];
+        for (let j = 0; j < Math.min(ts.length, values.length); j++) {
+          const t = ts[j], v = values[j];
+          const tNum = (typeof IosGpuTime !== 'undefined')
+            ? IosGpuTime.resolveChartTimeMs(cat, t, j)
+            : (typeof t === 'number' ? t : Date.parse(t));
+          if (isNaN(tNum)) continue;
+          if (v === null || v === undefined) continue;
+          const dv = MD ? MD.convertToDisplayValue(cat, path, v) : v;
+          if (dv === null || dv === undefined || (typeof dv === 'number' && isNaN(dv))) continue;
+          points.push([tNum, dv]);
+        }
+        if (!points.length) continue;
+        const st = statsForPointsInRange(points, t0, t1);
+        var rowLabel = formatSeriesLabel(path);
+        if (typeof MetricDisplay !== 'undefined') {
+          rowLabel = MetricDisplay.formatSeriesLabelForChart(cat, path, rowLabel);
+        }
+        rows.push({
+          groupTitle: TITLE_MAP[group] || group,
+          metricLabel: rowLabel,
+          path: path,
+          mean: st.mean, p98: st.p98, max: st.max
+        });
+      }
+    }
+    return rows;
+  }
+
+  function formatStatsClipboardBlock(title, rangeLine, rows, category) {
+    const cat = (category || '').toLowerCase();
+    let s = title + '\n' + rangeLine + '\n\n分组\t指标\t均值\tP98\t峰值\n';
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      s += r.groupTitle + '\t' + r.metricLabel + '\t' + fmtStat(cat, r.path, r.mean) + '\t' + fmtStat(cat, r.path, r.p98) + '\t' + fmtStat(cat, r.path, r.max) + '\n';
+    }
+    return s;
+  }
+
+  let blob = null;
+  let groupsToPlot = {};
+  let xRangeMs = null;
+  let charts = [];
+  let connectId = 'perf-standalone';
+  let dataCategory = '';
+
+  function renderStats() {
+    const ext = timeExtent(blob.timestamp, dataCategory);
+    const cat = dataCategory;
+    const globalRows = buildStatsRows(blob, groupsToPlot, ext[0], ext[1], cat);
+    const sel = xRangeMs;
+    const selectedRows = sel ? buildStatsRows(blob, groupsToPlot, sel.min, sel.max, cat) : [];
+
+    const gHint = (typeof IosGpuTime !== 'undefined')
+      ? ('基于全量采样时间：' + IosGpuTime.formatChartTimeHint(ext[0], cat) + ' — ' + IosGpuTime.formatChartTimeHint(ext[1], cat))
+      : ('基于全量采样时间：' + new Date(ext[0]).toLocaleString() + ' — ' + new Date(ext[1]).toLocaleString());
+    document.getElementById('statsGlobal').innerHTML =
+      '<div class="stats-section-head"><div><div class="stats-section-title">全局统计</div><div class="muted">' + gHint + '</div></div>' +
+      '<button type="button" class="btn btn-sm" id="copyG">复制</button></div>' +
+      '<div class="stats-table-wrap"><table class="stats-table"><thead><tr><th>分组</th><th>指标</th><th>均值</th><th>P98</th><th>峰值</th></tr></thead><tbody>' +
+      globalRows.map(function (r) {
+        return '<tr><td>' + esc(r.groupTitle) + '</td><td>' + esc(r.metricLabel) + '</td><td>' + fmtStat(dataCategory, r.path, r.mean) + '</td><td>' + fmtStat(dataCategory, r.path, r.p98) + '</td><td>' + fmtStat(dataCategory, r.path, r.max) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+
+    const sHint = sel
+      ? ((typeof IosGpuTime !== 'undefined')
+        ? ('框选时间：' + IosGpuTime.formatChartTimeHint(sel.min, cat) + ' — ' + IosGpuTime.formatChartTimeHint(sel.max, cat))
+        : ('框选时间：' + new Date(sel.min).toLocaleString() + ' — ' + new Date(sel.max).toLocaleString()))
+      : '尚未框选时间范围';
+    document.getElementById('statsSelected').innerHTML =
+      '<div class="stats-section-head"><div><div class="stats-section-title">选中区域统计</div><div class="muted">' + sHint + '</div></div>' +
+      '<button type="button" class="btn btn-sm" id="copyS" ' + (!sel ? 'disabled' : '') + '>复制</button></div>' +
+      '<div class="stats-table-wrap"><table class="stats-table"><thead><tr><th>分组</th><th>指标</th><th>均值</th><th>P98</th><th>峰值</th></tr></thead><tbody>' +
+      (sel && selectedRows.length
+        ? selectedRows.map(function (r) {
+            return '<tr><td>' + esc(r.groupTitle) + '</td><td>' + esc(r.metricLabel) + '</td><td>' + fmtStat(dataCategory, r.path, r.mean) + '</td><td>' + fmtStat(dataCategory, r.path, r.p98) + '</td><td>' + fmtStat(dataCategory, r.path, r.max) + '</td></tr>';
+          }).join('')
+        : '<tr><td colspan="5" class="stats-empty">暂无选中区域。</td></tr>') +
+      '</tbody></table></div>';
+
+    document.getElementById('copyG').onclick = function () {
+      navigator.clipboard.writeText(formatStatsClipboardBlock('【全局统计】', gHint, globalRows, dataCategory));
+    };
+    document.getElementById('copyS').onclick = function () {
+      if (!sel) return;
+      navigator.clipboard.writeText(formatStatsClipboardBlock('【选中区域统计】', sHint, selectedRows, dataCategory));
+    };
+  }
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function applyXRange(chart, range) {
+    if (!chart) return;
+    if (!range || range.min == null || range.max == null) {
+      chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+    } else {
+      chart.dispatchAction({ type: 'dataZoom', xAxisIndex: 0, startValue: range.min, endValue: range.max });
+    }
+  }
+
+  function bindChartInteraction(chart, onSelect, onReset) {
+    let applying = false;
+    const zr = chart.getZr();
+    let drag = null;
+    function down(e) {
+      try {
+        if (!chart.containPixel({ gridIndex: 0 }, [e.offsetX, e.offsetY])) return;
+      } catch (er) { return; }
+      drag = { x0: e.offsetX };
+    }
+    function up(e) {
+      if (!drag) return;
+      const x0 = drag.x0;
+      drag = null;
+      if (Math.abs(e.offsetX - x0) < 8) return;
+      let t0, t1;
+      try {
+        const a = chart.convertFromPixel({ gridIndex: 0 }, [Math.min(x0, e.offsetX), e.offsetY]);
+        const b = chart.convertFromPixel({ gridIndex: 0 }, [Math.max(x0, e.offsetX), e.offsetY]);
+        t0 = a && a[0]; t1 = b && b[0];
+      } catch (er) { return; }
+      if (typeof t0 !== 'number' || typeof t1 !== 'number' || isNaN(t0) || isNaN(t1)) return;
+      onSelect({ min: Math.min(t0, t1), max: Math.max(t0, t1) });
+    }
+    function dbl(e) {
+      try {
+        if (!chart.containPixel({ gridIndex: 0 }, [e.offsetX, e.offsetY])) return;
+      } catch (er) { return; }
+      onReset();
+    }
+    zr.on('mousedown', down);
+    zr.on('mouseup', up);
+    zr.on('dblclick', dbl);
+    chart.on('dataZoom', function () {
+      if (applying) return;
+      try {
+        const axis = chart.getModel().getComponent('xAxis', 0);
+        const extent = axis.axis.scale.getExtent();
+        const lo = extent[0], hi = extent[1];
+        if (typeof lo !== 'number' || typeof hi !== 'number') return;
+        onSelect({ min: Math.min(lo, hi), max: Math.max(lo, hi) });
+      } catch (er) {}
+    });
+    return {
+      setApplying: function (v) { applying = v; },
+      dispose: function () {
+        zr.off('mousedown', down);
+        zr.off('mouseup', up);
+        zr.off('dblclick', dbl);
+      }
+    };
+  }
+
+  function renderCharts() {
+    charts.forEach(function (c) {
+      if (c.chart) c.chart.dispose();
+      if (c.handlers && c.handlers.dispose) c.handlers.dispose();
+    });
+    charts = [];
+    const container = document.getElementById('chartGroups');
+    container.innerHTML = '';
+    const groupKeys = Object.keys(groupsToPlot);
+    for (let gi = 0; gi < groupKeys.length; gi++) {
+      const group = groupKeys[gi];
+      const paths = groupsToPlot[group];
+      const seriesList = buildSeries(paths, group, blob, dataCategory);
+      if (!seriesList.length) continue;
+      const h = paths.length <= 3 ? 280 : paths.length <= 6 ? 320 : 360;
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.id = 'grp-' + group;
+      card.innerHTML = '<div class="group-header">' + esc(TITLE_MAP[group] || group) + '</div><div class="chart-host" style="height:' + h + 'px"></div>';
+      container.appendChild(card);
+      const el = card.querySelector('.chart-host');
+      const chart = echarts.init(el, null, { renderer: 'canvas', group: connectId });
+      const isIosGpu = (dataCategory || '').toLowerCase() === 'ios_gpu';
+      const xAxisOpt = isIosGpu && typeof IosGpuTime !== 'undefined'
+        ? {
+            type: 'time',
+            axisLabel: {
+              formatter: function (value) {
+                return typeof value === 'number' ? IosGpuTime.formatIosGpuTimeLabel(value) : String(value);
+              }
+            }
+          }
+        : { type: 'time' };
+      chart.setOption({
+        darkMode: true,
+        tooltip: {
+          trigger: 'axis',
+          formatter: function (params) {
+            const arr = Array.isArray(params) ? params : [params];
+            if (!arr.length) return '';
+            const cat = dataCategory;
+            const lines = arr.map(function (item) {
+              const idx = item.seriesIndex;
+              const s = seriesList[idx];
+              const path = s && s.path;
+              const val = item.value && item.value.length > 1 ? item.value[1] : item.value;
+              const text = (typeof MetricDisplay !== 'undefined')
+                ? MetricDisplay.formatTooltipValue(cat, path, val)
+                : String(val);
+              return item.marker + item.seriesName + ': ' + text;
+            });
+            const t0 = arr[0] && arr[0].axisValue;
+            var timeLine = '';
+            if (t0 != null) {
+              timeLine = (isIosGpu && typeof IosGpuTime !== 'undefined' && typeof t0 === 'number')
+                ? (IosGpuTime.formatIosGpuTimeLabel(t0) + '<br/>')
+                : (String(t0) + '<br/>');
+            }
+            return timeLine + lines.join('<br/>');
+          }
+        },
+        legend: { top: 24, textStyle: { color: '#bcd3ff' } },
+        grid: { left: 48, right: 24, top: 56, bottom: 52 },
+        xAxis: xAxisOpt,
+        yAxis: { type: 'value', scale: true },
+        dataZoom: [
+          { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+          { type: 'slider', xAxisIndex: 0, height: 22, bottom: 8, filterMode: 'none' }
+        ],
+        series: seriesList.map(function (s) {
+          return { type: 'line', name: s.name, showSymbol: false, data: s.data };
+        })
+      });
+      const handlers = bindChartInteraction(chart, function (range) {
+        const ext = timeExtent(blob.timestamp, dataCategory);
+        const full = ext[1] - ext[0];
+        if (full > 0) {
+          const sel = range.max - range.min;
+          if (sel / full >= 0.995) { xRangeMs = null; }
+          else { xRangeMs = { min: range.min, max: range.max }; }
+        } else {
+          xRangeMs = { min: range.min, max: range.max };
+        }
+        syncAllCharts();
+        renderStats();
+        document.getElementById('btnReset').disabled = !xRangeMs;
+      }, function () {
+        xRangeMs = null;
+        syncAllCharts();
+        renderStats();
+        document.getElementById('btnReset').disabled = true;
+      });
+      charts.push({ chart: chart, handlers: handlers });
+      handlers.setApplying(true);
+      applyXRange(chart, xRangeMs);
+      handlers.setApplying(false);
+    }
+  }
+
+  function syncAllCharts() {
+    charts.forEach(function (c) {
+      if (c.handlers && c.handlers.setApplying) c.handlers.setApplying(true);
+      applyXRange(c.chart, xRangeMs);
+      setTimeout(function () {
+        if (c.handlers && c.handlers.setApplying) c.handlers.setApplying(false);
+      }, 0);
+    });
+  }
+
+  function init() {
+    const errBox = document.getElementById('errBox');
+    try {
+      if (typeof data === 'undefined') throw new Error('未加载数据（需先引入脚本并定义 data）');
+      if (!data || !data.device || !Array.isArray(data.perf)) throw new Error('数据须包含 device 与 perf 数组');
+      blob = parsePayloadToBlob(data);
+    } catch (e) {
+      errBox.style.display = 'block';
+      errBox.textContent = '解析失败: ' + e.message;
+      return;
+    }
+    const cat = (data.device.category || data.category || '').toLowerCase();
+    dataCategory = cat;
+    const dev = data.device || {};
+    document.getElementById('titleName').textContent = '性能数据';
+    (function () {
+      var ts = data.perf[0] && data.perf[0].timestamp;
+      var parts = [];
+      if (ts != null) {
+        var d = new Date(typeof ts === 'number' && ts > 1e12 ? ts : ts);
+        if (!isNaN(d.getTime())) {
+          var y = d.getFullYear();
+          var m = String(d.getMonth() + 1).padStart(2, '0');
+          var day = String(d.getDate()).padStart(2, '0');
+          parts.push(y + '-' + m + '-' + day);
+          parts.push(d.toLocaleTimeString());
+        }
+      }
+      if (cat) parts.push(cat);
+      if (dev.name) parts.push(dev.name);
+      document.getElementById('titleMeta').textContent = parts.join(' · ');
+    })();
+    groupsToPlot = buildGroupsToPlot(cat, blob.series);
+    const gkeys = Object.keys(groupsToPlot);
+    document.getElementById('asideNav').innerHTML = gkeys.map(function (g) {
+      return '<a href="#grp-' + g + '">' + esc(TITLE_MAP[g] || g) + '</a>';
+    }).join('');
+    document.getElementById('mainLayout').style.display = '';
+    xRangeMs = null;
+    renderStats();
+    renderCharts();
+    document.getElementById('btnReset').onclick = function () {
+      xRangeMs = null;
+      syncAllCharts();
+      renderStats();
+      document.getElementById('btnReset').disabled = true;
+    };
+    document.getElementById('btnReset').disabled = true;
+    window.addEventListener('resize', function () {
+      charts.forEach(function (c) { c.chart && c.chart.resize(); });
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+  </script>
+</body>
+</html>

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>Perfara离线版 · iPhone GPU</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ═══ TOP BAR ════════════════════════════════════════════════════════════ -->
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="logo-icon">⚡</span>
+    <select id="sel-platform" class="logo-select">
+      <option value="android">android</option>
+      <option value="iphone">Perf-iPhone</option>
+      <option value="iphone-gpu" selected>Perf-iPhoneGpu</option>
+      <option value="pc">PC</option>
+    </select>
+  </div>
+
+  <div class="topbar-controls">
+    <div class="control-group">
+      <label>设备</label>
+      <select id="sel-device"><option value="">-- 检测设备 --</option></select>
+      <button id="btn-refresh" class="btn btn-sm" title="刷新设备列表">↺</button>
+    </div>
+
+    <div class="control-group control-group--ios-bundle">
+      <div class="control-group-row">
+        <label>搜索</label>
+        <input id="inp-app-search" type="text" placeholder="应用名 / 包名" spellcheck="false" autocomplete="off" />
+        <label>Bundle ID</label>
+        <select id="sel-bundle" size="1"><option value="">-- 选择应用 --</option></select>
+        <span id="ios-apps-loading" class="ios-apps-loading" hidden aria-label="加载中"></span>
+      </div>
+      <span class="ios-bundle-hint" title="需先在设备上开启开发者相关能力">需要开启开发者模式。爱思助手：工具箱 → 安装移动端 → 开启高级功能</span>
+    </div>
+
+    <div class="control-group btns">
+      <button id="btn-start" class="btn btn-primary">▶ 开始</button>
+      <span id="start-hint" class="start-hint" hidden></span>
+      <button id="btn-stop"  class="btn btn-danger" disabled>■ 停止</button>
+      <button id="btn-tag-scene" class="btn btn-sm" disabled>开始标记</button>
+      <button id="btn-export-csv"  class="btn btn-export" disabled>↓ CSV</button>
+      <button id="btn-export-json" class="btn btn-export" disabled>↓ JSON</button>
+      <span id="prep-hint" class="prep-hint prep-hint--json" hidden></span>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <span id="activation-status" class="activation-status activation-status--warn"></span>
+    <button type="button" id="btn-activation" class="btn btn-sm">激活</button>
+    <button type="button" id="btn-screen-continuous" class="btn btn-sm" hidden title="连续截图（待实现）">连续截图</button>
+    <button type="button" id="btn-open-library" class="btn btn-sm" title="打开本地报告库：查看历史报告并对比">报告库</button>
+    <button type="button" id="btn-metric-settings" class="btn btn-sm" title="选择本次要采集的参数，默认全选">⚙ 采集参数</button>
+    <span id="status-badge" class="badge idle">待机</span>
+    <span id="elapsed" class="elapsed"></span>
+  </div>
+</header>
+
+<div id="device-info-bar" class="device-info-strip" hidden>
+  <div class="device-info-strip-inner">
+    <span id="device-info-text" class="device-info-text"></span>
+    <div id="device-report-section" class="device-report-section" hidden>
+      <span class="device-report-label">本地报告</span>
+      <span class="report-path" id="report-path-hint" title="">…</span>
+      <button type="button" id="btn-open-report" class="btn btn-sm" disabled title="用默认浏览器打开 reports/perf.html">打开本地报告</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ STAT CARDS ══════════════════════════════════════════════════════════ -->
+<section class="cards">
+  <div class="card" id="card-alu" data-metric="gpu">
+    <div class="card-label">ALU 利用率</div>
+    <div class="card-value" id="val-alu">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-frag" data-metric="gpu">
+    <div class="card-label">Fragment 占用</div>
+    <div class="card-value" id="val-frag">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-vert" data-metric="gpu">
+    <div class="card-label">Vertex 占用</div>
+    <div class="card-value" id="val-vert">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-tex" data-metric="gpu">
+    <div class="card-label">纹理采样限制</div>
+    <div class="card-value" id="val-tex">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-rbw" data-metric="gpu">
+    <div class="card-label">GPU 读带宽</div>
+    <div class="card-value" id="val-rbw">--</div>
+    <div class="card-unit">GB/s</div>
+  </div>
+  <div class="card" id="card-wbw" data-metric="gpu">
+    <div class="card-label">GPU 写带宽</div>
+    <div class="card-value" id="val-wbw">--</div>
+    <div class="card-unit">GB/s</div>
+  </div>
+</section>
+
+<!-- ═══ CHARTS GRID ══════════════════════════════════════════════════════════ -->
+<section class="charts-grid">
+  <div class="chart-wrap" data-metric="gpu">
+    <div class="chart-title">GPU 占用率 (%)</div>
+    <div id="chart-occupancy" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="gpu">
+    <div class="chart-title">ALU 性能 (%)</div>
+    <div id="chart-alu-perf" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="gpu">
+    <div class="chart-title">纹理性能 (%)</div>
+    <div id="chart-texture" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="gpu">
+    <div class="chart-title">GPU 内存带宽</div>
+    <div id="chart-bandwidth" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="gpu">
+    <div class="chart-title">缓存 & MMU (%)</div>
+    <div id="chart-cache" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="gpu">
+    <div class="chart-title">着色器 & 插值 (%)</div>
+    <div id="chart-shader" class="chart"></div>
+  </div>
+</section>
+
+<!-- ═══ INFO CARDS ════════════════════════════════════════════════════════════ -->
+<section class="cards" style="margin-top:0">
+  <div class="card" id="card-f32" data-metric="gpu">
+    <div class="card-label">F32 利用率</div>
+    <div class="card-value" id="val-f32">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-f16" data-metric="gpu">
+    <div class="card-label">F16 利用率</div>
+    <div class="card-value" id="val-f16">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-llc" data-metric="gpu">
+    <div class="card-label">末级缓存利用率</div>
+    <div class="card-value" id="val-llc">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-mmu" data-metric="gpu">
+    <div class="card-label">MMU 限制器</div>
+    <div class="card-value" id="val-mmu">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-partial" data-metric="gpu">
+    <div class="card-label">部分渲染</div>
+    <div class="card-value" id="val-partial">--</div>
+    <div class="card-unit">次</div>
+  </div>
+</section>
+
+<!-- ═══ LOG PANEL ═══════════════════════════════════════════════════════════ -->
+<div class="log-panel">
+  <div class="log-header">
+    <div class="log-header-left">
+      <span>日志</span>
+      <label class="log-toggle" title="取消勾选可隐藏下方日志，设置保存在本机">
+        <input type="checkbox" id="chk-show-log" checked /> 显示日志
+      </label>
+    </div>
+    <button id="btn-clear-log" class="btn btn-sm">清空</button>
+  </div>
+  <div id="log-output" class="log-output"></div>
+</div>
+
+<script src="apply-app-brand.js"></script>
+<script src="../node_modules/echarts/dist/echarts.min.js"></script>
+<script src="charts.js"></script>
+<script src="device-info-strip.js"></script>
+<script src="log-panel.js"></script>
+<script src="activation-ui.js"></script>
+<script src="report-launch.js"></script>
+<script src="start-mode.js"></script>
+<script src="metric-settings.js"></script>
+<script src="iphone_gpu.js"></script>
+</body>
+</html>

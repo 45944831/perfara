@@ -1,0 +1,2071 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Perfara离线版 · 本地报告库</title>
+<script src="echarts.min.js"></script>
+<script>
+  if (typeof echarts === 'undefined') {
+    document.write('<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"><\/script>');
+  }
+</script>
+<script>
+  if (typeof echarts === 'undefined') {
+    window.echarts = {
+      init: function () {
+        return { setOption: function () {}, resize: function () {}, dispose: function () {},
+                 on: function () {}, off: function () {} };
+      },
+      connect: function () {}
+    };
+    console.warn('[library] echarts 未加载：对比曲线留空，指标表照常显示');
+  }
+</script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0f1117;
+  --bg2: #161922;
+  --bg3: #1e2230;
+  --border: #2a2f3d;
+  --text: #e0e4ef;
+  --text2: #8a90a0;
+  --accent: #4f8ef7;
+  --green: #3ecf8e;
+  --red: #f85151;
+  --orange: #f5a623;
+  --yellow: #f5d020;
+  --purple: #c77dff;
+  --radius: 8px;
+  --font: 'Segoe UI', system-ui, sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  min-height: 100vh;
+}
+
+/* ─── 顶栏 ─────────────────────────────────────────────── */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 20px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.topbar h1 { font-size: 15px; font-weight: 600; letter-spacing: .3px; }
+.topbar .count { color: var(--text2); font-size: 12px; }
+.topbar .spacer { flex: 1; }
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, opacity .15s;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn--primary:hover:not(:disabled) { background: #3f7ee6; }
+.btn--ghost { background: transparent; }
+.btn--danger { background: transparent; border-color: #6b2a2a; color: var(--red); }
+.btn--danger:hover:not(:disabled) { background: rgba(248,81,81,.12); border-color: var(--red); }
+.btn.is-busy { opacity: .55; cursor: progress; }
+
+/* ─── 内容区 ────────────────────────────────────────────── */
+.wrap { padding: 16px 20px 40px; max-width: 1500px; margin: 0 auto; }
+
+.hintbar {
+  /* 纯文本提示条：不能用 flex（否则每个文字节点变 flex item，长文案会被挤压成一字一行） */
+  padding: 10px 14px; margin-bottom: 14px;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  color: var(--text2); font-size: 12px; line-height: 1.7;
+}
+.hintbar b { color: var(--text); font-weight: 600; }
+
+/* ─── 筛选栏 ─────────────────────────────────────────────── */
+.filterbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 9px 12px; margin-bottom: 12px;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.filter-group { display: flex; align-items: center; gap: 6px; }
+.filter-group--grow { flex: 1 1 180px; min-width: 150px; }
+.filter-group label { font-size: 12px; color: var(--text2); white-space: nowrap; }
+
+.filterbar select,
+.filterbar input[type="search"],
+.filterbar input[type="date"] {
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .15s;
+}
+.filterbar select { cursor: pointer; min-width: 96px; max-width: 260px; }
+.filterbar input[type="search"] { width: 100%; }
+.filterbar select:focus,
+.filterbar input:focus { border-color: var(--accent); }
+.filterbar input[type="date"] { width: 132px; font-variant-numeric: tabular-nums; }
+.filterbar input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(.7); cursor: pointer;
+}
+.filter-custom { display: inline-flex; align-items: center; gap: 5px; }
+.filter-custom[hidden] { display: none; }
+.filter-dash { font-size: 11px; color: var(--text2); }
+.filter-count { font-size: 11px; color: var(--text2); margin-left: auto; font-variant-numeric: tabular-nums; }
+.filterbar .btn { padding: 5px 10px; }
+
+/* ─── 报告卡片 ──────────────────────────────────────────── */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  position: relative;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, transform .15s;
+}
+.card:hover { border-color: #3d465c; background: #191d27; }
+.card.is-selected { border-color: var(--accent); background: #18202f; }
+
+.card-head { display: flex; align-items: flex-start; gap: 10px; }
+.card-check {
+  margin-top: 2px; width: 15px; height: 15px; flex: none;
+  accent-color: var(--accent); cursor: pointer;
+}
+.card-title { flex: 1; min-width: 0; }
+
+/* 卡片右上角删除按钮 */
+.card-del {
+  flex: none;
+  width: 22px; height: 22px; margin: -2px -4px 0 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 5px;
+  background: transparent; color: var(--text2);
+  font-size: 13px; line-height: 1; cursor: pointer;
+  font-family: inherit; opacity: .55;
+  transition: color .15s, background .15s, border-color .15s, opacity .15s;
+}
+.card:hover .card-del { opacity: 1; }
+.card-del:hover { color: var(--red); background: rgba(248,81,81,.12); border-color: #6b2a2a; }
+body.no-delete .card-del { display: none; }
+.card-time { font-size: 13px; font-weight: 600; color: var(--text); }
+.card-sub {
+  margin-top: 3px; font-size: 11px; color: var(--text2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card-off {
+  margin-top: 3px; font-size: 10px; color: #f5a623;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.tag {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  font-size: 10px; line-height: 16px; margin-right: 6px;
+  border: 1px solid var(--border); color: var(--text2);
+}
+.tag--android { color: #3ecf8e; border-color: #2a6b4f; }
+.tag--ios     { color: #79d4f7; border-color: #2a5568; }
+.tag--pc      { color: #c77dff; border-color: #5a3a6b; }
+
+.kpis {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 6px; margin-top: 10px;
+}
+.kpi {
+  background: var(--bg3); border-radius: 6px; padding: 6px 8px;
+}
+.kpi-label { font-size: 10px; color: var(--text2); }
+.kpi-value { font-size: 14px; font-weight: 600; margin-top: 1px; font-variant-numeric: tabular-nums; }
+.kpi-value .unit { font-size: 10px; font-weight: 400; color: var(--text2); margin-left: 2px; }
+.kpi-value.na { color: var(--text2); font-weight: 400; }
+
+.kpis-extra {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 7px;
+  font-size: 10px; color: var(--text2); font-variant-numeric: tabular-nums;
+}
+.kpis-extra .kpx { display: inline-flex; align-items: baseline; gap: 3px; }
+.kpis-extra .kpx i { font-style: normal; }
+.kpis-extra .kpx b { font-weight: 600; color: var(--text); }
+.kpis-extra .kpx b.good { color: var(--green); }
+.kpis-extra .kpx b.warn { color: var(--yellow); }
+.kpis-extra .kpx b.bad  { color: var(--red); }
+.kpis-extra .kpx b.na   { color: var(--text2); font-weight: 400; }
+
+.card-foot {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border);
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--text2);
+}
+.card-foot .open { margin-left: auto; color: var(--accent); }
+.card-foot .open:hover { text-decoration: underline; }
+/* 「打开位置」：与「打开详细报告」并排在卡片右下角 */
+.card-foot .open-loc {
+  margin-left: auto; margin-right: 12px;
+  font: inherit; font-size: 11.5px; line-height: 1;
+  color: var(--text2); background: transparent;
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.card-foot .open-loc:hover {
+  color: var(--accent); border-color: var(--accent);
+  background: rgba(79,142,247,.10);
+}
+.card-foot .open { margin-left: 0; }
+/* 「导出分享」：与「打开位置」同组 */
+.card-foot .export-share {
+  font: inherit; font-size: 11.5px; line-height: 1;
+  color: var(--text2); background: transparent;
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.card-foot .export-share:hover {
+  color: var(--accent); border-color: var(--accent);
+  background: rgba(79,142,247,.10);
+}
+.card-foot .export-share.is-busy { opacity: .55; cursor: progress; }
+/* 浏览器直接打开（无 preload）时无法调用文件管理器，隐藏这两个入口 */
+.no-location .card-foot .open-loc,
+.no-location .card-foot .export-share,
+.no-location #btn-export-compare { display: none; }
+
+/* ─── 空状态 ────────────────────────────────────────────── */
+.empty {
+  padding: 60px 20px; text-align: center; color: var(--text2);
+  border: 1px dashed var(--border); border-radius: var(--radius);
+}
+.empty h2 { font-size: 15px; color: var(--text); margin-bottom: 8px; font-weight: 600; }
+.empty p { line-height: 1.9; }
+.empty code {
+  background: var(--bg3); padding: 1px 6px; border-radius: 4px;
+  font-size: 11px; color: var(--yellow);
+}
+
+/* ─── 对比区 ────────────────────────────────────────────── */
+.compare { margin-top: 26px; display: none; }
+.compare.is-on { display: block; }
+
+.section-title {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 14px; font-weight: 600; margin-bottom: 12px;
+}
+.section-title .line { flex: 1; height: 1px; background: var(--border); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th, td {
+  padding: 8px 12px; text-align: right; white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+th:first-child, td:first-child { text-align: left; }
+thead th {
+  background: var(--bg3); color: var(--text2); font-weight: 500;
+  position: sticky; top: 0;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: #191d27; }
+td.best { color: var(--green); font-weight: 600; }
+td.worst { color: var(--red); }
+td.na { color: var(--text2); }
+.metric-name { color: var(--text2); }
+.metric-name b { color: var(--text); font-weight: 500; }
+/* 派生指标的副标注（例：Jank 行下方的「每 10min：48.6 / 47.9」） */
+.metric-name .cmp-sub {
+  display: block; margin-top: 2px;
+  font-size: 10.5px; color: var(--text2); opacity: .85;
+}
+
+.charts {
+  margin-top: 16px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr));
+  gap: 12px;
+}
+.chart-box {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 12px 4px;
+}
+.chart-box h3 { font-size: 12px; font-weight: 500; color: var(--text2); margin-bottom: 6px; }
+.chart { width: 100%; height: 210px; }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  margin-top: 10px; font-size: 11px; color: var(--text2);
+}
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+@media (max-width: 720px) {
+  .charts { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: 1fr; }
+}
+
+/* ─── 对比解读总结 ──────────────────────────────────────── */
+.cmp-insight { display: none; }
+.cmp-insight.is-on {
+  display: block;
+  margin: 10px 0 4px;
+  padding: 12px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+}
+.cmp-insight-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.cmp-insight-title { font-size: 13px; font-weight: 600; }
+.cmp-insight-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 10px;
+  border: 1px solid #2f4d7a; color: var(--accent); background: rgba(79,142,247,.10);
+}
+.cmp-insight-sub { margin-left: auto; font-size: 11px; color: var(--text2); }
+.cmp-insight-lead { font-size: 12.5px; line-height: 1.75; color: var(--text); margin-bottom: 9px; }
+.cmp-insight-lead b { font-weight: 600; }
+.cmp-insight-list {
+  list-style: none; display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 3px 20px;
+}
+.cmp-insight-list li { font-size: 12px; line-height: 1.7; color: var(--text2); }
+.cmp-insight-list li b { color: var(--text); font-weight: 500; margin-right: 6px; }
+.cmp-insight-list li i { font-style: normal; }
+.cmp-insight-risks {
+  margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--border);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.cmp-insight-risk { font-size: 12px; line-height: 1.6; }
+.cmp-insight-risk--high { color: var(--red); }
+.cmp-insight-risk--mid  { color: var(--orange); }
+.cmp-insight-risk--info { color: var(--text2); }
+
+/* ═══ 参数说明「!」标记（(__METRIC_INFO_V1__)) ═══════════════════════════════ */
+.info-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; margin-left: 4px; flex: none;
+  border: 1px solid var(--border); border-radius: 50%;
+  background: var(--bg3); color: var(--text2);
+  font: 700 9px/1 var(--font); font-style: normal;
+  vertical-align: middle; cursor: help; opacity: .55;
+  transition: opacity .15s ease, color .15s ease, border-color .15s ease;
+  user-select: none; -webkit-user-select: none;
+}
+.info-dot:hover, .info-dot:focus {
+  opacity: 1; color: var(--accent); border-color: var(--accent); outline: none;
+}
+.kpi-label .info-dot, .card-label .info-dot { width: 12px; height: 12px; margin-left: 3px; }
+.kpis-extra .info-dot { width: 11px; height: 11px; }
+.mi-mask {
+  position: fixed; inset: 0; z-index: 9999; padding: 20px;
+  background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center;
+}
+.mi-mask[hidden] { display: none; }
+.mi-modal {
+  width: 100%; max-width: 560px; max-height: 82vh; overflow: auto;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
+  animation: mi-pop .16s ease-out;
+}
+@keyframes mi-pop { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+.mi-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+}
+.mi-title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
+.mi-unit { margin-left: 6px; font-size: 11px; font-weight: 400; color: var(--text2); }
+.mi-close {
+  border: none; background: transparent; color: var(--text2);
+  font-size: 14px; line-height: 1; padding: 3px 6px; border-radius: 4px; cursor: pointer;
+}
+.mi-close:hover { color: var(--text); background: var(--bg3); }
+.mi-body { padding: 12px 14px 14px; }
+.mi-row { margin-bottom: 10px; }
+.mi-row:last-child { margin-bottom: 0; }
+.mi-row > i {
+  display: block; margin-bottom: 3px;
+  font-size: 11px; font-style: normal; font-weight: 600; color: var(--accent);
+}
+.mi-row > p { font-size: 12px; line-height: 1.8; color: var(--text2); }
+/* ═══ 可读性优化 __READABILITY_V1__ begin ══════════════════════════════ */
+:root {
+  --text2: #9ba3b4;
+}
+
+/* ── 报告卡片：字号层次 + 网格呼吸感 ──────────────────────────────────── */
+.grid { gap: 14px; }
+.card-time { font-size: 13.5px; }
+.card-sub { font-size: 12px; }
+.card-off { font-size: 11px; }
+.kpi-label { font-size: 11px; }
+.kpi-value { font-size: 15px; }
+.kpi-value .unit { font-size: 11px; }
+.kpis-extra { font-size: 11px; gap: 5px 12px; margin-top: 8px; }
+.card-foot { font-size: 11.5px; }
+
+/* ── 对比表：字号放大、行高拉开、最佳/最差加方向标记 ──────────────────── */
+table { font-size: 12.5px; }
+th, td { padding: 8px 12px; }
+thead th { background: var(--bg3); font-size: 12px; }
+tbody tr:nth-child(even) td { background: rgba(255,255,255,.022); }
+tbody tr:hover td { background: rgba(79,142,247,.09) !important; }
+.metric-name b { font-size: 12.5px; font-weight: 600; }
+td.best  { color: var(--green); }
+td.best::after  { content: ' ▲'; font-size: 9px; opacity: .8; }
+td.worst::after { content: ' ▼'; font-size: 9px; opacity: .8; }
+
+/* ── 对比曲线：标题更醒目、图区加高 ───────────────────────────────────── */
+.chart-box h3 { font-size: 13px; color: var(--text); font-weight: 600; margin-bottom: 8px; }
+.chart-box { padding: 12px 12px 6px; }
+.chart { height: 230px; }
+
+/* ── 解读 / 图例 ───────────────────────────────────────────────────────── */
+.cmp-insight { font-size: 12.5px; line-height: 1.8; }
+.cmp-insight-list li { font-size: 12.5px; line-height: 1.85; }
+.legend { font-size: 11.5px; }
+/* ═══ 可读性优化 __READABILITY_V1__ end ════════════════════════════════ */
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>本地报告库</h1>
+  <span class="count" id="count-label">读取中…</span>
+  <span class="spacer"></span>
+  <button class="btn btn--ghost" id="btn-select-all">全选</button>
+  <button class="btn btn--ghost" id="btn-clear-sel">清空选择</button>
+  <button class="btn btn--danger" id="btn-del-sel" disabled title="删除已勾选的报告">删除选中</button>
+  <button class="btn btn--primary" id="btn-compare" disabled>对比选中</button>
+</div>
+
+<div class="wrap">
+  <div class="hintbar">
+    每次停止采集都会自动归档一份报告到这里。勾选 <b>2~6 份</b> 后点「对比选中」，可并排比较指标与曲线；
+    点击卡片本身则打开该次的详细报告；卡片底部「<b>📁 打开位置</b>」可在系统文件管理器中打开该报告的存放目录，
+    「<b>⤓ 导出分享</b>」会打包成一份自包含的单文件报告（数据与图表库全内置，离线可看、可直接转发）。
+    勾选多份后进入下方的<b>指标对比</b>，右上角「<b>⤓ 保存对比报告</b>」可把整个对比结果另存为一份单文件 HTML，同样无需安装客户端即可查看。
+    卡片右上角 <b>✕</b> 可删除单份，顶栏「删除选中」可批量删除。
+  </div>
+
+  <div class="filterbar" id="filterbar">
+    <div class="filter-group">
+      <label for="f-range">时间</label>
+      <select id="f-range">
+        <option value="all">全部</option>
+        <option value="today">今天</option>
+        <option value="7d">近 7 天</option>
+        <option value="30d">近 30 天</option>
+        <option value="custom">自定义…</option>
+      </select>
+      <span class="filter-custom" id="f-custom" hidden>
+        <input type="date" id="f-from" />
+        <span class="filter-dash">至</span>
+        <input type="date" id="f-to" />
+      </span>
+    </div>
+
+    <div class="filter-group">
+      <label for="f-device">机型</label>
+      <select id="f-device"><option value="">全部机型</option></select>
+    </div>
+
+    <div class="filter-group">
+      <label for="f-app">应用</label>
+      <select id="f-app"><option value="">全部应用</option></select>
+    </div>
+
+    <div class="filter-group filter-group--grow">
+      <input type="search" id="f-q" placeholder="搜索设备 / 应用 / 报告ID…" />
+    </div>
+
+    <button type="button" class="btn btn--ghost" id="f-reset">重置</button>
+    <span class="filter-count" id="f-count"></span>
+  </div>
+
+  <div id="grid" class="grid"></div>
+
+  <div class="compare" id="compare">
+    <div class="section-title">
+      <span>指标对比</span>
+      <span class="line"></span>
+      <button class="btn btn--ghost" id="btn-export-compare" disabled title="把当前这份对比另存为一个单文件 HTML（图表库与全部数据都已内置，离线可看、可直接转发）">⤓ 保存对比报告</button>
+      <button class="btn btn--ghost" id="btn-close-compare">收起</button>
+    </div>
+
+    <div class="cmp-insight" id="cmp-insight"></div>
+
+    <div class="table-wrap">
+      <table id="cmp-table">
+        <thead><tr id="cmp-head"></tr></thead>
+        <tbody id="cmp-body"></tbody>
+      </table>
+    </div>
+
+    <div class="legend" id="cmp-legend"></div>
+
+    <div class="charts" id="cmp-charts"></div>
+  </div>
+</div>
+
+<script>
+/* __METRIC_INFO_V1__ 参数说明：点击指标旁的「!」查看该参数含义 */
+
+(function () {
+  'use strict';
+  if (window.MetricInfo) return;
+
+  var INFO = {
+    fps: { t: 'FPS 帧率', u: '帧/s',
+      d: '每秒实际渲染并投递到屏幕的画面帧数，是衡量流畅度最直观的指标。',
+      h: '每个采样周期内统计 SurfaceFlinger / 显示管线提交的帧数，再折算到每秒；iOS 与 PC 按帧时间戳折算。',
+      g: '需结合目标帧率（常见 30 / 60 / 90 / 120）判断；均值达标但曲线抖动大，用户依然能感知到不流畅。' },
+    fpsTarget: { t: '目标帧率', u: '帧/s',
+      d: '本次测试的参考帧率基准，其余帧率派生指标都以它为分母。',
+      h: '取整段 FPS 的 P95 值后吸附到常见刷新率档位（24 / 30 / 60 / 90 / 120 / 144）。',
+      g: '由数据推断得出；若实际是锁帧场景（如锁 30 帧）请按真实目标值理解。' },
+    fpsMin: { t: 'FPS 最低', u: '帧/s',
+      d: '整段测试中的最小帧率值。',
+      h: '取所有采样点 FPS 的最小值。',
+      g: '看最差时刻跌到多少；单点极低值通常与加载、切换、GC 等瞬时事件相关。' },
+    fpsstd: { t: '帧率标准差', u: '帧/s',
+      d: 'FPS 相对自身均值的离散程度。',
+      h: '对整段 FPS 求标准差。',
+      g: '越小越稳；均值相同但标准差大，说明画面节奏忽快忽慢。' },
+    reach: { t: '达帧率', u: '%',
+      d: '平均帧率相对目标帧率的达成比例。',
+      h: '平均 FPS ÷ 目标帧率 × 100%。',
+      g: '≥95% 优秀，80%~95% 一般，低于 80% 需要优化渲染或主线程。' },
+    frametime: { t: '均帧 Avg(FTime)', u: 'ms',
+      d: '平均每帧耗时，即每一帧从开始到呈现在屏幕上的平均时间。',
+      h: '对 FPS > 0 的采样点计算 1000 / FPS，再取算术平均。',
+      g: '比 FPS 均值更线性：目标间隔 = 1000 ÷ 目标帧率（60 帧即 16.7ms），越接近说明越流畅。' },
+    ftimestd: { t: '帧耗时标准差 Std(FTime)', u: 'ms',
+      d: '帧耗时的波动幅度，反映卡顿的稳定性。',
+      h: '对每帧耗时（1000 / FPS）求标准差。',
+      g: '越小越稳；和均帧一起看可判断是「普遍偏慢」还是「偶发尖刺」。' },
+    ftimevar: { t: '帧耗时方差 Var(FTime)', u: 'ms²',
+      d: '帧耗时离散程度的平方度量，与标准差同源。',
+      h: '对每帧耗时求方差。',
+      g: '用于更细的统计建模，日常看标准差更直观。' },
+    lowpct: { t: '低帧占比', u: '%',
+      d: '帧率低于目标帧率 80% 的采样点占比。',
+      h: '统计 FPS < 目标帧率 × 0.8 的采样点数 ÷ 总采样点数。',
+      g: '超过 10% 表示明显不达标；可在曲线上框选这些区间定位具体场景。' },
+    onelow: { t: '1%Low', u: '帧/s',
+      d: '最慢的 1% 帧的平均帧率，代表场景中最差时刻的流畅度。',
+      h: '取帧耗时最长的 1% 采样点，求平均帧耗时后用 1000 折算回帧率。',
+      g: '比平均 FPS 更贴近主观卡顿感受，一般要求 ≥ 目标帧率的 85%。' },
+    drop: { t: 'Drop', u: '帧/时',
+      d: '折算到每小时的帧率骤降次数。',
+      h: 'PerfDog 口径：相邻采样点 FPS 下降超过 8 帧计一次，再按测试时长折算到每小时。',
+      g: '衡量突发掉帧的频繁程度，与卡顿次数互补。' },
+    getarget: { t: 'FPS≥目标', u: '%',
+      d: '达到目标帧率的采样点占比。',
+      h: '统计 FPS ≥ 目标帧率的采样点数 ÷ 总采样点数。',
+      g: '与达帧率的区别：这是「样本口径」，分子看的是采样点而非均值。' },
+    medrange: { t: '稳帧范围 MedRange', u: '%',
+      d: '帧率落在中位数 ±20% 区间内的采样点占比，衡量画面节奏的一致性。',
+      h: '先取 FPS 中位数，再统计落在 ±20% 范围内的采样点占比。',
+      g: '越高说明帧率越集中；低但均值高，通常是「大部分时间满帧、偶尔大掉帧」。' },
+    stutter: { t: 'Stutter 卡顿时长占比', u: '%',
+      d: '卡顿持续时间占整段测试时长的比例。',
+      h: '帧间隔超过 2 倍目标帧间隔的帧，累计其耗时 ÷ 总耗时 × 100%。',
+      g: '比卡顿「次数」更能体现卡了多久，一般要求低于 5%。' },
+
+    jank: { t: 'Jank 卡顿帧', u: '次/s',
+      d: '明显超出正常耗时的一次掉帧，是肉眼可察觉的「顿一下」。',
+      h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 2 个电影帧（约 83ms）判定为 1 次 Jank。',
+      g: '关键场景（战斗、切图、加载）中的 Jank 优先治理；≤2 次/分钟通常可接受。' },
+    bigjank: { t: 'BigJank 严重卡顿帧', u: '次/s',
+      d: '耗时特别长的卡顿帧，用户几乎必感知。',
+      h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 3 个电影帧（125ms）判定为 1 次 BigJank。',
+      g: '优先级最高：通常对应 GC、磁盘 IO、资源加载或布局重排。' },
+    smalljank: { t: 'SmallJank 轻卡顿帧', u: '次/s',
+      d: 'Jank 家族中较轻的一级，用于在整体已流畅时定位轻微抖动。',
+      h: '同 Jank 的相对判定逻辑，但阈值更宽松（帧耗时超过基线而尚未达到 Jank 门槛）。',
+      g: '数值不大时无需处理；集中出现时说明有周期性的小开销。' },
+    tinyjank: { t: 'TinyJank 微卡顿帧', u: '次/s',
+      d: '最轻一级的卡顿，粒度最细。',
+      h: '同 Jank 的相对判定逻辑，阈值最低。',
+      g: '用于对标极致流畅度的专项优化。' },
+    jank10: { t: 'Jank/10min', u: '次',
+      d: '按每 10 分钟折算的 Jank 次数。',
+      h: '整段 Jank 累计次数 ÷ 测试分钟数 × 10。',
+      g: '抹平时长差异，便于不同长度的测试横向对比。' },
+    bigjank10: { t: 'BigJank/10min', u: '次',
+      d: '按每 10 分钟折算的严重卡顿次数。',
+      h: '整段 BigJank 累计次数 ÷ 测试分钟数 × 10。',
+      g: '跨版本、跨机型对比最有价值的卡顿指标。' },
+    smalljank10: { t: 'SmallJank/10min', u: '次',
+      d: '按每 10 分钟折算的轻卡顿次数。',
+      h: '整段 SmallJank 累计次数 ÷ 测试分钟数 × 10。',
+      g: '同上，用于横向对比。' },
+    tinyjank10: { t: 'TinyJank/10min', u: '次',
+      d: '按每 10 分钟折算的微卡顿次数。',
+      h: '整段 TinyJank 累计次数 ÷ 测试分钟数 × 10。',
+      g: '同上，用于横向对比。' },
+
+    syscpu: { t: '系统 CPU', u: '%',
+      d: '整机 CPU 占用率，反映设备整体繁忙程度（含系统与其他应用）。',
+      h: 'Android 取 /proc/stat 的时间片差值，iOS 由内核 CPU 负载折算，PC 取系统 CPU 计数器。',
+      g: '持续高于 80% 说明整机负载饱和，会放大掉帧与发热；低但进程 CPU 高则说明瓶颈在自身。' },
+    cpuchart: { t: 'CPU 使用率', u: '%',
+      d: '同时展示整机（系统 CPU）与被测进程（进程 CPU）的占用率，用于区分瓶颈在系统侧还是应用侧。',
+      h: '两条曲线同源：整机取系统 CPU 计数，进程取被测进程 CPU 时间差值 ÷ 采样间隔。',
+      g: '进程 CPU 高而系统 CPU 低 = 自身代码开销大；两者都高 = 整机负载饱和。' },
+    proccpu: { t: '进程 CPU', u: '%',
+      d: '被测应用进程占用的 CPU 比例。',
+      h: '读取进程 CPU 时间（utime + stime）在采样间隔内的差值 ÷ 间隔时长。',
+      g: '长期高于 60% 需排查热点函数；注意不同平台对多核的归一口径不同，跨平台对比需留意。' },
+    cpulimit: { t: 'CPU 限频', u: '%',
+      d: 'CPU 实际运行频率相对最高频率的比例。',
+      h: '取各核心当前频率 ÷ 硬件最高频率。',
+      g: '长时间偏低说明已发生温控降频或调度限制，重负载场景会算力不足。' },
+    cpucores: { t: '各核心 CPU 使用率', u: '%',
+      d: '每个 CPU 核心各自的占用率。',
+      h: '读取 /proc/stat（或等价接口）中各核心的时间片差值。',
+      g: '大核打满而小核空闲，通常是线程亲和性或主线程瓶颈的信号。' },
+    cpufreq: { t: '各核心 CPU 频率', u: 'MHz',
+      d: '每个 CPU 核心当前的运行频率。',
+      h: '读取 cpufreq 节点的 cur_freq / cpuinfo_cur_freq。',
+      g: '持续低于最高频且伴随掉帧，说明触发了温控降频。' },
+
+    mem: { t: '内存', u: 'MB',
+      d: 'Android 为内存 PSS（按共享页比例分摊后的实际物理内存，官方推荐口径）；iOS 为物理内存足迹 phys_footprint；PC 为进程常驻内存。',
+      h: 'Android 汇总 /proc/<pid>/smaps 或 dumpsys meminfo 的 PSS；iOS 取 task_vm_info 的 phys_footprint。',
+      g: '重点看峰值与增长趋势：长时间运行持续增长通常意味着内存压力或泄漏。' },
+    memdetail: { t: '内存详情', u: 'MB',
+      d: '内存的组成部分。Android / PC：NativeHeap、JavaHeap、Code、Stack、Graphics、PrivateOther、System；iOS：私有常驻、共享常驻、匿名、压缩、可清除。',
+      h: '由 meminfo / task_vm_info 的各分项原始值换算为 MB。',
+      g: 'JavaHeap 持续增长多为对象未释放，Graphics 增长多为纹理 / RenderTarget 未回收。' },
+
+    net: { t: '网络 ↓/↑', u: 'KB/s',
+      d: '下行（接收）与上行（发送）速率。',
+      h: '取网卡流量计数（Android /proc/net/dev 或系统流量接口，iOS / PC 用系统计数器）在采样间隔内的差值。',
+      g: '下行尖刺通常对应资源下载；做弱网测试时应配合真实带宽限制一起看。' },
+
+    gpu: { t: 'GPU 使用率', u: '%',
+      d: 'GPU 计算单元的占用比例。',
+      h: '高通读取 /sys/class/kgsl 节点，Mali 读取 GPU 设备节点；部分 MTK 非 root 机型读不到，此时报告会自动改用 GPU 温度展示。',
+      g: '长期高于 90% 说明 GPU 已成瓶颈，应从分辨率、后处理、Overdraw 入手。' },
+    gputemp: { t: 'GPU 温度', u: '°C',
+      d: 'GPU 芯片温度，用于在读不到利用率时侧面反映 GPU 负载。',
+      h: '读取 GPU 温度传感器节点。',
+      g: '与温度同为降频前兆；持续升高说明渲染负载偏高。' },
+    temp: { t: '温度', u: '°C',
+      d: '机身 / 电池温度，反映设备热状态。',
+      h: '优先读取 thermal 温控节点，读不到时回退为电池温度。',
+      g: '超过 45°C 通常会开始降频，超过 50°C 会明显影响帧率与手感。' },
+
+    battery: { t: '电池', u: '%',
+      d: '设备剩余电量百分比。',
+      h: '读取系统电池电量接口。',
+      g: '用于确认测试期间的电量条件是否一致。' },
+    current: { t: '电流', u: 'mA',
+      d: '电池瞬时充放电电流。',
+      h: '读取电池电流寄存器值；负值通常代表充电状态。',
+      g: '与功耗一起评估续航影响，建议在同一电量区间对比。' },
+    power: { t: '功耗', u: 'mW',
+      d: '整机瞬时功率。',
+      h: '由电流 × 电压估算得到。',
+      g: '长时间高功耗会加速升温并触发限频。' },
+
+    disk: { t: '磁盘 I/O', u: 'KB/s',
+      d: '磁盘读 / 写速率。',
+      h: '取进程 IO 计数（read_bytes / write_bytes）在采样间隔内的差值。',
+      g: '加载期的读尖刺属正常；持续的高频写入会造成卡顿与发热。' },
+    cswitch: { t: '上下文切换', u: '次/s',
+      d: '进程每秒发生的线程上下文切换次数。',
+      h: '取进程自愿 / 非自愿上下文切换计数在采样间隔内的差值。',
+      g: '数值过高说明线程过多或锁竞争严重，会带来额外调度开销。' },
+    events: { t: '系统事件', u: '次/s',
+      d: 'iOS 的系统事件计数：上下文切换、中断唤醒、缺页中断。',
+      h: '由 iOS 系统计数器在采样间隔内的差值计算。',
+      g: '中断唤醒偏高说明 wakeup 频繁，通常与定时器或 IPC 有关。' },
+    threads: { t: '线程数', u: '个',
+      d: '被测进程当前的线程数量。',
+      h: '读取进程线程计数（iOS numThreads / Android threads）。',
+      g: '线程过多会增加调度开销与内存占用，且容易放大上下文切换。' },
+
+    gpu_occ: { t: 'GPU 占用率', u: '%',
+      d: 'Vertex / Fragment / Compute 三类管线的占用率，反映各 GPU 单元的繁忙程度。',
+      h: '来自 Apple GPU Counters（Instruments 的 AGX 计数器）采样。',
+      g: '某类接近 100% 说明该管线被打满，优化方向随之明确。' },
+    gpu_alu: { t: 'ALU 利用率', u: '%',
+      d: '算术逻辑单元利用率，即着色器指令执行单元的繁忙程度。',
+      h: '来自 Apple GPU Counters 的 ALU Utilization。',
+      g: '持续接近 100% 需简化 shader 计算量。' },
+    gpu_aluperf: { t: 'ALU 性能', u: '%',
+      d: 'ALU / F32 / F16 的利用率，以及 ALU 成为瓶颈的时间占比（Limiter）。',
+      h: '来自 Apple GPU Counters 的 Utilization 与 Limiter 系列计数。',
+      g: 'Utilization 高且 Limiter 也高 = 此处是真瓶颈；只有 Utilization 高则是负载大但还没堵死。' },
+    gpu_tex: { t: '纹理性能', u: '%',
+      d: '纹理采样器利用率，以及 Filtering / Sample / Cache 各环节成为瓶颈的比例。',
+      h: '来自 Apple GPU Counters 的 Texture 系列 Utilization 与 Limiter。',
+      g: 'Cache Limiter 偏高优先考虑纹理尺寸与压缩格式。' },
+    gpu_texlimiter: { t: '纹理采样限制', u: '%',
+      d: '纹理采样环节成为 GPU 性能瓶颈的时间占比。',
+      h: '来自 Apple GPU Counters 的 Texture Sample Limiter。',
+      g: '偏高时应减少采样次数、使用 mipmap 与压缩纹理。' },
+    gpu_vertex: { t: 'Vertex 占用', u: '%',
+      d: '顶点着色阶段的管线占用率。',
+      h: '来自 Apple GPU Counters 的 Vertex Occupancy。',
+      g: '偏高时应减少顶点数量、启用 LOD 与实例化。' },
+    gpu_frag: { t: 'Fragment 占用', u: '%',
+      d: '片元着色阶段的管线占用率。',
+      h: '来自 Apple GPU Counters 的 Fragment Occupancy。',
+      g: '偏高多数是 Overdraw 或复杂片元着色器导致。' },
+    gpu_bw: { t: 'GPU 内存带宽', u: 'GB/s',
+      d: 'GPU 与外部内存之间的读 / 写带宽。',
+      h: '来自 Apple GPU Counters 的 GPU Read / Write Bandwidth。',
+      g: '带宽打满时应降低纹理尺寸、启用压缩格式或减少 RenderTarget。' },
+    gpu_readbw: { t: 'GPU 读带宽', u: 'GB/s',
+      d: 'GPU 从显存读取数据占用的带宽。',
+      h: '来自 Apple GPU Counters 的 GPU Read Bandwidth。',
+      g: '读带宽高通常是纹理采样过多或分辨率过高。' },
+    gpu_writebw: { t: 'GPU 写带宽', u: 'GB/s',
+      d: 'GPU 写入显存占用的带宽。',
+      h: '来自 Apple GPU Counters 的 GPU Write Bandwidth。',
+      g: '写带宽高通常与多 RenderTarget、后处理链过长有关。' },
+    gpu_cache: { t: '缓存 & MMU', u: '%',
+      d: '末级缓存（LLC）与 MMU 的利用率及其成为瓶颈的比例。',
+      h: '来自 Apple GPU Counters 的 Last Level Cache / MMU Utilization 与 Limiter。',
+      g: 'Cache Limiter 偏高说明数据局部性差，应改善资源布局与访问顺序。' },
+    gpu_shader: { t: '着色器 & 插值', u: '%',
+      d: '片元插值开销，以及 Threadgroup / Imageblock 的 Load、Store 利用率。',
+      h: '来自 Apple GPU Counters 的 Interpolation 与 Threadgroup / Imageblock 系列计数。',
+      g: '插值开销高通常是 varying 传参过多或过度使用高精度浮点。' },
+  };
+
+  /** 报告里出现各种指标名 → 说明 key */
+  var ALIAS = {
+    '系统CPU': 'syscpu', '系统 CPU': 'syscpu', 'CPU': 'proccpu', '进程CPU': 'proccpu', '进程 CPU': 'proccpu',
+    '进程 CPU 平均': 'proccpu', 'CPU 使用率': 'syscpu', 'CPU 限频': 'cpulimit',
+    '各核心CPU': 'cpucores', '各核心频率': 'cpufreq',
+    '内存': 'mem', '内存 PSS': 'mem', '内存 PSS 平均': 'mem', '物理内存': 'mem', 'PSS': 'mem', 'RSS': 'mem',
+    '内存详情': 'memdetail', '内存明细': 'memdetail',
+    'FPS': 'fps', 'fps': 'fps', 'FPS 平均': 'fps', 'FPS 最低': 'fpsMin', '目标': 'fpsTarget', '目标帧率': 'fpsTarget',
+    '达帧率': 'reach', '均帧': 'frametime', '低帧': 'lowpct', '低帧占比': 'lowpct',
+    '帧率标准差': 'fpsstd', '帧耗时标准差': 'ftimestd', '帧耗时方差': 'ftimevar',
+    '1%Low': 'onelow', 'Drop': 'drop', 'FPS≥目标': 'getarget', '≥目标': 'getarget',
+    '稳帧': 'medrange', '稳帧范围': 'medrange', '卡顿时长占比': 'stutter', 'Stutter': 'stutter',
+    'Jank': 'jank', '大 Jank': 'bigjank', 'BigJank': 'bigjank', 'Jank 平均': 'jank', 'BigJank 平均': 'bigjank',
+    'SmallJank': 'smalljank', 'SmallJank 平均': 'smalljank', 'TinyJank': 'tinyjank', 'TinyJank 平均': 'tinyjank',
+    'Jank/10min': 'jank10', 'BigJank/10min': 'bigjank10', 'SmallJank/10min': 'smalljank10', 'TinyJank/10min': 'tinyjank10',
+    '网络 ↓/↑': 'net', '网络流量': 'net', '下行': 'net', '上行': 'net',
+    'GPU': 'gpu', 'GPU 平均': 'gpu', 'GPU 使用率': 'gpu', 'GPU 温度': 'gputemp',
+    '温度': 'temp', '温度 平均': 'temp', '电池': 'battery', '电流': 'current', '功耗': 'power',
+    '磁盘 I/O': 'disk', '磁盘读': 'disk', '磁盘读写': 'disk', '读 KB/s': 'disk', '写 KB/s': 'disk',
+    '上下文切换': 'cswitch', '系统事件': 'events', '线程数': 'threads',
+    // library.html 内部使用的英文指标键（对比表 / 曲线 / 归档 KPI）
+    'fpsMin': 'fpsMin', 'fpsReach': 'reach', 'fpsFrameTime': 'frametime', 'fpsLowPct': 'lowpct',
+    'fps1Low': 'onelow', 'fpsGeTarget': 'getarget', 'fpsMedRange': 'medrange',
+    'fpsStd': 'fpsstd', 'fpsStutter': 'stutter', 'fpsDrop': 'drop',
+    'bigJank': 'bigjank', 'smallJank': 'smalljank', 'tinyJank': 'tinyjank',
+    'jank10': 'jank10', 'bigJank10': 'bigjank10', 'smallJank10': 'smalljank10', 'tinyJank10': 'tinyjank10',
+    'cpuLimit': 'cpulimit', 'gpuTemp': 'gputemp', 'fpsTarget': 'fpsTarget',
+    'cpu': 'proccpu', 'syscpu': 'syscpu', 'disk': 'disk', 'bandwidth': 'gpu_bw',
+  };
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function keyOf(name) {
+    if (!name) return '';
+    var k = ALIAS[String(name).trim()];
+    if (k) return k;
+    if (INFO[String(name).trim()]) return String(name).trim();
+    return '';
+  }
+
+  /** 给带 data-info 的容器补上「!」标记（幂等，可重复调用） */
+  function decorate(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    var host = (scope === document || !scope.querySelectorAll) ? scope : scope;
+    var list = host.querySelectorAll('[data-info]');
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (el.getAttribute('data-info') === '') continue;
+      if (el.querySelector('.info-dot')) continue;
+      if (el.tagName === 'TBODY' || el.tagName === 'TABLE') continue;
+      var key = keyOf(el.getAttribute('data-info'));
+      if (!key || !INFO[key]) continue;
+      var dot = document.createElement('span');
+      dot.className = 'info-dot';
+      dot.setAttribute('data-info', key);
+      dot.setAttribute('role', 'button');
+      dot.setAttribute('tabindex', '0');
+      dot.title = '查看参数说明';
+      dot.textContent = '!';
+      el.appendChild(dot);
+    }
+  }
+
+  /** 把某个指标名改成「!」标记的属性串，供 innerHTML 拼接使用 */
+  function attr(name) {
+    var k = keyOf(name);
+    return k ? ' data-info="' + esc(k) + '"' : '';
+  }
+
+  var mask = null;
+  function ensureModal() {
+    if (mask) return mask;
+    mask = document.createElement('div');
+    mask.className = 'mi-mask';
+    mask.hidden = true;
+    mask.innerHTML =
+      '<div class="mi-modal" role="dialog" aria-modal="true">' +
+        '<div class="mi-head"><span class="mi-title"></span>' +
+        '<button type="button" class="mi-close" aria-label="关闭">✕</button></div>' +
+        '<div class="mi-body"></div>' +
+      '</div>';
+    document.body.appendChild(mask);
+    mask.addEventListener('click', function (e) {
+      if (e.target === mask || (e.target.closest && e.target.closest('.mi-close'))) hide();
+    });
+    return mask;
+  }
+
+  function row(label, text) {
+    return text ? '<div class="mi-row"><i>' + esc(label) + '</i><p>' + esc(text) + '</p></div>' : '';
+  }
+
+  function show(key) {
+    var info = INFO[key];
+    if (!info) return;
+    var box = ensureModal();
+    box.querySelector('.mi-title').innerHTML = esc(info.t) + (info.u ? '<span class="mi-unit">' + esc(info.u) + '</span>' : '');
+    box.querySelector('.mi-body').innerHTML =
+      row('是什么', info.d) + row('来源与算法', info.h) + row('怎么看', info.g);
+    box.hidden = false;
+  }
+
+  function hide() { if (mask) mask.hidden = true; }
+
+  window.MetricInfo = {
+    version: '__METRIC_INFO_V1__',
+    has: function (k) { return !!INFO[k]; },
+    keyOf: keyOf,
+    attr: attr,
+    decorate: decorate,
+    open: show,
+    close: hide,
+  };
+
+  // 点击「!」弹说明：捕获阶段处理，避免触发报告卡片本身的点击（如勾选、展开）
+  document.addEventListener('click', function (e) {
+    var dot = e.target && e.target.closest ? e.target.closest('.info-dot') : null;
+    if (!dot) return;
+    e.preventDefault();
+    e.stopPropagation();
+    show(dot.getAttribute('data-info'));
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if ((e.key === 'Escape' || e.key === 'Esc') && mask && !mask.hidden) hide();
+    if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.classList && e.target.classList.contains('info-dot')) {
+      e.preventDefault(); e.stopPropagation();
+      show(e.target.getAttribute('data-info'));
+    }
+  }, true);
+})();
+</script>
+
+<!-- 报告索引：由主进程在每次归档时写入（history/index.js） -->
+<script src="history/index.js" onerror="window.__noIndex = true"></script>
+
+<script>
+'use strict';
+
+// ─── 指标定义（顺序即表格顺序） ─────────────────────────────────────────────
+// better: 'high' 越大越好 / 'low' 越小越好 / null 不做优劣标记
+const METRICS = [
+  { key: 'fps',     label: 'FPS 平均',      unit: '帧/s', better: 'high' },
+  { key: 'fpsMin',  label: 'FPS 最低',      unit: '帧/s', better: 'high' },
+  { key: 'fpsTarget',     label: '目标帧率', unit: '帧/s', better: null   },
+  { key: 'fpsReach',      label: '达帧率',   unit: '%',    better: 'high' },
+  { key: 'fpsFrameTime',  label: '均帧',     unit: 'ms',   better: 'low'  },
+  { key: 'fpsLowPct',     label: '低帧占比', unit: '%',    better: 'low'  },
+  { key: 'fps1Low',       label: '1%Low',   unit: '帧/s', better: 'high' },
+  { key: 'fpsGeTarget',   label: 'FPS≥目标', unit: '%',    better: 'high' },
+  { key: 'fpsMedRange',   label: '稳帧范围', unit: '%',    better: 'high' },
+  { key: 'fpsStd',        label: '帧率标准差', unit: '帧/s', better: 'low' },
+  { key: 'fpsStutter',    label: '卡顿时长占比', unit: '%', better: 'low' },
+  { key: 'fpsDrop',       label: 'Drop', unit: '帧/时', better: 'low' },
+  { key: 'cpu',     label: '进程 CPU 平均', unit: '%',    better: 'low'  },
+  { key: 'mem',     label: '内存 PSS 平均', unit: 'MB',   better: 'low'  },
+  { key: 'temp',    label: '温度 平均',     unit: '°C',   better: 'low'  },
+  { key: 'gpu',     label: 'GPU 平均',      unit: '%',    better: null   },
+  { key: 'jank',    label: 'Jank 平均',     unit: '次/s', better: 'low'  },
+  { key: 'bigJank', label: 'BigJank 平均',  unit: '次/s', better: 'low'  },
+  { key: 'smallJank',    label: 'SmallJank 平均', unit: '次/s', better: 'low' },
+  { key: 'tinyJank',     label: 'TinyJank 平均',  unit: '次/s', better: 'low' },
+  { key: 'jank10',       label: 'Jank/10min',    unit: '次',  better: 'low' },
+  { key: 'bigJank10',    label: 'BigJank/10min', unit: '次',  better: 'low' },
+  { key: 'smallJank10',  label: 'SmallJank/10min', unit: '次', better: 'low' },
+  { key: 'tinyJank10',   label: 'TinyJank/10min',  unit: '次', better: 'low' },
+  { key: 'cswitch',      label: '上下文切换', unit: '次/s', better: 'low' },
+  { key: 'cpuLimit',     label: 'CPU 限频',  unit: '%',   better: 'high' },
+];
+
+// 曲线颜色（最多 6 份同时对比）
+const PALETTE = ['#4f8ef7', '#3ecf8e', '#f5a623', '#c77dff', '#79d4f7', '#ff79a8'];
+
+// 指标 → 曲线配置
+const CHARTS = [
+  { key: 'fps',  title: 'FPS',        unit: '帧/s', color: '#f5d020' },
+  { key: 'cpu',  title: '进程 CPU',   unit: '%',    color: '#4f8ef7' },
+  { key: 'mem',  title: '内存 PSS',   unit: 'MB',   color: '#3ecf8e' },
+  { key: 'temp', title: '温度',       unit: '°C',   color: '#f85151' },
+  { key: 'gpu',  title: 'GPU',        unit: '%',    color: '#f5a623' },
+  { key: 'jank', title: 'Jank',       unit: '次/s', color: '#ff79a8' },
+  { key: 'smallJank', title: 'SmallJank', unit: '次', color: '#f5d020' },
+  { key: 'cswitch',   title: '上下文切换', unit: '次/s', color: '#9b8cff' },
+];
+
+const state = {
+  reports: [],          // 索引元数据
+  selected: new Set(),  // 选中的 id
+  cache: new Map(),     // id → 完整 payload
+  charts: [],           // echarts 实例，切换时销毁
+};
+
+// ─── 采集参数适配 ────────────────────────────────────────────────────────────
+// 指标 → 采集参数组（与采集界面 metric-settings.js 的组定义一致）。
+// 某报告采集时移除了某组，对比表对应单元格显示「—」并提示原因，曲线也不画。
+const METRIC_GROUP = {
+  fps: 'fps', fpsMin: 'fps', fpsTarget: 'fps', fpsReach: 'fps', fpsFrameTime: 'fps',
+  fpsLowPct: 'fps', fps1Low: 'fps', fpsGeTarget: 'fps', fpsMedRange: 'fps', fpsStd: 'fps',
+  fpsStutter: 'fps', fpsDrop: 'fps',
+  jank: 'fps', bigJank: 'fps', smallJank: 'fps', tinyJank: 'fps',
+  jank10: 'fps', bigJank10: 'fps', smallJank10: 'fps', tinyJank10: 'fps',
+  cpu: 'cpu', cpuLimit: 'cpu', mem: 'mem', temp: 'temp', gpu: 'gpu', gpuTemp: 'gpu',
+};
+
+/** 参数组 id → 界面友好名（与采集界面 metric-settings.js 的组定义一致） */
+const GROUP_LABELS = {
+  fps: 'FPS 与卡顿', cpu: 'CPU', mem: '内存', net: '网络', gpu: 'GPU',
+  temp: '温度', battery: '电池', disk: '磁盘 I/O', events: '系统事件', proc: '进程信息',
+};
+/** 组 id → 展示名（未知组回退为 id 本身） */
+function groupLabel(g) { return GROUP_LABELS[g] || g; }
+
+/** 某报告在采集时是否移除了该指标所属参数组（旧报告无配置 → 未移除） */
+function metricDisabled(rep, key) {
+  const g = METRIC_GROUP[key];
+  if (!g) return false;
+  const mc = rep && rep.metricConfig;
+  return !!(mc && typeof mc === 'object' && mc[g] === false);
+}
+
+const $ = (id) => document.getElementById(id);
+
+// ─── 小工具 ─────────────────────────────────────────────────────────────────
+function pick(obj) {
+  for (let i = 1; i < arguments.length; i++) {
+    const p = arguments[i];
+    let cur = obj, ok = true;
+    for (const k of p.split('.')) {
+      if (cur == null || typeof cur !== 'object') { ok = false; break; }
+      cur = cur[k];
+    }
+    if (ok && typeof cur === 'number' && isFinite(cur)) return cur;
+  }
+  return null;
+}
+
+function fmt(v, digits) {
+  if (v == null || !isFinite(v)) return '—';
+  const d = digits == null ? 1 : digits;
+  return (Math.round(v * Math.pow(10, d)) / Math.pow(10, d)).toFixed(d);
+}
+
+/** 从一份 payload 里取某个指标的时间序列（时间轴统一用相对秒数） */
+function seriesOf(payload, key) {
+  const rows = (payload && Array.isArray(payload.perf)) ? payload.perf : [];
+  const getter = {
+    fps:     (r) => pick(r, 'fps', 'fps.fps'),
+    cpu:     (r) => pick(r, 'cpu.procCpu', 'cpu.cpu', 'procCpu'),
+    mem:     (r) => pick(r, 'mem.totalPss', 'mem.pss', 'mem.physic'),
+    temp:    (r) => pick(r, 'temperature', 'temp'),
+    gpu:     (r) => pick(r, 'gpu', 'gpu.utilization'),
+    jank:    (r) => pick(r, 'jank', 'jankRate'),
+    bigJank: (r) => pick(r, 'bigJank', 'bigJankRate'),
+    smallJank: (r) => pick(r, 'smallJank'),
+    cswitch:   (r) => pick(r, 'cswitch'),
+  }[key];
+  if (!getter) return [];
+
+  const t0 = pick(rows[0] || {}, 'timestamp');
+  const out = [];
+  rows.forEach((r, i) => {
+    const v = getter(r);
+    const ts = pick(r, 'timestamp');
+    const t = (ts != null && t0 != null) ? (ts - t0) / 1000 : i;
+    out.push([Math.round(t * 10) / 10, v]);
+  });
+
+  // GPU 利用率拿不到（MTK 非 root 常见）时，改用 GPU 温度，避免对比图空着
+  if (key === 'gpu') {
+    const nums = out.map(p => p[1]).filter(v => typeof v === 'number' && isFinite(v) && v > 0);
+    if (!nums.length) {
+      const gt = rows.map(r => pick(r, 'gpuTemp'));
+      if (gt.some(v => typeof v === 'number' && v > 0)) {
+        return gt.map((v, i) => [out[i][0], v]);
+      }
+    }
+  }
+
+  // GPU / 温度取不到时旧版本会写成 0：整段全 0 视为无数据，避免画出一条贴底的假曲线
+  if (key === 'gpu' || key === 'temp') {
+    const nums = out.map(p => p[1]).filter(v => typeof v === 'number' && isFinite(v));
+    if (nums.length && nums.every(v => v <= 0)) return out.map(p => [p[0], null]);
+  }
+  return out;
+}
+
+function reportKpi(rep) {
+  const k = (rep && rep.kpi) || {};
+  const g = (name, field) => (k[name] && k[name][field] != null ? k[name][field] : null);
+  // 整段最大值为 0 → 视为该指标没采到（GPU / 温度在受限机型上会写成 0）
+  const unavailable = (name) => {
+    const m = k[name];
+    if (!m) return true;
+    return m.max != null && m.max <= 0;
+  };
+  return {
+    fps: g('fps', 'avg'),
+    fpsMin: g('fps', 'min'),
+    fpsTarget: g('fpsTarget', 'avg'),
+    fpsReach: g('fpsReach', 'avg'),
+    fpsFrameTime: g('fpsFrameTime', 'avg'),
+    fpsLowPct: g('fpsLowPct', 'avg'),
+    fps1Low: g('fps1Low', 'avg'),
+    fpsGeTarget: g('fpsGeTarget', 'avg'),
+    fpsMedRange: g('fpsMedRange', 'avg'),
+    fpsStd: g('fpsStd', 'avg'),
+    fpsStutter: g('fpsStutter', 'avg'),
+    fpsDrop: g('fpsDrop', 'avg'),
+    cpu: g('cpu', 'avg'),
+    mem: g('mem', 'avg'),
+    temp: unavailable('temp') ? null : g('temp', 'avg'),
+    gpu: unavailable('gpu') ? null : g('gpu', 'avg'),
+    gpuTemp: unavailable('gpuTemp') ? null : g('gpuTemp', 'avg'),
+    jank: g('jank', 'avg'),
+    bigJank: g('bigJank', 'avg'),
+    smallJank: g('smallJank', 'avg'),
+    tinyJank: g('tinyJank', 'avg'),
+    jank10: g('jank10', 'avg'),
+    bigJank10: g('bigJank10', 'avg'),
+    smallJank10: g('smallJank10', 'avg'),
+    tinyJank10: g('tinyJank10', 'avg'),
+    cswitch: g('cswitch', 'avg'),
+    cswitchMin: g('cswitch', 'min'),
+    cpuLimit: g('cpuLimit', 'avg'),
+    cpuLimitMin: g('cpuLimit', 'min'),
+  };
+}
+
+function shortApp(s) {
+  if (!s) return '—';
+  // "名称(包名)" → 名称
+  const m = /^(.+?)\((.+)\)$/.exec(s);
+  return m ? m[1] : s;
+}
+
+/**
+ * 报告的真实时间戳（毫秒）。
+ *
+ * 不能直接比 createdAt 字符串：归档时 createdAt 写的是 ISO UTC（2026-10-19T09:22:10.706Z），
+ * 而早期/重建的索引里是本地时间（2026-10-19T16:36:24），两种格式按字符串排序会把
+ * 最新的一份排到最后。报告 id 是本地时间生成的（YYYYMMDD-HHmmss），最可靠。
+ */
+function reportTimeMs(rep) {
+  if (!rep) return 0;
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(String(rep.id || ''));
+  if (m) {
+    const t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+    if (!isNaN(t)) return t;
+  }
+  const local = Date.parse(String(rep.createdAtLocal || '').replace(' ', 'T'));
+  if (!isNaN(local)) return local;
+  const t = Date.parse(String(rep.createdAt || ''));
+  return isNaN(t) ? 0 : t;
+}
+
+/** 按时间倒序（最新在最前） */
+function sortReportsDesc(list) {
+  return (list || []).slice().sort((a, b) => reportTimeMs(b) - reportTimeMs(a));
+}
+
+// ─── 筛选（时间 / 机型 / 应用 / 关键字） ────────────────────────────────────
+const filter = { range: 'all', from: '', to: '', device: '', app: '', q: '' };
+
+function filterActive() {
+  return filter.range !== 'all' || filter.device || filter.app || filter.q;
+}
+
+function dayStartMs(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function reportMatches(rep) {
+  const t = reportTimeMs(rep);
+  const now = Date.now();
+
+  if (filter.range === 'today') {
+    if (t < dayStartMs(now)) return false;
+  } else if (filter.range === '7d') {
+    if (t < now - 7 * 864e5) return false;
+  } else if (filter.range === '30d') {
+    if (t < now - 30 * 864e5) return false;
+  } else if (filter.range === 'custom') {
+    if (filter.from) {
+      const f = new Date(filter.from + 'T00:00:00').getTime();
+      if (!isNaN(f) && t < f) return false;
+    }
+    if (filter.to) {
+      const to = new Date(filter.to + 'T23:59:59').getTime();
+      if (!isNaN(to) && t > to) return false;
+    }
+  }
+
+  if (filter.device && String(rep.deviceName || '') !== filter.device) return false;
+  if (filter.app && String(rep.app || '') !== filter.app) return false;
+
+  if (filter.q) {
+    const hay = [rep.deviceName, rep.app, rep.appName, rep.bundleId, rep.id, rep.createdAtLocal, rep.platform]
+      .filter(Boolean).join(' ').toLowerCase();
+    if (hay.indexOf(filter.q.toLowerCase()) < 0) return false;
+  }
+  return true;
+}
+
+function visibleReports() {
+  return state.reports.filter(reportMatches);
+}
+
+/** 用当前索引填充机型 / 应用下拉（保留已选值） */
+function renderFilterOptions() {
+  const devSel = $('f-device');
+  const appSel = $('f-app');
+  if (!devSel || !appSel) return;
+
+  const devs = Array.from(new Set(state.reports.map(r => r.deviceName).filter(Boolean))).sort();
+  const apps = Array.from(new Set(state.reports.map(r => r.app).filter(Boolean)))
+    .sort((a, b) => String(shortApp(a)).localeCompare(String(shortApp(b)), 'zh'));
+
+  const fill = (sel, allLabel, items, fmtLabel) => {
+    const keep = sel.value;
+    sel.innerHTML = '<option value="">' + allLabel + '</option>' +
+      items.map(v => '<option value="' + escapeHtml(v) + '">' + escapeHtml(fmtLabel ? fmtLabel(v) : v) + '</option>').join('');
+    if (items.indexOf(keep) >= 0) sel.value = keep;
+  };
+
+  fill(devSel, '全部机型', devs);
+  fill(appSel, '全部应用', apps, (v) => shortApp(v) + '  (' + v + ')');
+}
+
+/** 从 DOM 读回筛选条件 → 重绘 */
+function applyFilter() {
+  filter.range = $('f-range') ? $('f-range').value : 'all';
+  filter.from = $('f-from') ? $('f-from').value : '';
+  filter.to = $('f-to') ? $('f-to').value : '';
+  filter.device = $('f-device') ? $('f-device').value : '';
+  filter.app = $('f-app') ? $('f-app').value : '';
+  filter.q = $('f-q') ? $('f-q').value.trim() : '';
+
+  const custom = $('f-custom');
+  if (custom) custom.hidden = filter.range !== 'custom';
+
+  renderGrid();
+  updateToolbar();
+  if (state.selected.size >= 2 && $('compare').classList.contains('is-on')) runCompare();
+  else if (state.selected.size < 2) hideCompare();
+}
+
+function resetFilter() {
+  const r = $('f-range'), d = $('f-device'), a = $('f-app'), q = $('f-q'), f = $('f-from'), t = $('f-to');
+  if (r) r.value = 'all';
+  if (d) d.value = '';
+  if (a) a.value = '';
+  if (q) q.value = '';
+  if (f) f.value = '';
+  if (t) t.value = '';
+  applyFilter();
+}
+
+// ─── 渲染卡片列表 ───────────────────────────────────────────────────────────
+function renderGrid() {
+  const grid = $('grid');
+  state.reports = sortReportsDesc(state.reports);   // 每次都保证最新在最前
+  const reports = visibleReports();
+
+  if (!reports.length) {
+    grid.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'empty';
+    div.style.gridColumn = '1 / -1';
+    if (state.reports.length && filterActive()) {
+      div.innerHTML = '<h2>没有符合条件的报告</h2><p>当前筛选条件下没有匹配记录，换个条件或点「重置」。</p>';
+    } else if (window.__noIndex) {
+      div.innerHTML = '<h2>还没有归档的报告</h2><p>采集一次并点「停止」，报告会自动出现在这里。<br>归档目录：<code>reports/history/</code></p>';
+    } else {
+      div.innerHTML = '<h2>报告库为空</h2><p>索引文件存在但没有任何记录。<br>再采集一次试试。</p>';
+    }
+    grid.appendChild(div);
+    return;
+  }
+
+  grid.innerHTML = '';
+  for (const rep of reports) {
+    const kpi = reportKpi(rep);
+    const card = document.createElement('div');
+    card.className = 'card' + (state.selected.has(rep.id) ? ' is-selected' : '');
+    card.dataset.id = rep.id;
+
+    const plat = (rep.platform || '').toLowerCase();
+    const platLabel = plat === 'android' ? 'Android' : plat === 'ios' ? 'iOS' : plat === 'pc' ? 'PC' : (rep.platform || '—');
+
+    // 本次采集被移除的参数组（旧报告无此字段）
+    const offGroups = (rep.metricConfig && typeof rep.metricConfig === 'object')
+      ? Object.keys(rep.metricConfig).filter(g => rep.metricConfig[g] === false)
+      : [];
+    const offLabel = offGroups.length
+      ? '<div class="card-off" title="采集时已移除：' + escapeHtml(offGroups.map(groupLabel).join('、')) + '">已移除参数：' + escapeHtml(offGroups.map(groupLabel).join('、')) + '</div>'
+      : '';
+
+    card.innerHTML = [
+      '<div class="card-head">',
+      '  <input type="checkbox" class="card-check"' + (state.selected.has(rep.id) ? ' checked' : '') + ' />',
+      '  <div class="card-title">',
+      '    <div class="card-time">' + (rep.createdAtLocal || rep.createdAt || '') + '</div>',
+      '    <div class="card-sub">',
+      '      <span class="tag tag--' + plat + '">' + platLabel + '</span>',
+      '      ' + escapeHtml(rep.deviceName || '未知设备') + ' · ' + escapeHtml(shortApp(rep.app)),
+      '    </div>',
+      offLabel,
+      '  </div>',
+      '  <button type="button" class="card-del" title="删除这份报告">✕</button>',
+      '</div>',
+      '<div class="kpis">',
+      kpiCell('FPS', kpi.fps, '帧/s', 'fps'),
+      kpiCell('CPU', kpi.cpu, '%', 'proccpu'),
+      kpiCell('温度', kpi.temp, '°C', 'temp'),
+      kpiCell('内存', kpi.mem, 'MB', 'mem'),
+      kpiCell('Jank', kpi.jank, '次/s', 'jank'),
+      kpi.gpu != null ? kpiCell('GPU', kpi.gpu, '%', 'gpu') : kpiCell('GPU 温度', kpi.gpuTemp, '°C', 'gputemp'),
+      '</div>',
+      fpsExtraLine(kpi),
+      '<div class="card-foot">',
+      '  <span>' + (rep.samples || 0) + ' 个采样' + (rep.durationSec != null ? ' · ' + fmt(rep.durationSec, 0) + 's' : '') + '</span>',
+      '  <button type="button" class="open-loc" title="在系统文件管理器中打开该报告的存放位置">📁 打开位置</button>',
+      '  <button type="button" class="export-share" title="打包成一份可分享的单文件报告（数据与图表库全内置，离线可看）">⤓ 导出分享</button>',
+      '  <span class="open">打开详细报告 →</span>',
+      '</div>',
+    ].join('\n');
+
+    card.addEventListener('click', (e) => {
+      if (e.target.classList.contains('card-check')) return;   // 勾选框自己处理
+      if (e.target.closest('.card-del')) { deleteReports([rep.id]); return; }
+      if (e.target.closest('.open-loc')) { openReportLocation(rep.id); return; }
+      if (e.target.closest('.export-share')) { exportSharedReport(rep.id, e.target.closest('.export-share')); return; }
+      if (e.target.classList.contains('open')) { openDetail(rep.id); return; }
+      toggleSelect(rep.id);
+    });
+
+    card.querySelector('.card-check').addEventListener('change', (e) => {
+      e.stopPropagation();
+      toggleSelect(rep.id, e.target.checked);
+    });
+
+    grid.appendChild(card);
+  }
+  if (window.MetricInfo) MetricInfo.decorate(grid);
+}
+
+/**
+ * 卡片上的帧率质量小字行（达帧率 / 均帧 / 低帧占比）。
+ * 归档侧没写这三个 KPI 的旧报告不显示。
+ */
+function fpsExtraLine(kpi) {
+  if (kpi.fpsReach == null && kpi.fpsFrameTime == null && kpi.fpsLowPct == null) return '';
+  const tone = (v, good, warn) => (v == null ? 'na' : (v >= good ? 'good' : (v >= warn ? 'warn' : 'bad')));
+  const cell = (label, v, unit, cls, infoKey) =>
+    '<span class="kpx"><i' + ((infoKey && window.MetricInfo) ? ' data-info="' + infoKey + '"' : '') + '>' + label +
+    '</i><b class="' + cls + '">' + (v == null ? '—' : fmt(v)) + unit + '</b></span>';
+  // 均帧以「目标帧率对应的理想帧间隔」为满分基准：1000/目标 ÷ 实际均帧
+  const expectMs = (kpi.fpsTarget > 0) ? 1000 / kpi.fpsTarget : null;
+  const ftScore = (expectMs && kpi.fpsFrameTime > 0) ? (expectMs / kpi.fpsFrameTime) * 100 : null;
+  const tgt = kpi.fpsTarget == null ? '—' : String(Math.round(kpi.fpsTarget));
+  const tgtNum = kpi.fpsTarget == null ? null : kpi.fpsTarget;
+  let extra = '<div class="kpis-extra">' +
+    '<span class="kpx"><i data-info="fpsTarget">目标</i><b>' + tgt + ' 帧</b></span>' +
+    cell('达帧率', kpi.fpsReach, '%', tone(kpi.fpsReach, 90, 70), 'reach') +
+    cell('均帧', kpi.fpsFrameTime, 'ms', tone(ftScore, 95, 85), 'frametime') +
+    cell('低帧', kpi.fpsLowPct, '%', tone(kpi.fpsLowPct == null ? null : 100 - kpi.fpsLowPct, 90, 80), 'lowpct');
+  if (kpi.fps1Low != null)
+    extra += cell('1%Low', kpi.fps1Low, ' 帧/s', tone(kpi.fps1Low, tgtNum && tgtNum * 0.95, tgtNum && tgtNum * 0.85), 'onelow');
+  if (kpi.fpsGeTarget != null)
+    extra += cell('≥目标', kpi.fpsGeTarget, '%', tone(kpi.fpsGeTarget, 90, 70), 'getarget');
+  if (kpi.fpsMedRange != null)
+    extra += cell('稳帧', kpi.fpsMedRange, '%', tone(kpi.fpsMedRange, 80, 60), 'medrange');
+  extra += '</div>';
+  return extra;
+}
+
+function kpiCell(label, value, unit, infoKey) {
+  const na = value == null;
+  const ib = (infoKey && window.MetricInfo) ? ' data-info="' + infoKey + '"' : '';
+  return '<div class="kpi">' +
+    '<div class="kpi-label"' + ib + '>' + label + '</div>' +
+    '<div class="kpi-value' + (na ? ' na' : '') + '">' +
+    (na ? '—' : fmt(value) + '<span class="unit">' + unit + '</span>') +
+    '</div></div>';
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+// ─── 选择逻辑 ───────────────────────────────────────────────────────────────
+function toggleSelect(id, force) {
+  const on = (force === undefined) ? !state.selected.has(id) : !!force;
+  if (on) {
+    if (state.selected.size >= 6) {
+      alert('最多同时对比 6 份报告');
+      renderGrid();
+      return;
+    }
+    state.selected.add(id);
+  } else {
+    state.selected.delete(id);
+  }
+  renderGrid();
+  updateToolbar();
+  if (state.selected.size >= 2 && $('compare').classList.contains('is-on')) {
+    runCompare();
+  } else if (state.selected.size < 2) {
+    hideCompare();
+  }
+}
+
+function updateToolbar() {
+  const n = state.selected.size;
+  const shown = visibleReports().length;
+  const total = state.reports.length;
+  const filtered = filterActive() && shown !== total;
+
+  $('count-label').textContent = total
+    ? ('共 ' + total + ' 份报告' + (filtered ? ' · 筛选出 ' + shown + ' 份' : '') + (n ? ' · 已选 ' + n : ''))
+    : '暂无报告';
+
+  const fc = $('f-count');
+  if (fc) fc.textContent = total ? ('显示 ' + shown + ' / ' + total + ' 份') : '';
+
+  $('btn-compare').disabled = n < 2;
+  $('btn-compare').textContent = n >= 2 ? ('对比选中（' + n + '）') : '对比选中';
+  const del = $('btn-del-sel');
+  if (del) {
+    del.disabled = n < 1 || !canDelete();
+    del.textContent = n >= 1 ? ('删除选中（' + n + '）') : '删除选中';
+  }
+}
+
+// ─── 加载某份报告完整数据 ───────────────────────────────────────────────────
+function loadReportData(id) {
+  if (state.cache.has(id)) return Promise.resolve(state.cache.get(id));
+  return new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = 'history/' + id + '.js';
+    s.onload = () => {
+      const d = window.data;
+      window.data = undefined;      // 清掉，避免下一份读串
+      state.cache.set(id, d || null);
+      resolve(d || null);
+    };
+    s.onerror = () => { state.cache.set(id, null); resolve(null); };
+    document.head.appendChild(s);
+  });
+}
+
+function openDetail(id) {
+  // 客户端内打开时交给系统浏览器，避免报告库窗口被详情页顶掉
+  if (window.reportLib && typeof window.reportLib.openReport === 'function') {
+    window.reportLib.openReport(id).then((r) => {
+      if (r && r.ok === false) window.location.href = 'perf.html?r=' + encodeURIComponent(id);
+    }).catch(() => {
+      window.location.href = 'perf.html?r=' + encodeURIComponent(id);
+    });
+    return;
+  }
+  window.location.href = 'perf.html?r=' + encodeURIComponent(id);
+}
+
+/** 打开这份报告的存放位置（history/<id>.js 所在目录） */
+function openReportLocation(id) {
+  const fallback = () => alert(
+    '这份报告存放在报告目录的 history 子目录下：\n  history/' + id + '.js\n\n' +
+    '请从客户端顶栏的「报告库」按钮打开本页，即可用文件管理器打开该位置。');
+  if (window.reportLib && typeof window.reportLib.openReportLocation === 'function') {
+    window.reportLib.openReportLocation(id).then((r) => {
+      if (r && r.ok === false) {
+        if (window.reportLib.historyDir) {
+          window.reportLib.historyDir().then((d) => {
+            alert('打开报告位置失败：' + (r.reason || '') + (d ? '\n\n报告目录：' + d : ''));
+          }).catch(() => alert('打开报告位置失败：' + (r.reason || '')));
+        } else alert('打开报告位置失败：' + (r.reason || ''));
+      }
+    }).catch(() => fallback());
+    return;
+  }
+  fallback();
+}
+
+/** 把这份报告打包成一个自包含的单文件 HTML（无外部依赖，可直接转发） */
+function exportSharedReport(id, btn) {
+  const noApi = () => alert(
+    '当前是浏览器直接打开的报告库，无法导出。\n请从客户端顶栏的「报告库」按钮打开本页。');
+  const fn = window.reportLib && window.reportLib.exportSharedReport;
+  if (typeof fn !== 'function') { noApi(); return; }
+  if (btn) { btn.disabled = true; btn.classList.add('is-busy'); }
+  const done = () => { if (btn) { btn.disabled = false; btn.classList.remove('is-busy'); } };
+  fn(id).then((r) => {
+    done();
+    if (!r) return;
+    if (r.canceled) return;                     // 用户在保存对话框里取消
+    if (r.ok === false) {
+      alert('导出失败：' + (r.reason || '未知原因'));
+      return;
+    }
+    const kb = r.bytes ? '（' + Math.round(r.bytes / 1024) + ' KB）' : '';
+    alert('已导出可分享的单文件报告：\n' + r.path + kb +
+      '\n\n该文件已内置图表库与本次数据，双击即可查看，无需安装客户端。');
+  }).catch((e) => { done(); alert('导出失败：' + (e && e.message ? e.message : String(e))); });
+}
+
+/**
+ * 把当前这份「指标对比」整体另存为一个自包含的单文件 HTML：
+ * 内置图表库 + 参与对比的每一份报告的原始数据，双击即可离线查看，可直接转发。
+ */
+function exportCompareReport(btn) {
+  const noApi = () => alert(
+    '当前是浏览器直接打开的对比结果，无法保存。\n请从客户端顶栏的「报告库」按钮打开本页后重试。');
+  const fn = window.reportLib && window.reportLib.exportCompareReport;
+  if (typeof fn !== 'function') { noApi(); return; }
+
+  const ids = state.reports.filter(r => state.selected.has(r.id)).map(r => r.id);
+  if (ids.length < 2) { alert('请至少勾选 2 份报告再做对比保存。'); return; }
+
+  const el = btn || $('btn-export-compare');
+  if (el) { el.disabled = true; el.classList.add('is-busy'); }
+  const done = () => { if (el) { el.disabled = false; el.classList.remove('is-busy'); } };
+
+  fn(ids).then((r) => {
+    done();
+    if (!r) return;
+    if (r.canceled) return;                     // 用户在保存对话框里取消
+    if (r.ok === false) { alert('保存失败：' + (r.reason || '未知原因')); return; }
+    const kb = r.bytes ? '（' + Math.round(r.bytes / 1024) + ' KB）' : '';
+    alert('已保存可分享的对比报告：\n' + r.path + kb +
+      '\n\n该文件已内置图表库与参与对比的全部数据，双击即可查看，无需安装客户端。');
+  }).catch((e) => { done(); alert('保存失败：' + (e && e.message ? e.message : String(e))); });
+}
+
+// ─── 对比 ───────────────────────────────────────────────────────────────────
+/** 「每 10min」计数类指标的归属：这些行不单列，数值并入对应 Jank 行的副标注 */
+const CMP_SUB_OF = {
+  jank: 'jank10', bigJank: 'bigJank10',
+  smallJank: 'smallJank10', tinyJank: 'tinyJank10',
+};
+const CMP_SUB_ROWS = new Set(Object.values(CMP_SUB_OF));
+
+function hideCompare() {
+  $('compare').classList.remove('is-on');
+  const ins = $('cmp-insight');
+  if (ins) { ins.classList.remove('is-on'); ins.innerHTML = ''; }
+  const saveBtn = $('btn-export-compare');
+  if (saveBtn) saveBtn.disabled = true;
+  destroyCharts();
+}
+
+function destroyCharts() {
+  for (const c of state.charts) { try { c.dispose(); } catch (_) {} }
+  state.charts = [];
+  $('cmp-charts').innerHTML = '';
+}
+
+async function runCompare() {
+  const ids = state.reports.filter(r => state.selected.has(r.id)).map(r => r.id);
+  if (ids.length < 2) { hideCompare(); return; }
+
+  $('compare').classList.add('is-on');
+
+  const reps = ids.map(id => state.reports.find(r => r.id === id)).filter(Boolean);
+  const payloads = await Promise.all(ids.map(loadReportData));
+
+  renderCompareTable(reps, payloads);
+  renderCompareInsight(reps, payloads);
+  renderCompareLegend(reps);
+  renderCompareCharts(reps, payloads);
+  const saveBtn = $('btn-export-compare');
+  if (saveBtn) saveBtn.disabled = false;
+  $('compare').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ─── 对比解读总结 ─────────────────────────────────────────────────────────
+ * 与单份报告页同一套评分口径：帧率达成度 50% + Jank 28% + 低帧稳定性 22%。
+ * 目的是回答"哪一份更好、好在哪、差的那份问题出在哪"。
+ * ---------------------------------------------------------------------- */
+function cmpNums(arr) { return (arr || []).filter(v => typeof v === 'number' && isFinite(v)); }
+function cmpMean(arr) {
+  const a = cmpNums(arr);
+  if (!a.length) return null;
+  let s = 0;
+  for (const v of a) s += v;
+  return s / a.length;
+}
+function cmpPct(arr, p) {
+  const a = cmpNums(arr).slice().sort((x, y) => x - y);
+  if (!a.length) return null;
+  const i = (a.length - 1) * p;
+  const lo = Math.floor(i), hi = Math.ceil(i);
+  return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
+}
+function cmpLabel(rep) {
+  const t = String(rep.createdAtLocal || rep.createdAt || '');
+  const hm = /\d{2}:\d{2}(:\d{2})?/.exec(t);
+  return hm ? hm[0] : t.slice(0, 16);
+}
+
+function renderCompareInsight(reps, payloads) {
+  const box = $('cmp-insight');
+  if (!box) return;
+
+  const stats = reps.map((rep, i) => {
+    const k = reportKpi(rep);
+    // 采集时移除了 FPS 参数组的报告不参与帧率序列统计
+    const fpsSeries = metricDisabled(rep, 'fps') ? [] : seriesOf(payloads[i], 'fps').map(p => p[1]);
+    return {
+      rep,
+      label: cmpLabel(rep),
+      color: PALETTE[i % PALETTE.length],
+      fps: k.fps,
+      fpsTarget: k.fpsTarget,
+      reach: k.fpsReach,
+      frameTime: k.fpsFrameTime,
+      lowPct: k.fpsLowPct,
+      fpsP5: cmpPct(fpsSeries, 0.05),
+      fpsP95: cmpPct(fpsSeries, 0.95),
+      cpu: k.cpu,
+      mem: k.mem,
+      temp: k.temp,
+      gpu: k.gpu,
+      gpuTemp: k.gpuTemp,
+      jank: k.jank,
+      bigJank: k.bigJank,
+      smallJank: k.smallJank,
+      jank10: k.jank10,
+      bigJank10: k.bigJank10,
+      smallJank10: k.smallJank10,
+      cswitch: k.cswitch,
+      cswitchMin: k.cswitchMin,
+      cpuLimit: k.cpuLimit,
+      cpuLimitMin: k.cpuLimitMin,
+      fps1Low: k.fps1Low,
+      fpsGeTarget: k.fpsGeTarget,
+      fpsMedRange: k.fpsMedRange,
+      fpsStd: k.fpsStd,
+      fpsStutter: k.fpsStutter,
+      fpsDrop: k.fpsDrop,
+      samples: rep.samples || 0,
+    };
+  });
+
+  // 目标帧率：各份 P95 的最大值吸附到常见刷新率
+  let target = null;
+  const p95s = cmpNums(stats.map(s => s.fpsP95));
+  if (p95s.length) {
+    const mx = Math.max.apply(null, p95s);
+    for (const c of [30, 45, 60, 90, 120, 144, 165]) { if (c >= mx * 0.97) { target = c; break; } }
+    if (target == null) target = Math.ceil(mx / 30) * 30;
+  }
+
+  // 综合得分
+  for (const s of stats) {
+    s.jankRate = (s.jank != null && s.fps) ? (s.jank / s.fps) * 100 : null;
+    if (s.fps == null || !target) { s.score = null; continue; }
+    const fpsScore = Math.max(0, Math.min(100, (s.fps / target) * 100));
+    const jankScore = s.jankRate == null ? 85 : Math.max(0, Math.min(100, 100 - s.jankRate * 9));
+    const lowRatio = s.fpsP5 != null ? Math.max(0, Math.min(1, s.fpsP5 / target)) : 0.85;
+    s.score = Math.round(0.5 * fpsScore + 0.28 * jankScore + 0.22 * lowRatio * 100);
+  }
+
+  const scored = stats.filter(s => s.score != null);
+  const ranked = scored.slice().sort((a, b) => b.score - a.score);
+
+  /* ---------- 逐项最优 ---------- */
+  const bestOf = (key, dir) => {
+    const list = stats.filter(s => s[key] != null);
+    if (list.length < 2) return null;
+    let best = list[0];
+    for (const s of list) {
+      if (dir === 'high' ? s[key] > best[key] : s[key] < best[key]) best = s;
+    }
+    const worst = list.reduce((a, b) => (dir === 'high' ? (b[key] < a[key] ? b : a) : (b[key] > a[key] ? b : a)), list[0]);
+    return { best, worst, key };
+  };
+
+  const items = [];
+  const pushBest = (name, key, dir, unit, digits) => {
+    const r = bestOf(key, dir);
+    if (!r) return;
+    // 只有两者数值不同才补充另一端，且措辞要跟优劣方向一致
+    const span = (r.best[key] === r.worst[key])
+      ? ''
+      : (' <span style="color:var(--text2)">· ' + (dir === 'high' ? '最低 ' : '最高 ') +
+         fmt(r.worst[key], digits) + unit + '</span>');
+    items.push({
+      k: name,
+      html: '<span style="color:' + r.best.color + '">●</span> ' + escapeHtml(r.best.label) +
+            ' <span style="color:var(--green)">' + fmt(r.best[key], digits) + unit + '</span>' + span,
+    });
+  };
+
+  pushBest('FPS 最高', 'fps', 'high', ' 帧/s', 1);
+  if (stats.some(s => s.reach != null)) pushBest('达帧率 最高', 'reach', 'high', '%', 1);
+  if (stats.some(s => s.frameTime != null)) pushBest('均帧 最低', 'frameTime', 'low', ' ms', 1);
+  if (stats.some(s => s.lowPct != null)) pushBest('低帧占比 最低', 'lowPct', 'low', '%', 1);
+  pushBest('进程 CPU 最低', 'cpu', 'low', '%', 1);
+  pushBest('内存 最低', 'mem', 'low', ' MB', 0);
+  pushBest('温度 最低', 'temp', 'low', '\u00b0C', 1);
+  pushBest('Jank 最低', 'jank', 'low', ' 次/s', 2);
+  pushBest('BigJank 最低', 'bigJank', 'low', ' 次/s', 2);
+  if (stats.some(s => s.smallJank != null)) pushBest('SmallJank 最低', 'smallJank', 'low', ' 次/s', 2);
+  if (stats.some(s => s.fps1Low != null)) pushBest('1%Low 最高', 'fps1Low', 'high', ' 帧/s', 1);
+  if (stats.some(s => s.fpsGeTarget != null)) pushBest('FPS≥目标 最高', 'fpsGeTarget', 'high', '%', 1);
+  if (stats.some(s => s.fpsMedRange != null)) pushBest('稳帧范围 最高', 'fpsMedRange', 'high', '%', 1);
+  if (stats.some(s => s.fpsStd != null)) pushBest('帧率标准差 最低', 'fpsStd', 'low', ' 帧/s', 2);
+  if (stats.some(s => s.fpsStutter != null)) pushBest('卡顿时长占比 最低', 'fpsStutter', 'low', '%', 1);
+  if (stats.some(s => s.fpsDrop != null)) pushBest('Drop 最低', 'fpsDrop', 'low', ' 帧/时', 1);
+  if (stats.some(s => s.jank10 != null)) pushBest('Jank/10min 最低', 'jank10', 'low', ' 次', 1);
+  if (stats.some(s => s.bigJank10 != null)) pushBest('BigJank/10min 最低', 'bigJank10', 'low', ' 次', 1);
+  if (stats.some(s => s.smallJank10 != null)) pushBest('SmallJank/10min 最低', 'smallJank10', 'low', ' 次', 1);
+  if (stats.some(s => s.cswitch != null)) pushBest('上下文切换 最低', 'cswitch', 'low', ' 次/s', 0);
+  if (stats.some(s => s.cpuLimit != null)) pushBest('CPU 限频 最高', 'cpuLimit', 'high', '%', 0);
+  if (stats.some(s => s.gpu != null)) pushBest('GPU 利用率最高', 'gpu', 'high', '%', 1);
+  else if (stats.some(s => s.gpuTemp != null)) pushBest('GPU 温度最低', 'gpuTemp', 'low', '\u00b0C', 1);
+
+  /* ---------- 结论 ---------- */
+  let lead = '';
+  if (ranked.length >= 2) {
+    const b = ranked[0], w = ranked[ranked.length - 1];
+    const gap = b.score - w.score;
+    lead = '本次对比共 <b>' + stats.length + '</b> 份报告。综合表现最好的是 <b style="color:' + b.color + '">' +
+      escapeHtml(b.label) + '</b>（得分 ' + b.score + '），最差的是 <b style="color:' + w.color + '">' +
+      escapeHtml(w.label) + '</b>（得分 ' + w.score + '），相差 <b>' + gap + '</b> 分。';
+    if (gap >= 15) lead += '差距明显，两次采集的负载场景可能并不一致，比较时需留意。';
+    else if (gap >= 6) lead += '差距可感知，主要体现在帧率与掉帧上。';
+    else lead += '两者表现接近，属于同一水平区间。';
+  } else if (scored.length === 1) {
+    lead = '所选报告中只有 <b>' + escapeHtml(scored[0].label) + '</b> 含有效 FPS 数据（得分 ' + scored[0].score + '），其余报告缺少帧率指标，无法横向评分。';
+  } else {
+    lead = '所选报告都没有可用的 FPS 数据（可能是 iOS GPU 专项或采集异常），只能对比其余指标。';
+  }
+
+  /* ---------- 风险 / 建议 ---------- */
+  const risks = [];
+  if (scored.length >= 2) {
+    const allLow = scored.every(s => target && s.fps / target < 0.9);
+    if (allLow) {
+      risks.push({ tone: 'high', text: '所有报告帧率均未达到目标的 90%，问题更可能来自应用本身，而非某一次的测试环境。' });
+    }
+    const fpsList = cmpNums(scored.map(s => s.fps));
+    if (fpsList.length >= 2) {
+      const d = Math.max.apply(null, fpsList) - Math.min.apply(null, fpsList);
+      if (d >= 8) risks.push({ tone: 'mid', text: '各次 FPS 极差达 ' + fmt(d, 1) + ' 帧/s，建议确认测试场景（关卡、画质、后台应用）是否一致。' });
+    }
+    const tempList = cmpNums(stats.map(s => s.temp));
+    if (tempList.length >= 2) {
+      const d = Math.max.apply(null, tempList) - Math.min.apply(null, tempList);
+      if (d >= 4) risks.push({ tone: 'mid', text: '温度极差 ' + fmt(d, 1) + '\u00b0C，高温那一次可能已受温控降频影响，结论需打折。' });
+    }
+    const jankList = cmpNums(stats.map(s => s.jank));
+    if (jankList.length >= 2 && Math.max.apply(null, jankList) >= 3) {
+      risks.push({ tone: 'info', text: 'Jank 最高的一次为 ' + fmt(Math.max.apply(null, jankList), 2) + ' 次/s，可点开该报告查看掉帧集中的时间段。' });
+    }
+    const lowList = cmpNums(stats.map(s => s.lowPct));
+    if (lowList.length >= 2 && Math.max.apply(null, lowList) >= 20) {
+      risks.push({ tone: 'mid', text: '低帧占比最高的一次为 ' + fmt(Math.max.apply(null, lowList), 1) + '%，可点开该报告结合 Jank 分布定位卡顿时段。' });
+    }
+  }
+  const csList = cmpNums(stats.map(s => s.cswitch));
+  if (csList.length >= 2) {
+    const mx = Math.max.apply(null, csList);
+    if (mx >= 14000) risks.push({ tone: 'high', text: '上下文切换最高达 ' + fmt(mx, 0) + ' 次/s，超过 PerfDog 阈值 14000/s，该次进程存在被系统 kill 的风险。' });
+    else if (mx >= 8000) risks.push({ tone: 'mid', text: '上下文切换最高 ' + fmt(mx, 0) + ' 次/s 偏高（>8000/s），线程调度开销大，可排查频繁唤醒 / 多线程竞争。' });
+  }
+  const limList = cmpNums(stats.map(s => s.cpuLimitMin));
+  if (limList.length && Math.min.apply(null, limList) < 100) {
+    risks.push({ tone: 'mid', text: '有报告的 CPU 可调度最大频率被限制在硬件上限的 ' + fmt(Math.min.apply(null, limList), 0) + '% 以内（疑似温控降频），高负载帧率会受影响。' });
+  }
+  if (stats.every(s => s.gpu == null)) {
+    risks.push({ tone: 'info', text: '所有报告都没有 GPU 利用率（该机型需 root），对比表已改用 GPU 温度列。' });
+  }
+  if (!risks.length) {
+    risks.push({ tone: 'info', text: '各报告指标分布集中，未发现明显异常项。' });
+  }
+
+  /* ---------- 渲染 ---------- */
+  let html = ''
+    + '<div class="cmp-insight-head">'
+    +   '<span class="cmp-insight-title">对比解读</span>'
+    +   '<span class="cmp-insight-badge">' + stats.length + ' 份报告</span>'
+    +   (target ? '<span class="cmp-insight-sub">评分口径：帧率达成 50% · Jank 28% · 低帧稳定 22%（目标 ' + target + ' 帧）</span>' : '')
+    + '</div>'
+    + '<div class="cmp-insight-lead">' + lead + '</div>';
+
+  if (items.length) {
+    html += '<ul class="cmp-insight-list">';
+    for (const it of items) html += '<li><b>' + it.k + '</b>' + it.html + '</li>';
+    html += '</ul>';
+  }
+
+  html += '<div class="cmp-insight-risks">';
+  for (const r of risks) {
+    const flag = r.tone === 'high' ? '⚠ 风险' : (r.tone === 'mid' ? '△ 注意' : 'ℹ 提示');
+    html += '<div class="cmp-insight-risk cmp-insight-risk--' + r.tone + '">' + flag + '：' + r.text + '</div>';
+  }
+  html += '</div>';
+
+  box.innerHTML = html;
+  box.classList.add('is-on');
+}
+
+// 对比表里「—」（无数据）单元格的原因说明，鼠标悬停可见
+const NA_REASON = {
+  gpu: '该报告未采到 GPU 利用率（该机型需 root）',
+  gpuTemp: '该报告采集时未记录 GPU 温度',
+  smallJank: '该机型/版本未采集 SmallJank',
+  smallJank10: '该机型/版本未采集 SmallJank/10min',
+  tinyJank: '该机型/版本未采集 TinyJank',
+  tinyJank10: '该机型/版本未采集 TinyJank/10min',
+};
+
+function renderCompareTable(reps, payloads) {
+  const head = $('cmp-head');
+  const body = $('cmp-body');
+
+  head.innerHTML = '<th>指标</th>' + reps.map((r, i) =>
+    '<th><span style="color:' + PALETTE[i % PALETTE.length] + '">●</span> ' +
+    escapeHtml((r.createdAtLocal || '').slice(5)) + '<br>' +
+    '<span style="font-weight:400;color:var(--text2)">' + escapeHtml(shortApp(r.app)) + '</span></th>'
+  ).join('');
+
+  const kpis = reps.map(reportKpi);
+
+  let html = '';
+  // GPU 利用率全都没有时（MTK 非 root 常见），对比表改用 GPU 温度
+  const gpuAllMissing = kpis.every(k => k.gpu == null);
+  const gpuUseTemp = gpuAllMissing && kpis.some(k => k.gpuTemp != null);
+
+  for (const m of METRICS) {
+    // Jank/10min 四项是上面 Jank 的派生计数，不再单独立一行，避免表里出现两组几乎相同的 Jank
+    if (CMP_SUB_ROWS.has(m.key)) continue;
+    const useTemp = (m.key === 'gpu' && gpuUseTemp);
+    const key = useTemp ? 'gpuTemp' : m.key;
+    const label = useTemp ? 'GPU 温度' : m.label;
+    const unit = useTemp ? '\u00b0C' : m.unit;
+    // 采集时被移除参数的报告：该指标按无数据处理（单元格「—」+ 原因提示）
+    const vals = kpis.map((k, i) => (metricDisabled(reps[i], key) ? null : k[key]));
+    const valid = vals.filter(v => v != null);
+    // 所有对比报告都缺该指标（或都移除过该参数）时整行隐藏：一排「—」没有信息量，缺口原因由上方「对比解读」说明
+    if (valid.length === 0) continue;
+    let bestIdx = -1, worstIdx = -1;
+    if (m.better && valid.length >= 2) {
+      const target = m.better === 'high' ? Math.max.apply(null, valid) : Math.min.apply(null, valid);
+      bestIdx = vals.indexOf(target);
+      const bad = m.better === 'high' ? Math.min.apply(null, valid) : Math.max.apply(null, valid);
+      if (bad !== target) worstIdx = vals.indexOf(bad);
+    }
+
+    // 被合并进来的 Jank/10min 数值：作为主行的副标注展示（数据不丢，行数减半）
+    const subKey = CMP_SUB_OF[m.key];
+    let subHtml = '';
+    if (subKey) {
+      const subVals = kpis.map((k, i) => (metricDisabled(reps[i], subKey) ? null : k[subKey]));
+      if (subVals.some(v => v != null)) {
+        subHtml = '<span class="cmp-sub">每 10min：' +
+          subVals.map(v => (v == null ? '—' : fmt(v))).join(' / ') + '</span>';
+      }
+    }
+
+    html += '<tr><td class="metric-name"' + (window.MetricInfo ? MetricInfo.attr(key) : '') + '><b>' + label + '</b> ' +
+            '<span style="color:var(--text2)">(' + unit + ')</span>' + subHtml + '</td>';
+    const naReason = NA_REASON[key] || '该报告无此指标数据';
+    vals.forEach((v, i) => {
+      const showNa = v == null;
+      const cls = showNa ? 'na' : (i === bestIdx ? 'best' : (i === worstIdx ? 'worst' : ''));
+      const tip = metricDisabled(reps[i], key) ? '该报告采集时已移除此参数' : naReason;
+      html += '<td class="' + cls + '"' + (showNa ? ' title="' + tip + '"' : '') + '>' + (showNa ? '—' : fmt(v)) + '</td>';
+    });
+    html += '</tr>';
+  }
+
+  // 附加信息行
+  html += '<tr><td class="metric-name"><b>采样数</b></td>' +
+          reps.map(r => '<td>' + (r.samples || 0) + '</td>').join('') + '</tr>';
+  html += '<tr><td class="metric-name"><b>时长</b> <span style="color:var(--text2)">(s)</span></td>' +
+          reps.map(r => '<td>' + (r.durationSec == null ? '—' : fmt(r.durationSec, 0)) + '</td>').join('') + '</tr>';
+  html += '<tr><td class="metric-name"><b>设备</b></td>' +
+          reps.map(r => '<td style="color:var(--text2)">' + escapeHtml(r.deviceName || '—') + '</td>').join('') + '</tr>';
+
+  body.innerHTML = html;
+  if (window.MetricInfo) MetricInfo.decorate(body);
+}
+
+function renderCompareLegend(reps) {
+  $('cmp-legend').innerHTML = '<span style="color:var(--text2)">曲线颜色：</span>' +
+    reps.map((r, i) =>
+      '<span><i style="background:' + PALETTE[i % PALETTE.length] + '"></i>' +
+      escapeHtml((r.createdAtLocal || '').slice(5)) + '</span>'
+    ).join('');
+}
+
+function renderCompareCharts(reps, payloads) {
+  destroyCharts();
+  const box = $('cmp-charts');
+
+  for (const cfg of CHARTS) {
+    // 采集时移除了该参数组的报告不参与这条曲线
+    const seriesList = payloads.map((p, i) => (p && !metricDisabled(reps[i], cfg.key) ? seriesOf(p, cfg.key) : []));
+    // 全都没数据就不画这张图
+    const hasData = seriesList.some(s => s.some(pt => pt[1] != null));
+    if (!hasData) continue;
+
+    // GPU 系列如果是从利用率回退到温度，标题与单位跟着改
+    let title = cfg.title, unit = cfg.unit;
+    if (cfg.key === 'gpu') {
+      const utilAll = seriesList.every(list => !list.some(pt => typeof pt[1] === 'number' && pt[1] > 0));
+      if (utilAll) { title = 'GPU 温度'; unit = '\u00b0C'; }
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-box';
+    const _hAttr = (window.MetricInfo ? MetricInfo.attr(cfg.key) : '');
+    wrap.innerHTML = '<h3' + _hAttr + '>' + title + ' <span style="color:var(--text2)">(' + unit + ')</span></h3>' +
+                     '<div class="chart"></div>';
+    if (window.MetricInfo) MetricInfo.decorate(wrap);
+    box.appendChild(wrap);
+
+    const el = wrap.querySelector('.chart');
+    const chart = echarts.init(el, null, { renderer: 'canvas' });
+
+    const series = reps.map((r, i) => ({
+      name: (r.createdAtLocal || '').slice(5),
+      type: 'line',
+      showSymbol: false,
+      smooth: false,
+      lineStyle: { width: 1.6, color: PALETTE[i % PALETTE.length] },
+      itemStyle: { color: PALETTE[i % PALETTE.length] },
+      connectNulls: false,
+      data: seriesList[i].map(pt => [pt[0], pt[1]]),
+    }));
+
+    chart.setOption({
+      backgroundColor: 'transparent',
+      grid: { left: 46, right: 16, top: 12, bottom: 26 },
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: '#1e2230',
+        borderColor: '#2a2f3d',
+        textStyle: { color: '#e0e4ef', fontSize: 11 },
+        axisPointer: { type: 'line', lineStyle: { color: '#4f8ef7', opacity: .5 } },
+        valueFormatter: (v) => (v == null ? '—' : fmt(v) + ' ' + unit),
+      },
+      xAxis: {
+        type: 'value',
+        name: 's',
+        nameTextStyle: { color: '#8a90a0', fontSize: 10 },
+        axisLabel: { color: '#8a90a0', fontSize: 10 },
+        axisLine: { lineStyle: { color: '#2a2f3d' } },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        axisLabel: { color: '#8a90a0', fontSize: 10 },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: '#20242f' } },
+      },
+      series,
+    });
+
+    state.charts.push(chart);
+  }
+
+  if (!state.charts.length) {
+    box.innerHTML = '<div class="empty" style="grid-column:1/-1;padding:30px">' +
+      '所选报告没有可绘制的指标数据</div>';
+  }
+}
+
+// ─── 删除报告 ───────────────────────────────────────────────────────────────
+/** 是否具备删除能力：只有从客户端内打开（BrowserWindow + preload）时才注入 reportLib */
+function canDelete() {
+  return !!(window.reportLib && typeof window.reportLib.deleteReports === 'function');
+}
+
+async function deleteReports(ids) {
+  const list = (ids || []).filter(Boolean);
+  if (!list.length) return;
+
+  if (!canDelete()) {
+    alert('当前是浏览器直接打开的报告库，无法删除文件。\n请从客户端顶栏的「报告库」按钮打开，即可删除。');
+    return;
+  }
+
+  const names = list
+    .map(id => state.reports.find(r => r.id === id))
+    .filter(Boolean)
+    .map(r => '· ' + (r.createdAtLocal || r.createdAt || r.id) + '  ' + (r.deviceName || ''))
+    .join('\n');
+  const tip = list.length === 1
+    ? '确定删除这份报告吗？\n\n' + names + '\n\n删除后不可恢复。'
+    : '确定删除选中的 ' + list.length + ' 份报告吗？\n\n' + names + '\n\n删除后不可恢复。';
+  if (!confirm(tip)) return;
+
+  let res;
+  try {
+    res = await window.reportLib.deleteReports(list);
+  } catch (e) {
+    alert('删除失败：' + (e && e.message ? e.message : String(e)));
+    return;
+  }
+
+  if (!res || !res.ok) {
+    const why = res && res.failed && res.failed.length ? res.failed.join('\n') : (res && res.reason) || '未知错误';
+    alert('删除未全部成功：\n' + why);
+  }
+
+  // 本地状态同步（不管主进程返回什么，都按实际删除成功的 id 更新）
+  const done = new Set((res && Array.isArray(res.removedIds) && res.removedIds.length) ? res.removedIds : list);
+  state.reports = state.reports.filter(r => !done.has(r.id));
+  for (const id of done) {
+    state.selected.delete(id);
+    state.cache.delete(id);
+  }
+
+  hideCompare();
+  renderFilterOptions();
+  renderGrid();
+  updateToolbar();
+  if (state.selected.size >= 2) runCompare();
+}
+
+// ─── 事件绑定 ───────────────────────────────────────────────────────────────
+$('btn-select-all').addEventListener('click', () => {
+  state.selected.clear();
+  visibleReports().slice(0, 6).forEach(r => state.selected.add(r.id));
+  renderGrid();
+  updateToolbar();
+});
+
+$('btn-clear-sel').addEventListener('click', () => {
+  state.selected.clear();
+  renderGrid();
+  updateToolbar();
+  hideCompare();
+});
+
+$('btn-compare').addEventListener('click', () => {
+  if (state.selected.size >= 2) runCompare();
+});
+
+$('btn-del-sel').addEventListener('click', () => {
+  if (state.selected.size) deleteReports(Array.from(state.selected));
+});
+
+$('btn-close-compare').addEventListener('click', hideCompare);
+
+const exportCmpBtn = $('btn-export-compare');
+if (exportCmpBtn) exportCmpBtn.addEventListener('click', () => exportCompareReport(exportCmpBtn));
+
+// 筛选栏
+['f-range', 'f-device', 'f-app'].forEach((id) => {
+  const el = $(id);
+  if (el) el.addEventListener('change', applyFilter);
+});
+['f-from', 'f-to'].forEach((id) => {
+  const el = $(id);
+  if (el) el.addEventListener('change', applyFilter);
+});
+let _qTimer = 0;
+const qEl = $('f-q');
+if (qEl) {
+  qEl.addEventListener('input', () => {
+    clearTimeout(_qTimer);
+    _qTimer = setTimeout(applyFilter, 160);
+  });
+}
+const resetBtn = $('f-reset');
+if (resetBtn) resetBtn.addEventListener('click', resetFilter);
+
+let _resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(() => {
+    for (const c of state.charts) { try { c.resize(); } catch (_) {} }
+  }, 120);
+});
+
+// ─── 启动 ───────────────────────────────────────────────────────────────────
+(function init() {
+  // 浏览器直接打开（无 preload）时隐藏删除入口与「打开位置」，避免点了没反应
+  if (!canDelete()) document.body.classList.add('no-delete');
+  if (!(window.reportLib && (typeof window.reportLib.openReportLocation === 'function'
+    || typeof window.reportLib.exportSharedReport === 'function'
+    || typeof window.reportLib.exportCompareReport === 'function'))) {
+    document.body.classList.add('no-location');
+  }
+
+  const raw = (typeof reportIndex !== 'undefined' && Array.isArray(reportIndex)) ? reportIndex : [];
+  // 时间倒序：最新的一份排在最前面（索引里 createdAt 格式不统一，按 id 还原时间）
+  state.reports = sortReportsDesc(raw);
+  renderFilterOptions();
+  renderGrid();
+  updateToolbar();
+})();
+</script>
+</body>
+</html>

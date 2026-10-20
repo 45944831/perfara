@@ -1,0 +1,56 @@
+Perfara 便携版（Windows）
+==========================
+
+一个文件夹带走：采集客户端 GUI + 数据看板服务，无需安装、无需 Python/Node 环境。
+激活校验已移除：打开即用，没有「未激活，请先激活」，采集时长不受限。
+
+【怎么用】
+1. 双击 Perfara.exe（根目录那个，不是 collector 里的）
+   - 会先在本机 8000 端口起看板服务，再打开采集客户端窗口
+   - 关闭采集客户端窗口后，看板服务会自动停止
+2. 采集：顶部选设备（Android / iOS / PC）→ 选应用 → 点「开始」
+3. 上传：点「上传数据」→ 数据写入本机看板 → 自动用浏览器打开
+   http://127.0.0.1:8000/?uid=<本机UID>
+4. 想看演示数据：浏览器打开 http://127.0.0.1:8000/?uid=perfara123
+
+【目录说明】
+  Perfara.exe              启动器（先起服务，再起 GUI）
+  collector\               采集客户端（Electron，已移除激活）
+  server\PerfaraServer.exe 看板服务（FastAPI，也可单独运行）
+  data\webperf.db          数据库（SQLite）
+  logs\                    启动器与服务日志
+
+【单独启动看板服务】
+  server\PerfaraServer.exe --port 8000
+  server\PerfaraServer.exe --port 8099 --host 0.0.0.0   # 局域网访问
+  数据默认写在 exe 同级 data\ 下；也可 --data-dir D:\perfara
+
+【改上传地址】
+  采集端默认上传到本机 http://127.0.0.1:8000/api/upload，
+  由启动器每次启动时写入 collector\resources\configout\config.js。
+  想传到自己的服务器，改这个文件即可（格式：var upload={"uploadurl":"..."};），
+  注意启动器下次启动会覆盖成"本机端口"——要长期固定就别用根目录的 Perfara.exe 启动，
+  直接双击 collector\Perfara.exe。
+
+【本地报告】
+  采集停止后，报告目录在 collector\resources\reports\
+    perf.html   完整报告（指标卡片 + 统计表 + 趋势图）
+    perf2.html  分组统计报告
+    data.js     本次采集的数据（由客户端写入）
+  直接双击 perf.html 即可离线查看。
+  ※ 已内置 echarts 到同目录（echarts.min.js），断网也能出图；
+    原版从 cdn.jsdelivr.net 加载，网络不通时会只剩指标卡片、表格与图表全空。
+
+【常见问题】
+- 端口被占用：启动器会自动顺延到 8001/8002…，上传地址会同步改好。
+- 双击没反应/闪退：看 logs\launcher.log；再单独运行 server\PerfaraServer.exe 看报错。
+- Windows 提示"已保护你的电脑"：点「更多信息 → 仍要运行」，或把整个文件夹加白名单。
+- Android 采集需要 adb 能识别设备：先在命令行跑 collector\resources\adb\adb.exe devices 确认。
+- iOS 采集需要 iTunes/驱动与开发者镜像，镜像在 collector\resources\ios-tools 内。
+- 迁移：整个文件夹拷走即可，data\ 里就是全部数据。
+
+【已做的改动】
+1. 移除采集端激活：src/activation.js 恒返回「已激活、永久有效」，
+   顶栏「激活」按钮与「未激活」提示一并删除；不再读写 activitecode.json。
+2. 采集端上传地址默认指向本机看板。
+3. 去掉 asar 里的 mac 安装包与多余语言包，体积从 669MB 降到 518MB。

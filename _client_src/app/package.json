@@ -1,0 +1,11 @@
+{
+  "name": "perfandroid",
+  "version": "1.0.0",
+  "description": "Android Performance Monitoring Tool - PerfDog Alternative",
+  "main": "main.js",
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "echarts": "^6.0.0"
+  }
+}

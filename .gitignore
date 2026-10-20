@@ -1,27 +1,69 @@
-# Python
+# ── 依赖 ────────────────────────────────────────────────────────────
+node_modules/
 __pycache__/
 *.py[cod]
-*.egg-info/
 .venv/
 venv/
 
-# Runtime artifacts
-logs/
-*.log
-.env
+# ── 二进制 / Electron 运行时（体积大、可重建，且 exe 超 GitHub 100MB 限制）──
+*.exe
+*.dll
+*.pdb
+*.node
+*.pak
+*.bin
+*.dat
+*.asar
+*.asar.unpacked/
+*.asar.old
 
-# OS / editor
+# ── Electron 运行时：整体排除，只放行报告模板 ───────────────────────
+# （exe/dll/pak/许可证 等几百 MB，且 exe 超 GitHub 100MB 单文件限制）
+perfara/collector/**
+!perfara/collector/resources/
+!perfara/collector/resources/reports/
+!perfara/collector/resources/reports/*.html
+
+# ── 便携版产物副本（与 perfara/collector 重复）──────────────────────
+Perfara-Portable/
+
+# ── 构建中间产物（保留 .spec 构建配置）──────────────────────────────
+build/**/build/
+build/**/dist/
+build/launcher/Perfara/
+perfara/build/
+perfara/dist/
+*.manifest
+_evidence_*/
+_asar_*/
+_backup_*/
+_removed-from-portable/
+
+# ── 客户端源码中体积大且无需入库的资源 ──────────────────────────────
+# iOS 调试镜像（运行期联网挂载）
+_client_src/app/devimages/
+# 推广素材（含 3.4MB 视频）
+_client_src/app/推广web/
+# 运行期实际用包外 resources/ios-tools
+_client_src/app/ios脚本/
+_client_src/app/*.zip
+
+# ── OS / 编辑器 ─────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+.env
 
-# PyInstaller
-build/
-dist/
-*.manifest
+# ── 运行日志 ────────────────────────────────────────────────────────
+*.log
+logs/
 
-# Local DB overrides (data/webperf.db 为演示数据，按需保留)
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
+# ── 本地数据（含采集数据、数据库）──────────────────────────────────
+perfara/data/
+*.db
+*.sqlite3
+
+# ── 工作区元数据 ────────────────────────────────────────────────────
+.workbuddy/
+.workbuddy-ai/

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>Perfara离线版 · iPhone</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ═══ TOP BAR ════════════════════════════════════════════════════════════ -->
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="logo-icon">⚡</span>
+    <select id="sel-platform" class="logo-select">
+      <option value="android">android</option>
+      <option value="iphone" selected>Perf-iPhone</option>
+      <option value="iphone-gpu">Perf-iPhoneGpu</option>
+      <option value="pc">PC</option>
+    </select>
+  </div>
+
+  <div class="topbar-controls">
+    <div class="control-group">
+      <label>设备</label>
+      <select id="sel-device"><option value="">-- 检测设备 --</option></select>
+      <button id="btn-refresh" class="btn btn-sm" title="刷新设备列表">↺</button>
+    </div>
+
+    <div class="control-group control-group--ios-bundle">
+      <div class="control-group-row">
+        <label>搜索</label>
+        <input id="inp-app-search" type="text" placeholder="应用名 / 包名" spellcheck="false" autocomplete="off" />
+        <label>Bundle ID</label>
+        <select id="sel-bundle" size="1"><option value="">-- 选择应用 --</option></select>
+        <span id="ios-apps-loading" class="ios-apps-loading" hidden aria-label="加载中"></span>
+      </div>
+      <span class="ios-bundle-hint" title="需先在设备上开启开发者相关能力">需要开启开发者模式。爱思助手：工具箱 → 安装移动端 → 开启高级功能</span>
+    </div>
+
+    <div class="control-group btns">
+      <button id="btn-start" class="btn btn-primary">▶ 开始</button>
+      <span id="start-hint" class="start-hint" hidden></span>
+      <button id="btn-stop"  class="btn btn-danger" disabled>■ 停止</button>
+      <button id="btn-tag-scene" class="btn btn-sm" disabled>开始标记</button>
+      <button id="btn-export-csv"  class="btn btn-export" disabled>↓ CSV</button>
+      <button id="btn-export-json" class="btn btn-export" disabled>↓ JSON</button>
+      <span id="prep-hint" class="prep-hint prep-hint--json" hidden></span>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <span id="activation-status" class="activation-status activation-status--warn"></span>
+    <button type="button" id="btn-activation" class="btn btn-sm">激活</button>
+    <button type="button" id="btn-metric-settings" class="btn btn-sm" title="采集参数设置：勾选需要采集的参数，默认全选">⚙ 采集参数</button>
+    <button type="button" id="btn-screen-continuous" class="btn btn-sm" hidden title="连续截图（待实现）">连续截图</button>
+    <button type="button" id="btn-open-library" class="btn btn-sm" title="打开本地报告库：查看历史报告并对比">报告库</button>
+    <span id="status-badge" class="badge idle">待机</span>
+    <span id="elapsed" class="elapsed"></span>
+  </div>
+</header>
+
+<div id="device-info-bar" class="device-info-strip" hidden>
+  <div class="device-info-strip-inner">
+    <span id="device-info-text" class="device-info-text"></span>
+    <div id="device-report-section" class="device-report-section" hidden>
+      <span class="device-report-label">本地报告</span>
+      <span class="report-path" id="report-path-hint" title="">…</span>
+      <button type="button" id="btn-open-report" class="btn btn-sm" disabled title="用默认浏览器打开 reports/perf.html">打开本地报告</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ STAT CARDS ══════════════════════════════════════════════════════════ -->
+<section class="cards">
+  <div class="card" id="card-fps" data-metric="fps">
+    <div class="card-label">FPS</div>
+    <div class="card-value" id="val-fps">--</div>
+    <div class="card-unit">帧/s</div>
+  </div>
+  <div class="card" id="card-jank" data-metric="fps">
+    <div class="card-label">Jank</div>
+    <div class="card-value" id="val-jank">--</div>
+    <div class="card-unit">次/s</div>
+  </div>
+  <div class="card" id="card-big-jank" data-metric="fps">
+    <div class="card-label">大 Jank</div>
+    <div class="card-value" id="val-big-jank">--</div>
+    <div class="card-unit">次/s</div>
+  </div>
+  <div class="card" id="card-stutter" data-metric="fps">
+    <div class="card-label">Stutter</div>
+    <div class="card-value" id="val-stutter">--</div>
+    <div class="card-unit">ratio</div>
+  </div>
+  <div class="card" id="card-cpu" data-metric="cpu">
+    <div class="card-label">进程 CPU</div>
+    <div class="card-value" id="val-cpu">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-syscpu" data-metric="cpu">
+    <div class="card-label">系统 CPU</div>
+    <div class="card-value" id="val-syscpu">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-mem" data-metric="mem">
+    <div class="card-label">物理内存</div>
+    <div class="card-value" id="val-mem">--</div>
+    <div class="card-unit">MB</div>
+  </div>
+  <div class="card" id="card-thread" data-metric="proc">
+    <div class="card-label">线程数</div>
+    <div class="card-value" id="val-thread">--</div>
+    <div class="card-unit">个</div>
+  </div>
+  <div class="card" id="card-disk" data-metric="disk">
+    <div class="card-label">磁盘读</div>
+    <div class="card-value" id="val-disk">--</div>
+    <div class="card-unit">KB/s</div>
+  </div>
+</section>
+
+<!-- ═══ CHARTS GRID ══════════════════════════════════════════════════════════ -->
+<section class="charts-grid">
+  <div class="chart-wrap" data-metric="cpu">
+    <div class="chart-title">CPU 使用率 (%)</div>
+    <div id="chart-cpu" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="fps">
+    <div class="chart-title">FPS (帧/s)</div>
+    <div id="chart-fps" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="mem">
+    <div class="chart-title">物理内存 (MB)</div>
+    <div id="chart-mem" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="mem">
+    <div class="chart-title">内存详情 (MB)</div>
+    <div id="chart-memdetail" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="disk">
+    <div class="chart-title">磁盘 I/O (KB/s)</div>
+    <div id="chart-disk" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="events">
+    <div class="chart-title">系统事件 (次/s)</div>
+    <div id="chart-events" class="chart"></div>
+  </div>
+</section>
+
+<!-- ═══ INFO CARDS ════════════════════════════════════════════════════════════ -->
+<section class="cards" style="margin-top:0">
+  <div class="card" id="card-status" data-metric="proc">
+    <div class="card-label">进程状态</div>
+    <div class="card-value" id="val-status">--</div>
+    <div class="card-unit">procStatus</div>
+  </div>
+  <div class="card" id="card-ports" data-metric="proc">
+    <div class="card-label">Mach 端口</div>
+    <div class="card-value" id="val-ports">--</div>
+    <div class="card-unit">个</div>
+  </div>
+  <div class="card" id="card-msg" data-metric="proc">
+    <div class="card-label">消息 发/收</div>
+    <div class="card-value" id="val-msg">--</div>
+    <div class="card-unit">条/s</div>
+  </div>
+  <div class="card" id="card-syscall" data-metric="proc">
+    <div class="card-label">Mach 调用</div>
+    <div class="card-value" id="val-syscall">--</div>
+    <div class="card-unit">次/s</div>
+  </div>
+  <div class="card" id="card-ctx" data-metric="events">
+    <div class="card-label">上下文切换</div>
+    <div class="card-value" id="val-ctx">--</div>
+    <div class="card-unit">次/s</div>
+  </div>
+</section>
+
+<!-- ═══ LOG PANEL ═══════════════════════════════════════════════════════════ -->
+<div class="log-panel">
+  <div class="log-header">
+    <div class="log-header-left">
+      <span>日志</span>
+      <label class="log-toggle" title="取消勾选可隐藏下方日志，设置保存在本机">
+        <input type="checkbox" id="chk-show-log" checked /> 显示日志
+      </label>
+    </div>
+    <button id="btn-clear-log" class="btn btn-sm">清空</button>
+  </div>
+  <div id="log-output" class="log-output"></div>
+</div>
+
+<script src="apply-app-brand.js"></script>
+<script src="../node_modules/echarts/dist/echarts.min.js"></script>
+<script src="charts.js"></script>
+<script src="device-info-strip.js"></script>
+<script src="log-panel.js"></script>
+<script src="activation-ui.js"></script>
+<script src="report-launch.js"></script>
+<script src="start-mode.js"></script>
+<script src="metric-settings.js"></script>
+<script src="iphone.js"></script>
+</body>
+</html>

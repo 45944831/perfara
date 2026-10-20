@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>Perfara离线版 · PC</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="platform-pc">
+
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="logo-icon">⚡</span>
+    <select id="sel-platform" class="logo-select">
+      <option value="android">android</option>
+      <option value="iphone">Perf-iPhone</option>
+      <option value="iphone-gpu">Perf-iPhoneGpu</option>
+      <option value="pc" selected>PC</option>
+    </select>
+  </div>
+
+  <div class="topbar-controls">
+    <div class="control-group" style="flex:1;min-width:280px;max-width:560px">
+      <label>可执行文件</label>
+      <input id="inp-exe-path" type="text" readonly placeholder="请先选择 .exe，并手工启动目标应用后再采集" style="flex:1;min-width:200px" title="与 collect_pc_perf 脚本匹配的进程路径" />
+      <button type="button" id="btn-browse-exe" class="btn btn-sm">浏览…</button>
+    </div>
+
+    <div class="control-group btns">
+      <button id="btn-start" class="btn btn-primary">▶ 开始</button>
+      <span id="start-hint" class="start-hint" hidden></span>
+      <button id="btn-stop"  class="btn btn-danger" disabled>■ 停止</button>
+      <button id="btn-tag-scene" class="btn btn-sm" disabled>开始标记</button>
+      <button id="btn-export-csv"  class="btn btn-export" disabled>↓ CSV</button>
+      <button id="btn-export-json" class="btn btn-export" disabled>↓ JSON</button>
+      <span id="prep-hint" class="prep-hint prep-hint--json" hidden></span>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <button type="button" id="btn-metric-settings" class="btn btn-sm" title="采集参数设置：勾选需要采集的参数，默认全选">⚙ 采集参数</button>
+    <span id="activation-status" class="activation-status activation-status--warn"></span>
+    <button type="button" id="btn-activation" class="btn btn-sm">激活</button>
+    <button type="button" id="btn-open-library" class="btn btn-sm" title="打开本地报告库：查看历史报告并对比">报告库</button>
+    <span id="status-badge" class="badge idle">待机</span>
+    <span id="pid-label" class="badge info" style="display:none"></span>
+    <span id="elapsed" class="elapsed"></span>
+  </div>
+</header>
+
+<div id="device-info-bar" class="device-info-strip" hidden>
+  <div class="device-info-strip-inner">
+    <span id="device-info-text" class="device-info-text"></span>
+    <div id="device-report-section" class="device-report-section" hidden>
+      <span class="device-report-label">本地报告</span>
+      <span class="report-path" id="report-path-hint" title="">…</span>
+      <button type="button" id="btn-open-report" class="btn btn-sm" disabled title="用默认浏览器打开 reports/perf.html">打开本地报告</button>
+    </div>
+  </div>
+</div>
+
+<section class="cards">
+  <div class="card" id="card-cpu" data-metric="cpu">
+    <div class="card-label">系统 CPU</div>
+    <div class="card-value" id="val-syscpu">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-proccpu" data-metric="cpu">
+    <div class="card-label">进程 CPU</div>
+    <div class="card-value" id="val-proccpu">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-mem" data-metric="mem">
+    <div class="card-label">内存 RSS</div>
+    <div class="card-value" id="val-mem">--</div>
+    <div class="card-unit">MB</div>
+  </div>
+  <div class="card" id="card-fps" data-metric="fps">
+    <div class="card-label">FPS</div>
+    <div class="card-value" id="val-fps">--</div>
+    <div class="card-unit">帧/s</div>
+  </div>
+  <div class="card" id="card-jank" data-metric="fps">
+    <div class="card-label">Jank</div>
+    <div class="card-value" id="val-jank">--</div>
+    <div class="card-unit">帧 &nbsp;<span id="val-jankrate" style="font-size:10px;color:var(--text2)"></span></div>
+  </div>
+  <div class="card" id="card-bigjank" data-metric="fps">
+    <div class="card-label">BigJank</div>
+    <div class="card-value" id="val-bigjank">--</div>
+    <div class="card-unit">&gt;125ms</div>
+  </div>
+  <div class="card" id="card-net" data-metric="net">
+    <div class="card-label">网络 ↓/↑</div>
+    <div class="card-value" id="val-net">--</div>
+    <div class="card-unit">KB/s</div>
+  </div>
+  <div class="card" id="card-gpu" data-metric="gpu">
+    <div class="card-label">GPU</div>
+    <div class="card-value" id="val-gpu">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-battery" data-metric="battery">
+    <div class="card-label">电池</div>
+    <div class="card-value" id="val-battery">--</div>
+    <div class="card-unit">%</div>
+  </div>
+  <div class="card" id="card-temp" data-metric="temp">
+    <div class="card-label">温度</div>
+    <div class="card-value" id="val-temp">--</div>
+    <div class="card-unit">°C</div>
+  </div>
+</section>
+
+<section class="charts-grid">
+  <div class="chart-wrap" data-metric="cpu">
+    <div class="chart-title">CPU 使用率 (%)</div>
+    <div id="chart-cpu" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="mem">
+    <div class="chart-title">工作集内存 (MB)</div>
+    <div id="chart-mem" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="mem">
+    <div class="chart-title">内存详情 (MB)</div>
+    <div id="chart-memdetail" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="fps">
+    <div class="chart-title">FPS (帧/s)</div>
+    <div id="chart-fps" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="net">
+    <div class="chart-title">网络流量 (KB/s)</div>
+    <div id="chart-net" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="gpu">
+    <div class="chart-title">GPU 使用率 (%)</div>
+    <div id="chart-gpu" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="temp">
+    <div class="chart-title">温度 (°C)</div>
+    <div id="chart-temp" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="battery">
+    <div class="chart-title">电流 (mA)</div>
+    <div id="chart-current" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="battery">
+    <div class="chart-title">功耗 (mW)</div>
+    <div id="chart-power" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="cpu">
+    <div class="chart-title">各核心 CPU 使用率 (%)</div>
+    <div id="chart-cpu-cores" class="chart"></div>
+  </div>
+  <div class="chart-wrap" data-metric="cpu">
+    <div class="chart-title">各核心 CPU 频率 (MHz)</div>
+    <div id="chart-cpu-freq" class="chart"></div>
+  </div>
+</section>
+
+<div class="log-panel">
+  <div class="log-header">
+    <div class="log-header-left">
+      <span>日志</span>
+      <label class="log-toggle" title="取消勾选可隐藏下方日志">
+        <input type="checkbox" id="chk-show-log" checked /> 显示日志
+      </label>
+    </div>
+    <button id="btn-clear-log" class="btn btn-sm">清空</button>
+  </div>
+  <div id="log-output" class="log-output"></div>
+</div>
+
+<script src="apply-app-brand.js"></script>
+<script src="../node_modules/echarts/dist/echarts.min.js"></script>
+<script src="charts.js"></script>
+<script src="device-info-strip.js"></script>
+<script src="log-panel.js"></script>
+<script src="activation-ui.js"></script>
+<script src="report-launch.js"></script>
+<script src="start-mode.js"></script>
+<script src="metric-settings.js"></script>
+<script src="pc.js"></script>
+</body>
+</html>
