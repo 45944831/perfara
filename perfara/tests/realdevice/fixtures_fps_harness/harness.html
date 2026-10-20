@@ -1,0 +1,19 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{margin:0;background:#12151f;font-family:sans-serif}
+.chart-wrap{border:1px solid #2a2f3d;border-radius:8px;margin:8px}
+.chart-title{padding:8px 12px 0;font-size:12.5px;color:#e0e4ef}
+#chart-fps{height:200px}
+</style></head><body>
+<div class="chart-wrap"><div class="chart-title">FPS (帧/s)</div><div id="chart-fps"></div></div>
+<script src="echarts.min.js"></script>
+<script src="charts.js"></script>
+<script>
+const cm = new window.ChartManager();
+cm.init();
+let t = 0;
+setInterval(() => {
+  t++;
+  cm.update({ time: '09:31:' + String(10 + t % 50).padStart(2, '0'),
+    fps: 55 + Math.round(Math.sin(t / 5) * 10), jank: t % 7 === 0 ? 2 : 0, bigJank: t % 11 === 0 ? 1 : 0 });
+}, 200);
+</script></body></html>

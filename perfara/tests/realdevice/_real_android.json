@@ -1,0 +1,1112 @@
+{
+  "device": {
+    "name": "Android 13 中端机型",
+    "model": "generic",
+    "brand": "generic",
+    "system": "Android 13",
+    "category": "android",
+    "deviceId": "设备序列号",
+    "appName": "com.example.game",
+    "appLabel": "com.example.game"
+  },
+  "perf": [
+    {
+      "timestamp": 1792429386340,
+      "time": "01:03:06",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 0,
+        "procCpu": 0
+      },
+      "cpuCores": {
+        "usage": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1319,
+        "nativeHeap": 109,
+        "javaHeap": 4,
+        "dalvikHeap": 4,
+        "code": 202,
+        "stack": 2,
+        "graphics": 491,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2228
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "smallJank": 0,
+      "tinyJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 525,
+        "power": 2625000
+      },
+      "temperature": 77.8,
+      "gpuTemp": 77.8,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429386856,
+      "time": "01:03:06",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 11
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1316,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 489,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2227
+      },
+      "fps": 23,
+      "jank": 0,
+      "bigJank": 0,
+      "smallJank": 0,
+      "tinyJank": 6,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 698,
+        "power": 3490000
+      },
+      "temperature": 77.7,
+      "gpuTemp": 77.7,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429387820,
+      "time": "01:03:07",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 11
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1290,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 463,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2224
+      },
+      "fps": 34,
+      "jank": 0,
+      "bigJank": 0,
+      "smallJank": 0,
+      "tinyJank": 6,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 618,
+        "power": 3090000
+      },
+      "temperature": 77.7,
+      "gpuTemp": 77.7,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429388870,
+      "time": "01:03:08",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 10
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1300,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 473,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2224
+      },
+      "fps": 23,
+      "jank": 0,
+      "bigJank": 0,
+      "smallJank": 0,
+      "tinyJank": 2,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 900,
+        "power": 4500000
+      },
+      "temperature": 77.5,
+      "gpuTemp": 77.5,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429389872,
+      "time": "01:03:09",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 9
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1298,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 471,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2224
+      },
+      "fps": 25,
+      "jank": 0,
+      "bigJank": 0,
+      "smallJank": 0,
+      "tinyJank": 4,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 1159,
+        "power": 5795000
+      },
+      "temperature": 76.8,
+      "gpuTemp": 76.8,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429390821,
+      "time": "01:03:10",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 9
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1336,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 509,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2223
+      },
+      "fps": 27,
+      "jank": 1,
+      "bigJank": 0,
+      "smallJank": 1,
+      "tinyJank": 2,
+      "jankRate": 4,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 609,
+        "power": 3045000
+      },
+      "temperature": 77.3,
+      "gpuTemp": 77.3,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429392308,
+      "time": "01:03:12",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 9
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1318,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 491,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2222
+      },
+      "fps": 28,
+      "jank": 1,
+      "bigJank": 0,
+      "smallJank": 1,
+      "tinyJank": 1,
+      "jankRate": 3,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 810,
+        "power": 4050000
+      },
+      "temperature": 76.9,
+      "gpuTemp": 76.9,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429393226,
+      "time": "01:03:13",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 8
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1300,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 473,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2221
+      },
+      "fps": 22,
+      "jank": 1,
+      "bigJank": 0,
+      "smallJank": 1,
+      "tinyJank": 4,
+      "jankRate": 4,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 947,
+        "power": 4735000
+      },
+      "temperature": 77,
+      "gpuTemp": 77,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429393870,
+      "time": "01:03:13",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 8
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1316,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 489,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2221
+      },
+      "fps": 23,
+      "jank": 1,
+      "bigJank": 0,
+      "smallJank": 2,
+      "tinyJank": 2,
+      "jankRate": 5,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 952,
+        "power": 4760000
+      },
+      "temperature": 77.1,
+      "gpuTemp": 77.1,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429394928,
+      "time": "01:03:14",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 8
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1290,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 463,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2220
+      },
+      "fps": 26,
+      "jank": 1,
+      "bigJank": 0,
+      "smallJank": 1,
+      "tinyJank": 3,
+      "jankRate": 4,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 551,
+        "power": 2755000
+      },
+      "temperature": 77.3,
+      "gpuTemp": 77.3,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429396233,
+      "time": "01:03:16",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 10
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1290,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 463,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2198
+      },
+      "fps": 26,
+      "jank": 2,
+      "bigJank": 0,
+      "smallJank": 2,
+      "tinyJank": 3,
+      "jankRate": 7,
+      "net": {
+        "rxKBps": 1,
+        "txKBps": 1
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 647,
+        "power": 3235000
+      },
+      "temperature": 78.5,
+      "gpuTemp": 78.5,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429396872,
+      "time": "01:03:16",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 9
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1298,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 471,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2209
+      },
+      "fps": 19,
+      "jank": 1,
+      "bigJank": 0,
+      "smallJank": 3,
+      "tinyJank": 3,
+      "jankRate": 6,
+      "net": {
+        "rxKBps": 1,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 906,
+        "power": 4530000
+      },
+      "temperature": 77.5,
+      "gpuTemp": 77.5,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429398322,
+      "time": "01:03:18",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 10
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1290,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 463,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2207
+      },
+      "fps": 26,
+      "jank": 0,
+      "bigJank": 0,
+      "smallJank": 0,
+      "tinyJank": 5,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 746,
+        "power": 3730000
+      },
+      "temperature": 77.8,
+      "gpuTemp": 77.8,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429399415,
+      "time": "01:03:19",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 7
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1312,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 485,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2194
+      },
+      "fps": 15,
+      "jank": 0,
+      "bigJank": 0,
+      "smallJank": 6,
+      "tinyJank": 1,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 955,
+        "power": 4775000
+      },
+      "temperature": 77.7,
+      "gpuTemp": 77.7,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429399776,
+      "time": "01:03:19",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 7
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1294,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 467,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2195
+      },
+      "fps": 15,
+      "jank": 1,
+      "bigJank": 1,
+      "smallJank": 5,
+      "tinyJank": 4,
+      "jankRate": 6,
+      "net": {
+        "rxKBps": 1,
+        "txKBps": 2
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 836,
+        "power": 4180000
+      },
+      "temperature": 78,
+      "gpuTemp": 78,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429400906,
+      "time": "01:03:20",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 7
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1300,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 473,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2205
+      },
+      "fps": 23,
+      "jank": 1,
+      "bigJank": 0,
+      "smallJank": 4,
+      "tinyJank": 4,
+      "jankRate": 5,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 885,
+        "power": 4425000
+      },
+      "temperature": 78,
+      "gpuTemp": 78,
+      "gpu": null
+    },
+    {
+      "timestamp": 1792429401946,
+      "time": "01:03:21",
+      "pid": 20664,
+      "cpu": {
+        "sysCpu": 100,
+        "procCpu": 9
+      },
+      "cpuCores": {
+        "usage": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "freq": [
+          1800,
+          1800,
+          1800,
+          1800,
+          1740,
+          1740,
+          1740,
+          1820
+        ]
+      },
+      "mem": {
+        "totalPss": 1290,
+        "nativeHeap": 109,
+        "javaHeap": 3,
+        "dalvikHeap": 3,
+        "code": 202,
+        "stack": 2,
+        "graphics": 463,
+        "privateOther": 402,
+        "system": 111,
+        "memTotalMB": 7489,
+        "memAvailableMB": 2205
+      },
+      "fps": 33,
+      "jank": 0,
+      "bigJank": 0,
+      "smallJank": 0,
+      "tinyJank": 4,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": {
+        "level": 40,
+        "voltage": 5000000,
+        "temperature": 45,
+        "currentNow": 773,
+        "power": 3865000
+      },
+      "temperature": 79.2,
+      "gpuTemp": 79.2,
+      "gpu": null
+    }
+  ],
+  "tag": null,
+  "metricConfig": {
+    "fps": true,
+    "cpu": true,
+    "mem": true,
+    "net": true,
+    "gpu": true,
+    "temp": true,
+    "battery": true
+  }
+}

@@ -35,9 +35,12 @@ perfara/build/
 perfara/dist/
 *.manifest
 _evidence_*/
+_perfdog_opt_evidence/
 _asar_*/
 _backup_*/
 _removed-from-portable/
+# 根目录散落的过程截图（各阶段验证用，归档在 F 盘）
+/*.png
 
 # ── 客户端源码中体积大且无需入库的资源 ──────────────────────────────
 # iOS 调试镜像（运行期联网挂载）

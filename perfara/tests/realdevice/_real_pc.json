@@ -1,0 +1,715 @@
+{
+  "device": {
+    "name": "RENAN",
+    "model": "PC",
+    "brand": "PC",
+    "system": "Windows",
+    "category": "pc",
+    "deviceId": "local-pc",
+    "appName": "explorer.exe",
+    "appLabel": "explorer.exe"
+  },
+  "perf": [
+    {
+      "timestamp": 1792429403996,
+      "time": "01:03:24",
+      "cpu": {
+        "sysCpu": 17.9,
+        "procCpu": 10.4
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 0,
+        "txKBps": 0
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 11,
+      "cpuCores": {
+        "usage": [
+          18.5,
+          14.5,
+          16.1,
+          12.9,
+          11.1,
+          3.2,
+          36.5,
+          27,
+          44.4,
+          12.9,
+          9.7,
+          11.3
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429405362,
+      "time": "01:03:25",
+      "cpu": {
+        "sysCpu": 11.8,
+        "procCpu": 0
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 2.04,
+        "txKBps": 0.39
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 12,
+      "cpuCores": {
+        "usage": [
+          13,
+          10.3,
+          10.2,
+          8,
+          4.6,
+          1.1,
+          22.7,
+          23,
+          17.2,
+          13.8,
+          10.2,
+          9.1
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429406714,
+      "time": "01:03:27",
+      "cpu": {
+        "sysCpu": 23.8,
+        "procCpu": 10.4
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 2.47,
+        "txKBps": 1.19
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 8,
+      "cpuCores": {
+        "usage": [
+          31.2,
+          13.8,
+          18.6,
+          21.3,
+          13.6,
+          12.6,
+          29.5,
+          31.8,
+          35.6,
+          27.3,
+          20.5,
+          26.1
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429408077,
+      "time": "01:03:28",
+      "cpu": {
+        "sysCpu": 11.1,
+        "procCpu": 0
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 1.35,
+        "txKBps": 0.69
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 9,
+      "cpuCores": {
+        "usage": [
+          17.2,
+          10.2,
+          6.8,
+          6.8,
+          4.5,
+          3.4,
+          23.9,
+          13.6,
+          14.9,
+          10.2,
+          11.2,
+          10.3
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429409443,
+      "time": "01:03:29",
+      "cpu": {
+        "sysCpu": 10.9,
+        "procCpu": 0
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 1.98,
+        "txKBps": 0.39
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 11,
+      "cpuCores": {
+        "usage": [
+          13.2,
+          11.5,
+          3.4,
+          10.3,
+          2.3,
+          5.7,
+          21.8,
+          11.5,
+          15.9,
+          19.3,
+          4.6,
+          12.5
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429410811,
+      "time": "01:03:31",
+      "cpu": {
+        "sysCpu": 11.8,
+        "procCpu": 0
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 1.9,
+        "txKBps": 0.8
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 12,
+      "cpuCores": {
+        "usage": [
+          11.8,
+          11.4,
+          8,
+          5.7,
+          3.4,
+          3.4,
+          28.1,
+          15.9,
+          18.9,
+          16.1,
+          5.7,
+          10.2
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429412165,
+      "time": "01:03:32",
+      "cpu": {
+        "sysCpu": 13.3,
+        "procCpu": 0
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 1.57,
+        "txKBps": 0.69
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 11,
+      "cpuCores": {
+        "usage": [
+          27.1,
+          12.8,
+          4.6,
+          8,
+          4.6,
+          2.3,
+          19.8,
+          14,
+          30.3,
+          14.9,
+          10.5,
+          7
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429413527,
+      "time": "01:03:33",
+      "cpu": {
+        "sysCpu": 18.9,
+        "procCpu": 0
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 2.24,
+        "txKBps": 0.43
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 11,
+      "cpuCores": {
+        "usage": [
+          26.5,
+          13.6,
+          15.7,
+          14.4,
+          9.1,
+          10.2,
+          32.6,
+          27,
+          32.6,
+          23.6,
+          10.1,
+          13.8
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429414899,
+      "time": "01:03:35",
+      "cpu": {
+        "sysCpu": 18.9,
+        "procCpu": 0
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 3.66,
+        "txKBps": 0.49
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 12,
+      "cpuCores": {
+        "usage": [
+          16.5,
+          19.5,
+          12.6,
+          13.8,
+          9.1,
+          12.5,
+          34.5,
+          21.8,
+          22.5,
+          28.7,
+          8,
+          25.6
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    },
+    {
+      "timestamp": 1792429416286,
+      "time": "01:03:36",
+      "cpu": {
+        "sysCpu": 17.7,
+        "procCpu": 0
+      },
+      "mem": {
+        "totalPss": 379.06,
+        "nativeHeap": 196.95,
+        "dalvikHeap": 0,
+        "javaHeap": 0,
+        "code": 0,
+        "stack": 0,
+        "graphics": 0,
+        "privateOther": 182.11,
+        "system": 208.85
+      },
+      "fps": 0,
+      "jank": 0,
+      "bigJank": 0,
+      "jankRate": 0,
+      "net": {
+        "rxKBps": 4.41,
+        "txKBps": 0.6
+      },
+      "battery": null,
+      "temperature": null,
+      "gpu": 13,
+      "cpuCores": {
+        "usage": [
+          19.8,
+          10,
+          6.7,
+          11.2,
+          10,
+          8.9,
+          33.3,
+          21.3,
+          33.7,
+          24.7,
+          16.5,
+          14.6
+        ],
+        "freq": [
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950,
+          3950
+        ]
+      },
+      "pid": 6132,
+      "pcExtra": {
+        "diskReadKBps": 0,
+        "diskWriteKBps": 0,
+        "exe": "C:\\Windows\\explorer.exe",
+        "name": "explorer.exe",
+        "fpsSource": "none",
+        "fpsFloat": 0
+      }
+    }
+  ],
+  "tag": null,
+  "metricConfig": {
+    "fps": true,
+    "cpu": true,
+    "mem": true,
+    "net": true,
+    "gpu": true,
+    "temp": true,
+    "battery": true,
+    "disk": true
+  }
+}
