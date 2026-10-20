@@ -7,16 +7,15 @@
 
 ### 定位
 
-**Perfara** 是一款**开放、可私有化部署**的移动端与 PC 端性能数据平台，面向团队提供与商业闭源方案同级的可视化与分析能力——可作为 **Perfdog 等工具的免费替代思路**：数据归你、部署归你、链路透明，适合研发、测试与性能专项长期落地。
+**Perfara** 是一款**完全离线**的移动端与 PC 端性能测试工具，采集、看板、报告全在本机完成，不登录账号、不上传数据、不依赖云服务——可作为 **PerfDog 等商业工具的离线替代方案**：数据归你、链路透明，适合研发、测试与性能专项长期落地。
 
-### 在线体验（Demo）
+如需团队共享，同一套看板可直接部署到内网服务器（见下文「私有化部署」），无需改动代码。
 
-| 说明 | 链接 |
-|------|------|
-| **数据看板（按 UID）** | [http://106.14.56.114:8099/?uid=perfara123](http://106.14.56.114:8099/?uid=perfara123) |
-| **单条测试详情（Android 示例，testid）** | [http://106.14.56.114:8099/tests?testid=8e296a067a37563370ded05f5a3bf3ec](http://106.14.56.114:8099/tests?testid=8e296a067a37563370ded05f5a3bf3ec) |
+### 本机看板（无需联网）
 
-> **iOS / PC / 全平台**：列表、趋势与详情能力与上述 Demo 同源；使用同一看板入口，按项目与场景筛选即可。
+便携版启动后自动打开 **`http://127.0.0.1:8000/`**，列表、详情、趋势、对比全部在本机渲染，数据存于本地 SQLite。
+
+> **iOS / PC / Android 全平台**共用同一套看板语义，按项目与场景筛选即可。
 
 ### 多平台支持
 
@@ -24,7 +23,7 @@
 - **iOS & iOS GPU** — 进程 CPU、内存、帧率、磁盘与线程相关指标、GPU 细分等  
 - **PC** — 与移动端同一套看板语义，便于跨端对比  
 
-采集端上传 JSON 后，云端统一解析、图表渲染与分享。
+采集端把 JSON 提交给本机看板后，由本地服务解析、渲染与分享。
 
 ### 界面预览（请将以下图片置于本文件同目录或 `docs/` 下）
 
@@ -32,14 +31,14 @@
 |------|------|
 | `Android1.jpg` | Android 数据展示示例 |
 | `an2.gif` | Android 补充视图 |
-| `web1.jpg` | Web 云端采集与数据汇聚示意 |
+| `web1.jpg` | 本地看板：测试列表与数据汇聚 |
 | `anti.jpg` | **趋势统计**：同场景多次测试的均值/峰值曲线，用于持续观测与防劣化 |
 
 ![Android 数据展示](Android1.jpg)
 
 ![Android 补充视图](an2.gif)
 
-![Web 云端采集与汇聚](web1.jpg)
+![本地看板](web1.jpg)
 
 ![趋势统计与防劣化示意](anti.jpg)
 
@@ -47,7 +46,7 @@
 
 ### 核心能力
 
-1. **云端看板** — 浏览器内完成列表、详情、图表与指标汇总，支持按 UID 管理数据范围。  
+1. **本地看板** — 浏览器内完成列表、详情、图表与指标汇总，支持按 UID 管理数据范围；可只跑本机，也可部署到内网供团队共用。  
 2. **竞品比对** — 在比对页填入 **两个 testid**（分享令牌），即可并排对比关键指标，快速定位差异。  
 3. **趋势统计与自动防劣化** — 为用例打上**场景标记**后，在「趋势统计」中按场景筛选；每次同场景测试在时间轴上形成趋势，便于发现性能回退与波动。  
 4. **开放数据路径** — 支持自建服务、自主上传与导出；详情页可复制 testid 用于分享与集成。
@@ -138,16 +137,13 @@ pyinstaller perfara.spec --noconfirm --clean
 
 ### Positioning
 
-**Perfara** is an **open, self-hostable** performance data platform for mobile and PC workloads—offering visualization and analysis comparable in spirit to commercial closed-source stacks. It serves as a **free, transparent alternative** to tools like **Perfdog**: your data, your deployment, your pipeline—ideal for engineering, QA, and long-term performance programs.
+**Perfara** is a **fully offline** performance testing tool for mobile and PC workloads: capture, dashboard, and reports all run locally—no account, no upload, no cloud dependency. It serves as an **offline alternative** to commercial tools like **PerfDog**: your data, your machine, a transparent pipeline. If a team needs to share results, the same dashboard can be deployed on an intranet server without code changes.
 
-### Live Demo
+### Local dashboard (no network required)
 
-| Description | Link |
-|-------------|------|
-| **Dashboard (by UID)** | [http://106.14.56.114:8099/?uid=perfara123](http://106.14.56.114:8099/?uid=perfara123) |
-| **Single test detail (Android sample, `testid`)** | [http://106.14.56.114:8099/tests?testid=8e296a067a37563370ded05f5a3bf3ec](http://106.14.56.114:8099/tests?testid=8e296a067a37563370ded05f5a3bf3ec) |
+After launching the portable build, the dashboard opens at **`http://127.0.0.1:8000/`**. Lists, details, trends, and comparisons render locally; data lives in a local SQLite file.
 
-> **iOS / PC / all platforms** — Listing, trends, and detail views share the same stack as the demo; open the dashboard URL and filter by project and scenario.
+> **iOS / PC / Android** share the same dashboard semantics—filter by project and scenario.
 
 ### Multi-platform
 
@@ -155,7 +151,7 @@ pyinstaller perfara.spec --noconfirm --clean
 - **iOS & iOS GPU** — Process CPU, memory, frame pacing, disk & scheduling-related metrics, GPU breakdowns  
 - **PC** — Same dashboard semantics as mobile for cross-platform benchmarking  
 
-Upload performance JSON to your server; the cloud parses, charts, and shares results.
+Submit performance JSON to the local dashboard; the local service parses, charts, and shares results.
 
 ### Screenshots
 
@@ -180,7 +176,7 @@ Place these next to this file or under `docs/`:
 
 ### Highlights
 
-1. **Cloud dashboard** — Lists, details, charts, and summaries in the browser; UID-scoped data access.  
+1. **Local dashboard** — Lists, details, charts, and summaries in the browser; UID-scoped data access. Runs on one machine or on an intranet server.  
 2. **Competitor / A-B compare** — Enter **two `testid` tokens** on the compare page for side-by-side metrics.  
 3. **Trends & anti-degradation** — Tag scenarios on each run; filter by scenario in **Trends** to see evolution and catch performance drift early.  
 4. **Open data path** — Self-host, upload, and export; copy `testid` from detail pages for sharing and automation.
