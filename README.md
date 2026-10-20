@@ -160,8 +160,22 @@ Perfara_Portable_20261020_r5.zip   （约 224MB）
 | `tools/cleanup_workspace.py` | 清理备份副本与构建中间产物（默认 `--dry-run`；`perfara/tests` 等回归资产在 PROTECTED 白名单内，永不清理） |
 | `tools/inject_metric_info.py` | 报告页指标说明注入 |
 | `tools/optimize_report_readability.py` | 报告可读性样式优化 |
+| `tools/launcher_portable.py` | 便携版启动器源码：起看板服务 → 起采集客户端 → 客户端退出后**连根**收掉服务（含遗留进程清理、Job Object 强杀兜底、端口释放确认） |
+| `perfara/perfara_server.spec` | 打包便携包里的 `server/PerfaraServer.exe`（后台服务，无控制台） |
 
 改了采集器源码后**必须**重跑 `tools/build_app.py` 再打包，否则发布包里的 `app.asar` 会落后于源码。
+
+改了 `backend/` 或 `frontend/dist` 后**必须**重打 `perfara/perfara_server.spec`，否则便携包里的服务会落后于源码（历史上曾因此出现 `.js` 被当 `text/plain` 返回、看板整页空白）。
+
+```bash
+# 重打便携版启动器（约 20s，产物 build/portable-dist/Perfara.exe）
+python -m PyInstaller --onefile --noconsole --name Perfara \
+  --distpath build/portable-dist --workpath build/portable-work \
+  --specpath build/portable-spec --noconfirm tools/launcher_portable.py
+
+# 重打便携包服务（约 75s，产物 perfara/dist/PerfaraServer.exe）
+cd perfara && ../tools/.venv/Scripts/python.exe -m PyInstaller perfara_server.spec --noconfirm
+```
 
 ## 回归测试
 

@@ -30,6 +30,8 @@ Perfara-Portable/
 # ── 构建中间产物（保留 .spec 构建配置）──────────────────────────────
 build/**/build/
 build/**/dist/
+build/portable-work/
+build/portable-spec/
 build/launcher/Perfara/
 perfara/build/
 perfara/dist/
