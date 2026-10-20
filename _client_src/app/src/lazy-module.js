@@ -7,15 +7,32 @@
  * 真正开始采集之前完全用不上。改成惰性加载可以省掉启动路径上的这部分解析与
  * asar 读取开销。
  *
+ * 路径基准：相对路径一律以 **app 根目录**（main.js 所在目录）为基准解析，
+ * 因此调用方写 `lazy('./src/collector')`，与 main.js 里直接 `require('./src/collector')`
+ * 的语义完全一致。（早期实现直接 `require(requirePath)`，基准变成了本文件所在
+ * 的 src/，导致打包后 require './src/collector' 被解析成 src/src/collector，
+ * 启动采集时报 Cannot find module —— 这里统一修正。）
+ *
  * 用法与直接 require 完全一致（同时支持构造函数与静态方法）：
- *     const Collector = lazy('./collector');
+ *     const Collector = lazy('./src/collector');
  *     new Collector(id, pkg, 1000, cfg);        // 触发 require
  *     IosCollector.resolveIosBin();             // 触发 require
  */
+const path = require('path');
+
+/** app 根目录（本文件位于 <app>/src/） */
+const APP_ROOT = path.resolve(__dirname, '..');
+
 function lazy(requirePath, pick) {
   let mod = null;
   const load = () => {
-    if (mod === null) mod = require(requirePath);
+    if (mod === null) {
+      const target =
+        typeof requirePath === 'string' && requirePath.startsWith('.')
+          ? path.resolve(APP_ROOT, requirePath)
+          : requirePath;
+      mod = require(target);
+    }
     return mod;
   };
   // 模块导出的是对象（如 { PcCollector }）时，pick 指定要代理的成员

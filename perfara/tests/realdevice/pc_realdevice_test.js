@@ -24,7 +24,8 @@ Module._load = function (request) {
 
 const PC = require('../../../_client_src/app/src/pc-collector');
 
-const PORTABLE_ROOT = path.resolve(__dirname, '../../../Perfara-Portable/collector/resources');
+// 项目重构后采集器资源位于 perfara/collector/resources（旧版为 Perfara-Portable/collector/resources）
+const PORTABLE_ROOT = path.resolve(__dirname, '../../collector/resources');
 const PY = path.join(PORTABLE_ROOT, 'ios-tools', 'python', 'python', 'python.exe');
 const SCRIPT = path.join(PORTABLE_ROOT, 'ios-tools', 'python', 'python', 'Scripts', 'collect_pc_perf.pyc');
 const EXE = process.argv[2] || 'C:\\Windows\\explorer.exe';

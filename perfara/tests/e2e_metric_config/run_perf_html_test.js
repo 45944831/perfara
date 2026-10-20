@@ -100,6 +100,32 @@ async function main() {
   check('mem 卡有数值', b.r.valMem && b.r.valMem !== '--');
   check('无 JS 报错', b.errors.length === 0, b.errors.join(';'));
 
+  console.log('[C] 全 0 帧（应用在后台/无渲染层）→ 帧率质量给出提示行而非静默消失');
+  // 回归背景：目标帧率由帧率分布 P95 推出，全 0 时无解，达帧率/均帧/低帧/1%Low/Drop
+  // /FPS≥目标/稳帧范围/标准差 会整族消失，用户只看到「参数丢了很多」。
+  const zeroPerf = mkAndroid(null);
+  zeroPerf.perf = zeroPerf.perf.map(s => ({ ...s, fps: 0 }));
+  fs.writeFileSync(path.join(ROOT, 'data.js'), 'var data = ' + JSON.stringify(zeroPerf, null, 2) + ';\n');
+  const zc = await browser.newPage();
+  const zErr = [];
+  zc.on('pageerror', e => zErr.push(e.message));
+  await zc.goto(`http://127.0.0.1:${port}/perf.html`, { waitUntil: 'load' });
+  await zc.waitForTimeout(2200);
+  const zRows = await zc.evaluate(() => {
+    const out = [];
+    document.querySelectorAll('table tr').forEach(tr => {
+      const t = [...tr.querySelectorAll('td,th')].map(td => td.textContent.trim()).join(' ');
+      if (t) out.push(t);
+    });
+    return out;
+  });
+  await zc.close();
+  const hasNote = zRows.some(r => r.includes('帧率质量') && r.includes('未取到有效帧'));
+  const hasReach = zRows.some(r => r.startsWith('达帧率'));
+  check('全 0 帧时出现「帧率质量」提示行', hasNote, '行数=' + zRows.length);
+  check('全 0 帧时不再输出无意义的达帧率数值', hasReach === false);
+  check('全 0 帧时无 JS 报错', zErr.length === 0, zErr.join(';'));
+
   console.log(`RESULT: ${pass} passed, ${fail} failed`);
   await browser.close();
   server.close();

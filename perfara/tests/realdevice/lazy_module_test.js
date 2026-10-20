@@ -82,5 +82,30 @@ check('同一模块复用缓存，未重复加载', require.cache[collectorPath]
 check('不存在的属性返回 undefined（与真实模块一致）',
   Collector.__notExist === undefined && RealCollector.__notExist === undefined);
 
+// ── 8. 相对路径基准（回归：main.js 里的写法必须可用） ─────────────────────
+// main.js 位于 app 根目录，写的是 lazy('./src/collector')；早期实现直接
+// require('./src/collector')，基准落在 src/ 上，打包后解析成 src/src/collector，
+// 点「开始」立即报 Cannot find module。这里锁定「相对路径以 app 根目录为基准」。
+const relChecks = [
+  ['./src/collector', (M) => typeof M.normalizeMetricConfig === 'function'],
+  ['./src/pc-collector', (M) => typeof M.PcCollector === 'function'],
+  ['./src/ios-collector', (M) => typeof M.resolveIosBin === 'function'],
+  ['./src/ios-gpu-collector', (M) => typeof M === 'function'],
+  ['./src/exporter', (M) => typeof M.toCSV === 'function'],
+];
+for (const [rel, pred] of relChecks) {
+  const target = require.resolve(path.join(APP, rel.replace(/^\.\//, '').replace(/\//g, path.sep)));
+  delete require.cache[target];
+  const M = lazy(rel);
+  let ok = false;
+  let err = '';
+  try {
+    ok = pred(M) === true;
+  } catch (e) {
+    err = e.message;
+  }
+  check(`相对路径 ${rel} 可解析（app 根目录为基准）`, ok, err);
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

@@ -60,6 +60,16 @@ function sendToRendererWithTrialLog(channel, payload) {
   }
 }
 
+/**
+ * 报告落盘前对采样数组做快照。
+ * 之前用 JSON.parse(JSON.stringify(arr)) 深拷贝，长时采集（数千点 × 数十字段）时
+ * 这一次「序列化 + 解析」要跑几百毫秒并阻塞主进程。写文件是同步的、采样对象每帧新建
+ * 且之后不再改动，因此浅拷贝数组即可，省掉整轮深拷贝。
+ */
+function snapshotArr(arr) {
+  return Array.isArray(arr) ? arr.slice() : [];
+}
+
 /** PC 上报 JSON：根级 category；device 包名/应用名为 exe 文件名；deviceId 用本机 UID 作上传 uid */
 function buildPcReportDataJsPayload(pcSession, perfArr, tagArr, machineUid, metricConfig) {
   const raw = pcSession && pcSession.exePath ? String(pcSession.exePath) : '';
@@ -77,8 +87,8 @@ function buildPcReportDataJsPayload(pcSession, perfArr, tagArr, machineUid, metr
       osVersion: '',
       deviceId: uid,
     },
-    perf: JSON.parse(JSON.stringify(perfArr || [])),
-    tag: JSON.parse(JSON.stringify(tagArr || [])),
+    perf: snapshotArr(perfArr),
+    tag: snapshotArr(tagArr),
     // 采集参数配置（勾选项）；报告端据此隐藏被移除指标的图表与指标行
     metricConfig: metricConfig && typeof metricConfig === 'object' ? JSON.parse(JSON.stringify(metricConfig)) : null,
   };
@@ -247,34 +257,9 @@ ipcMain.handle('get-packages', async (_event, deviceId) => {
   return await ADB.getThirdPartyPackages(deviceId);
 });
 
-/** 用于 UI：设备上是否已安装 com.example.perfara（已安装则无需 perfara 安装提示弹窗） */
-ipcMain.handle('android-is-perfara-installed', async (_event, deviceId) => {
-  const ADB = require('./src/adb');
-  return await ADB.isPackageInstalled(deviceId, 'com.example.perfara');
-});
-
-/** config.apk=true：安装 perfara（如需）并广播拉包名列表；否则等同 get-packages */
-ipcMain.handle('android-prepare-packages', async (_event, deviceId) => {
-  const cfg = readConfigOut();
-  const apk =
-    cfg.apk === true || cfg.apk === 1 || String(cfg.apk).toLowerCase() === 'true';
-  const ADB = require('./src/adb');
-  if (!apk) {
-    const packages = await ADB.getThirdPartyPackages(deviceId);
-    return { ok: true, apkMode: false, packages };
-  }
-  const r = await ADB.prepareAndroidPerfaraPackages(deviceId);
-  if (!r.ok) {
-    return { ok: false, apkMode: true, reason: r.reason || '准备应用列表失败' };
-  }
-  return {
-    ok: true,
-    apkMode: true,
-    packages: r.packages,
-    perfaraAlreadyInstalled: r.perfaraAlreadyInstalled,
-    usedPmListFallback: r.usedPmListFallback === true,
-  };
-});
+// 说明：已移除「安装 perfara.apk + 广播拉应用列表」的采集方式。
+// Android 端所有性能数据（CPU/内存/FPS/Jank/网络/温度等）均通过 USB + adb shell 直接读取，
+// 应用列表统一由 get-packages（pm list packages -3）提供，不再向手机安装任何 APK。
 
 ipcMain.handle('get-pid', async (_event, deviceId, packageName) => {
   const ADB = require('./src/adb');
@@ -405,8 +390,8 @@ ipcMain.handle('stop-collect', async () => {
           deviceId: androidSession.deviceId || '',
           udid: '',
         },
-        perf: JSON.parse(JSON.stringify(perfHistory)),
-        tag: JSON.parse(JSON.stringify(androidTags || [])),
+        perf: snapshotArr(perfHistory),
+        tag: snapshotArr(androidTags),
         // 采集参数配置：报告端据此隐藏被移除指标的图表与指标行
         metricConfig: androidSession.metricConfig || null,
       });
@@ -1007,8 +992,8 @@ ipcMain.handle('ios-stop-collect', async () => {
           deviceId: '',
           udid: iosSession.udid || '',
         },
-        perf: JSON.parse(JSON.stringify(iosPerfHistory)),
-        tag: JSON.parse(JSON.stringify(iosTags || [])),
+        perf: snapshotArr(iosPerfHistory),
+        tag: snapshotArr(iosTags),
         metricConfig: iosSession.metricConfig || null,
       });
     }
@@ -1131,8 +1116,8 @@ ipcMain.handle('ios-gpu-stop-collect', async () => {
           deviceId: '',
           udid: iosGpuSession.udid || '',
         },
-        perf: JSON.parse(JSON.stringify(iosGpuHistory)),
-        tag: JSON.parse(JSON.stringify(iosGpuTags || [])),
+        perf: snapshotArr(iosGpuHistory),
+        tag: snapshotArr(iosGpuTags),
         metricConfig: iosGpuSession.metricConfig || null,
       });
     }

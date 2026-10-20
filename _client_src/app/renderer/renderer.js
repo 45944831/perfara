@@ -17,6 +17,8 @@ const elapsedEl    = document.getElementById('elapsed');
 const logOutput    = document.getElementById('log-output');
 const deviceInfoBar = document.getElementById('device-info-bar');
 const deviceInfoText = document.getElementById('device-info-text');
+const fpsWarnBar = document.getElementById('fps-warn-bar');
+const fpsWarnText = document.getElementById('fps-warn-text');
 
 const valSysCpu  = document.getElementById('val-syscpu');
 const valProcCpu = document.getElementById('val-proccpu');
@@ -31,7 +33,7 @@ const valBattery= document.getElementById('val-battery');
 const valTemp   = document.getElementById('val-temp');
 
 let _startHintTimer = null;
-function showStartHint(msg) {
+function showStartHint(msg, durationMs) {
   if (!startHintEl) return;
   startHintEl.textContent = msg;
   startHintEl.hidden = false;
@@ -40,7 +42,7 @@ function showStartHint(msg) {
     startHintEl.hidden = true;
     startHintEl.textContent = '';
     _startHintTimer = null;
-  }, 5000);
+  }, durationMs || 5000);
 }
 function hideStartHint() {
   if (_startHintTimer) {
@@ -264,24 +266,7 @@ async function refreshDevices() {
   }
 }
 
-// ─── perfara.apk 提示弹窗（config.apk=true）──────────────────────────────────
-(function initPerfaraModal() {
-  const modal = document.getElementById('perfara-modal');
-  const btn = document.getElementById('perfara-modal-close');
-  const backdrop = modal && modal.querySelector('.perfara-modal__backdrop');
-  function hide() {
-    if (modal) modal.hidden = true;
-  }
-  if (btn) btn.onclick = hide;
-  if (backdrop) backdrop.onclick = hide;
-})();
-
-function showPerfaraInstallModal() {
-  const modal = document.getElementById('perfara-modal');
-  if (modal) modal.hidden = false;
-}
-
-// ─── Package loading ─────────────────────────────────────────────────────────
+// ─── Package loading（纯 USB/adb 读取，不安装任何 APK）───────────────────────
 async function loadPackages(deviceId) {
   if (!deviceId) return;
   log(`正在加载 ${deviceId} 的应用列表...`);
@@ -289,39 +274,9 @@ async function loadPackages(deviceId) {
     selApp.disabled = true;
     selApp.innerHTML = '<option value="">加载中…</option>';
   }
-  let cfgApk = false;
   try {
-    const c = await window.perfAPI.getConfigOut();
-    cfgApk =
-      c &&
-      (c.apk === true ||
-        c.apk === 1 ||
-        String(c.apk).toLowerCase() === 'true');
-  } catch (_) {}
-  if (cfgApk) {
-    let already = false;
-    try {
-      already = await window.perfAPI.androidIsPerfaraInstalled(deviceId);
-    } catch (_) {}
-    if (!already) {
-      showPerfaraInstallModal();
-    }
-  }
-  try {
-    const r = await window.perfAPI.androidPreparePackages(deviceId);
-    if (!r || !r.ok) {
-      throw new Error((r && r.reason) || '加载失败');
-    }
-    allPackages = r.packages || [];
-    if (r.apkMode && r.perfaraAlreadyInstalled) {
-      log('设备上已安装 com.example.perfara，已跳过 adb install', 'info');
-    }
-    if (r.apkMode && r.usedPmListFallback) {
-      log(
-        'perfara 安装/广播不可用或未返回应用，已改用 pm list packages -3（原第三方包列表）',
-        'warn',
-      );
-    }
+    const packages = await window.perfAPI.getPackages(deviceId);
+    allPackages = Array.isArray(packages) ? packages : [];
     if (selApp) {
       selApp.innerHTML = '<option value="">-- 选择应用 --</option>';
       for (const p of allPackages) {
@@ -333,9 +288,7 @@ async function loadPackages(deviceId) {
       }
       selApp.disabled = false;
     }
-    const src =
-      r.apkMode ? 'perfara 广播' : '第三方应用列表';
-    log(`加载完成（${src}），共 ${allPackages.length} 个应用`, 'info');
+    log(`加载完成（第三方应用列表），共 ${allPackages.length} 个应用`, 'info');
     scheduleDeviceInfoBar();
   } catch (e) {
     log('加载应用列表失败: ' + e.message, 'error');
@@ -500,7 +453,13 @@ btnStart.onclick = async () => {
     const result = await window.perfAPI.startCollect(deviceId, pkg, devLabel, appLabel, _metricConfig);
     if (!result.ok) throw new Error(result.reason);
   } catch (e) {
-    log('启动失败: ' + e.message, 'error');
+    // 日志面板可能被 configout 的 logpannel=false 隐藏，失败原因必须直接显示在界面上，
+    // 否则用户只看到「点开始就停了」而没有任何线索。
+    const raw = String((e && e.message) || e || '未知错误');
+    const brief = raw.replace(/\s+/g, ' ').trim().slice(0, 180);
+    log('启动失败: ' + raw, 'error');
+    hidePrepHint();
+    showStartHint('启动失败：' + brief, 15000);
     setCollecting(false);
   }
 };
@@ -523,6 +482,34 @@ async function exportData(format) {
   else log('导出失败: ' + result.reason, 'error');
 }
 
+// ─── 帧数据异常提示 ───────────────────────────────────────────────────────────
+// 应用不在前台 / 没有渲染层时 SurfaceFlinger 拿不到帧，fps 恒为 0。
+// 这种情况下报告里的「达帧率 / 均帧 / 低帧占比 / 1%Low / 稳帧范围」等整族派生指标
+// 都算不出来（目标帧率由帧率分布 P95 推出，全 0 时无解），必须当场提示，
+// 否则用户只会看到「参数丢了很多」。
+let _zeroFpsStreak = 0;
+const FPS_WARN_THRESHOLD = 5;
+function updateFpsWarn(data) {
+  if (!fpsWarnBar) return;
+  const fps = data && typeof data.fps === 'number' ? data.fps : null;
+  if (fps === null) return;
+  _zeroFpsStreak = fps > 0 ? 0 : _zeroFpsStreak + 1;
+  if (isCollecting && _zeroFpsStreak >= FPS_WARN_THRESHOLD) {
+    if (fpsWarnText) {
+      fpsWarnText.textContent =
+        `已连续 ${_zeroFpsStreak} 秒未取到帧数据：被测应用可能不在前台或没有渲染层。` +
+        '此时 FPS / Jank 为 0，报告里的达帧率、均帧、低帧占比等帧率质量指标也无法计算，请把应用切到前台后重新采集。';
+    }
+    fpsWarnBar.hidden = false;
+  } else {
+    fpsWarnBar.hidden = true;
+  }
+}
+function resetFpsWarn() {
+  _zeroFpsStreak = 0;
+  if (fpsWarnBar) fpsWarnBar.hidden = true;
+}
+
 // ─── IPC listeners ────────────────────────────────────────────────────────────
 window.perfAPI.onPerfData((data) => {
   // When Android app process is gone we auto-stop; freeze charts/cards until user starts again.
@@ -531,6 +518,7 @@ window.perfAPI.onPerfData((data) => {
   if (_waitingFirstData) hidePrepHint();
   updateCards(data);
   chartMgr.update(data);
+  updateFpsWarn(data);
   if (data.pid && pidLabel) {
     pidLabel.textContent = `PID: ${data.pid}`;
     pidLabel.style.display = '';
@@ -575,6 +563,7 @@ function setCollecting(v) {
 
   if (v) {
     startTime = Date.now();
+    resetFpsWarn();
     elapsedTimer = setInterval(updateElapsed, 1000);
     if (btnTagScene) btnTagScene.disabled = false;
   } else {
@@ -582,6 +571,7 @@ function setCollecting(v) {
     elapsedEl.textContent = '';
     if (pidLabel) pidLabel.style.display = 'none';
     hidePrepHint();
+    resetFpsWarn();
     if (btnTagScene) btnTagScene.disabled = true;
   }
 }

@@ -3025,6 +3025,16 @@ body { overflow-x: hidden; }
           _fps ? (_fps.series[4] || []) : [],
           fpsTargetOfSeries(fpsFull), durSec
         );
+        // 有采样点但一帧都没渲染（应用在后台 / 无 Surface / 非前台）：
+        // 目标帧率由帧率分布 P95 推出，全 0 时无解，整族帧率质量指标会被算空。
+        // 不能静默丢掉这些行，否则用户只会看到「参数少了一大截」却不知道为什么。
+        if (!qRows.length && fpsFull.some(v => typeof v === 'number' && !isNaN(v))) {
+          qRows.push({
+            metric: '帧率质量', raw: '帧率质量', unit: '',
+            mean: null, max: null, p98: null,
+            sub: '本次采集未取到有效帧（应用不在前台或无渲染层），达帧率/均帧/低帧等指标不可用',
+          });
+        }
       for (const r of qRows) rows.push(r);
         }
         return rows;

@@ -61,7 +61,9 @@ function findDataJsPureJson() {
  * 每次写入都会顺带归档一份到 history/，作为本地报告库的一条记录。
  */
 function writeDataJs(payload) {
-  const content = `var data = ${JSON.stringify(payload, null, 2)};\n`;
+  // 不缩进：data.js 供报告页 <script> 加载，缩进会让体积膨胀 2~3 倍，
+  // 拖慢「写入 + 报告页解析」两头（长时采集可达数十 MB）。人读请用同目录 data.json。
+  const content = `var data = ${JSON.stringify(payload)};\n`;
   const primary = getReportsDataJsPath();
   let written = primary;
   try {
@@ -163,6 +165,24 @@ function _avg(arr) {
   return n.length ? n.reduce((a, b) => a + b, 0) / n.length : null;
 }
 
+/**
+ * 热路径取值（summarizePerf 每点要取 10 个字段）。
+ * _pick 用 rest 参数 + split 解析路径，每个字段都要分配数组与子串；这里改成
+ * 直接传候选值，不做任何字符串处理。语义与 _pick 一致：取第一个有限数值。
+ */
+function _firstNum(a, b, c, d) {
+  if (typeof a === 'number' && isFinite(a)) return a;
+  if (typeof b === 'number' && isFinite(b)) return b;
+  if (typeof c === 'number' && isFinite(c)) return c;
+  if (typeof d === 'number' && isFinite(d)) return d;
+  return null;
+}
+
+/** 多段路径的中间层：只有对象才继续往下取（数字 / null 一律视为不通） */
+function _asObj(v) {
+  return (v && typeof v === 'object') ? v : null;
+}
+
 /** 按 a.b.c 取数，返回第一个存在的有限数值 */
 function _pick(obj, ...paths) {
   for (const p of paths) {
@@ -213,28 +233,47 @@ function normalizeMetricConfig(cfg) {
  */
 function summarizePerf(perf, metricConfig) {
   const rows = Array.isArray(perf) ? perf : [];
+  // 一次循环把 10 条序列 + 时间戳都取出来：原来是对同一份 rows 跑 11 遍 map，
+  // 每遍都要 _pick 做 split 解析，长时采集时这部分是纯浪费。
   const series = {
-    fps:     rows.map(r => _pick(r, 'fps', 'fps.fps')),
-    cpu:     rows.map(r => _pick(r, 'cpu.procCpu', 'cpu.cpu', 'procCpu', 'cpuUsage')),
-    mem:     rows.map(r => _pick(r, 'mem.totalPss', 'mem.pss', 'mem.physic', 'physFootprint')),
-    temp:    rows.map(r => _pick(r, 'temperature', 'temp')),
-    gpu:     rows.map(r => _pick(r, 'gpu', 'gpu.utilization')),
-    gpuTemp: rows.map(r => _pick(r, 'gpuTemp', 'gpu_temp')),
-    jank:    rows.map(r => _pick(r, 'jank', 'jankRate')),
-    bigJank: rows.map(r => _pick(r, 'bigJank', 'big_jank', 'bigJankRate')),
-    smallJank: rows.map(r => _pick(r, 'smallJank', 'small_jank')),
-    tinyJank:  rows.map(r => _pick(r, 'tinyJank', 'tiny_jank')),
+    fps: [], cpu: [], mem: [], temp: [], gpu: [], gpuTemp: [],
+    jank: [], bigJank: [], smallJank: [], tinyJank: [],
   };
+  const ts = [];
+  for (const r of rows) {
+    const o = (r && typeof r === 'object') ? r : {};
+    // 多段路径（cpu.x / mem.x / fps.fps）要求中间层是对象，与 _pick 语义一致：
+    // 中间层若是数字（如 cpu: 12），_pick 会判失败并回退到下一个候选。
+    const co = _asObj(o.cpu), mo = _asObj(o.mem), fo = _asObj(o.fps), go = _asObj(o.gpu);
+    series.fps.push(_firstNum(o.fps, fo ? fo.fps : undefined));
+    series.cpu.push(_firstNum(co ? co.procCpu : undefined, co ? co.cpu : undefined, o.procCpu, o.cpuUsage));
+    series.mem.push(_firstNum(mo ? mo.totalPss : undefined, mo ? mo.pss : undefined, mo ? mo.physic : undefined, o.physFootprint));
+    series.temp.push(_firstNum(o.temperature, o.temp));
+    series.gpu.push(_firstNum(o.gpu, go ? go.utilization : undefined));
+    series.gpuTemp.push(_firstNum(o.gpuTemp, o.gpu_temp));
+    series.jank.push(_firstNum(o.jank, o.jankRate));
+    series.bigJank.push(_firstNum(o.bigJank, o.big_jank, o.bigJankRate));
+    series.smallJank.push(_firstNum(o.smallJank, o.small_jank));
+    series.tinyJank.push(_firstNum(o.tinyJank, o.tiny_jank));
+    if (o.timestamp != null) ts.push(o.timestamp);
+  }
   const kpi = {};
-  for (const [k, arr] of Object.entries(series)) {
-    const n = _nums(arr);
+  for (const k of Object.keys(series)) {
+    // 单趟求 sum / min / max：原来 _avg 与 _nums 各遍历一遍（共 3 遍），
+    // 且 Math.min.apply(null, 大数组) 在点数 >6.5 万时会 RangeError（长时采集风险）
+    let sum = 0, cnt = 0, mn = Infinity, mx = -Infinity;
+    for (const v of series[k]) {
+      if (typeof v !== 'number' || !isFinite(v)) continue;
+      sum += v; cnt += 1;
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
     kpi[k] = {
-      avg: _round(_avg(arr), 1),
-      min: n.length ? _round(Math.min.apply(null, n), 1) : null,
-      max: n.length ? _round(Math.max.apply(null, n), 1) : null,
+      avg: cnt ? _round(sum / cnt, 1) : null,
+      min: cnt ? _round(mn, 1) : null,
+      max: cnt ? _round(mx, 1) : null,
     };
   }
-  const ts = rows.map(r => _pick(r, 'timestamp')).filter(v => v != null);
 
   // FPS 派生指标（与报告页 perf.html perfFpsQualityRows 完全同口径）：
   //   达帧率   = 平均 FPS ÷ 目标帧率 × 100
@@ -246,7 +285,10 @@ function summarizePerf(perf, metricConfig) {
   //   帧率标准差 / 卡顿时长占比（Stutter）/ Drop（帧/时）
   // 目标帧率由 P95 吸附到常见刷新率（30/45/60/90/120/144/165）。
   const fpsNums = _nums(series.fps);
-  let durSec = ts.length >= 2 ? _round((Math.max.apply(null, ts) - Math.min.apply(null, ts)) / 1000, 1) : null;
+  // 同样避免 Math.max.apply 展开超长数组（点数多时会 RangeError）
+  let tsMin = Infinity, tsMax = -Infinity;
+  for (const t of ts) { if (t < tsMin) tsMin = t; if (t > tsMax) tsMax = t; }
+  let durSec = ts.length >= 2 ? _round((tsMax - tsMin) / 1000, 1) : null;
   if (fpsNums.length) {
     const sorted = fpsNums.slice().sort((a, b) => a - b);
     const i = (sorted.length - 1) * 0.95;
@@ -366,7 +408,9 @@ function archiveReport(payload, dataJsPath) {
     const base = id;
     while (fs.existsSync(path.join(dir, `${id}.js`))) id = `${base}_${n++}`;
 
-    const json = JSON.stringify(payload, null, 2);
+    // 同样不缩进（见 writeDataJs 注释）；history 里 .js 与 .json 内容一致，
+    // 序列化一次复用，避免对同一份数据跑两遍 stringify
+    const json = JSON.stringify(payload);
     fs.writeFileSync(path.join(dir, `${id}.js`), `var data = ${json};\n`, 'utf8');
     fs.writeFileSync(path.join(dir, `${id}.json`), json, 'utf8');
 

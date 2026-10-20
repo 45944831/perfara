@@ -73,6 +73,11 @@
   </div>
 </div>
 
+<!-- 帧数据异常提示：连续多秒 fps=0（应用不在前台/无渲染层）时显示 -->
+<div id="fps-warn-bar" class="fps-warn-bar" hidden>
+  <span id="fps-warn-text"></span>
+</div>
+
 <!-- ═══ STAT CARDS ══════════════════════════════════════════════════════════ -->
 <section class="cards">
   <div class="card" id="card-cpu" data-metric="cpu">
@@ -174,18 +179,6 @@
     <div id="chart-cpu-freq" class="chart"></div>
   </div>
 </section>
-
-<!-- perfara.apk 提示（config.apk=true 时显示，可关闭） -->
-<div id="perfara-modal" class="perfara-modal" hidden>
-  <div class="perfara-modal__backdrop"></div>
-  <div class="perfara-modal__box" role="dialog" aria-labelledby="perfara-modal-title">
-    <div id="perfara-modal-title" class="perfara-modal__title">perfara.apk 安装提示</div>
-    <p class="perfara-modal__body">
-      将尝试通过 adb 安装 <strong>perfara.apk</strong>。请在手机上确认安装提示。如果不同意安装，关闭本窗口即可（不影响产品功能），安装后显示更友好。
-    </p>
-    <button type="button" id="perfara-modal-close" class="btn btn-primary">关闭</button>
-  </div>
-</div>
 
 <!-- ═══ LOG PANEL ═══════════════════════════════════════════════════════════ -->
 <div class="log-panel">

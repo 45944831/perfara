@@ -31,11 +31,8 @@ contextBridge.exposeInMainWorld('perfAPI', {
   connectWifi: (ipPort) => ipcRenderer.invoke('connect-wifi', ipPort),
   autoConnectWifi: (deviceId) => ipcRenderer.invoke('auto-connect-wifi', deviceId),
   disconnectWifi: (ipPort) => ipcRenderer.invoke('disconnect-wifi', ipPort),
+  // 应用列表：纯 adb（pm list packages -3）读取，不安装任何 APK
   getPackages: (deviceId) => ipcRenderer.invoke('get-packages', deviceId),
-  androidIsPerfaraInstalled: (deviceId) =>
-    ipcRenderer.invoke('android-is-perfara-installed', deviceId),
-  androidPreparePackages: (deviceId) =>
-    ipcRenderer.invoke('android-prepare-packages', deviceId),
   getPid: (deviceId, packageName) => ipcRenderer.invoke('get-pid', deviceId, packageName),
   startCollect: (deviceId, packageName, deviceLabel, appLabel, metricConfig) =>
     ipcRenderer.invoke('start-collect', deviceId, packageName, deviceLabel, appLabel, metricConfig),

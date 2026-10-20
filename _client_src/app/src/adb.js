@@ -207,42 +207,50 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
   }
   log(`[adb] 未检测到进程，尝试启动应用: ${packageName}`);
   const pkg = packageName.replace(/'/g, "'\\''");
-  try {
-    await adbShell(
-      deviceId,
-      `monkey -p '${pkg}' -c android.intent.category.LAUNCHER 1 2>/dev/null`,
-      20000
-    );
-  } catch (e) {
-    log(`[adb] monkey 启动: ${e.message}`);
-  }
-  pid = await getPid(deviceId, packageName).catch(() => null);
-  if (pid) {
-    log(`[adb] 应用已启动 (PID=${pid})`);
-    return { ok: true, launched: true, pid };
-  }
-  try {
-    await adbShell(
-      deviceId,
-      `am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p '${pkg}' 2>/dev/null`,
-      20000
-    );
-  } catch (e) {
-    log(`[adb] am start: ${e.message}`);
-  }
-  for (let i = 0; i < 60; i++) {
-    await new Promise((r) => setTimeout(r, 250));
-    pid = await getPid(deviceId, packageName).catch(() => null);
-    if (pid) {
-      log(`[adb] 应用已启动 (PID=${pid})`);
-      return { ok: true, launched: true, pid };
+  // 先 am start 再 monkey：部分 ROM（如 定制 ROM / Android 13）的 /system/bin/monkey
+  // 是个会被 shell 吃掉参数的包装脚本，拉起必失败；am start 在这些机器上实测可用。
+  // monkey 仅作为老设备的兜底（Android 10 以下 am start 不支持 -p）。
+  for (const [label, cmd] of [
+    ['am start', `am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p '${pkg}' 2>&1`],
+    ['monkey', `monkey -p '${pkg}' -c android.intent.category.LAUNCHER 1 2>&1`],
+  ]) {
+    let out = '';
+    try {
+      out = await adbShell(deviceId, cmd, 10000);
+    } catch (e) {
+      // execFile 在退出码非 0 时 reject，错误信息里带着设备端输出
+      out = String((e && e.message) || '');
+    }
+    // 包本身没有可启动入口（如轻应用/插件包）：设备端会明确报出来，
+    // 这种情况下再轮询也没用，直接换下一种方式，避免用户干等几十秒
+    if (/unable to resolve|No activity found|Error type 3|not found/i.test(out)) {
+      // 已确认包本身没有可启动入口，monkey 也不可能成功，直接结束
+      log(`[adb] ${label}: 该包没有可启动入口，停止尝试`);
+      return {
+        ok: false,
+        launched: false,
+        pid: null,
+        error: `该应用没有可启动入口（无 Launcher Activity），无法自动拉起：${packageName}。`
+          + '请换选一个应用，或先在手机上打开它再点开始。',
+      };
+    }
+    // 应用启动通常 1~3 秒；轮询 5 秒足够
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      pid = await getPid(deviceId, packageName).catch(() => null);
+      if (pid) {
+        log(`[adb] 应用已启动 (PID=${pid})`);
+        return { ok: true, launched: true, pid };
+      }
     }
   }
   return {
     ok: false,
     launched: true,
     pid: null,
-    error: '应用未运行且启动后仍未检测到进程',
+    error: '未能拉起该应用：请先在手机上手动打开它再点开始。'
+      + '若需自动拉起，请在系统设置中允许该应用「自启动/后台弹出界面」，'
+      + '并关闭省电限制（部分厂商 ROM 等 ROM 默认会拦截 adb 拉起）。',
   };
 }
 
@@ -1047,158 +1055,12 @@ function resetDeviceState(deviceId) {
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
-// ─── Perfara.apk：安装与广播应用列表 ─────────────────────────────────────────
-
-const PERFARA_PKG = 'com.example.perfara';
-
-/** adb.exe 同目录下的 perfara.apk（与 Win 打包 adb/win 布局一致） */
-function resolvePerfaraApkPath() {
-  const dir = path.dirname(ADB_BIN);
-  const p = path.join(dir, 'perfara.apk');
-  try {
-    if (fs.existsSync(p)) return p;
-  } catch (_) {}
-  return null;
-}
-
-async function isPackageInstalled(deviceId, pkg) {
-  if (!deviceId || !pkg) return false;
-  try {
-    const safe = String(pkg).replace(/[^a-zA-Z0-9._]/g, '');
-    if (!safe) return false;
-    const out = await adbShell(deviceId, `pm path ${safe} 2>/dev/null`, 10000);
-    return /package:/.test(out);
-  } catch (_) {
-    return false;
-  }
-}
-
-/**
- * 解析 am broadcast 输出中 data="…" 内多行「应用名 | 包名」
- */
-function parsePerfaraBroadcastAppList(stdout) {
-  const text = String(stdout || '');
-  let inner = '';
-  const m = text.match(/data="([\s\S]*?)"/);
-  if (m) {
-    inner = m[1];
-  } else {
-    const idx = text.indexOf('Broadcast completed');
-    if (idx >= 0) {
-      const sub = text.slice(idx);
-      const q = sub.indexOf('data="');
-      if (q >= 0) {
-        const rest = sub.slice(q + 6);
-        const end = rest.indexOf('"');
-        inner = end >= 0 ? rest.slice(0, end) : rest;
-      }
-    }
-  }
-  const lines = inner.split(/\r?\n/);
-  const apps = [];
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t) continue;
-    const parts = t.split(/\s*\|\s*/).map((x) => x.trim()).filter(Boolean);
-    if (parts.length < 2) continue;
-    const pkg = parts[parts.length - 1];
-    const label = parts.slice(0, -1).join(' | ');
-    if (!pkg || !/^[a-zA-Z][a-zA-Z0-9._]*$/.test(pkg)) continue;
-    apps.push({ pkg, label: label || pkg });
-  }
-  return apps;
-}
-
-async function getAppListFromPerfaraBroadcast(deviceId) {
-  const out = await adb(
-    [
-      '-s',
-      deviceId,
-      'shell',
-      'am',
-      'broadcast',
-      '-a',
-      'com.example.perfara.GET_APP_LIST',
-      '-n',
-      'com.example.perfara/.AppListReceiver',
-    ],
-    30000,
-  );
-  return parsePerfaraBroadcastAppList(out);
-}
-
-/**
- * apk 模式：必要时单次尝试安装 perfara，再尝试广播。安装/检测/广播任一步异常或失败均忽略，直接按 config.apk=false 同逻辑拉取 pm list -3。
- * @returns {{ ok: true, packages, perfaraAlreadyInstalled, usedPmListFallback?: boolean } | { ok: false, reason: string }}
- */
-async function prepareAndroidPerfaraPackages(deviceId) {
-  if (!deviceId) {
-    return { ok: false, reason: '未选择设备' };
-  }
-
-  async function loadPackagesLikeNonApkMode() {
-    try {
-      const packages = await getThirdPartyPackages(deviceId);
-      if (!packages.length) {
-        return { ok: false, reason: '未获取到应用列表' };
-      }
-      return {
-        ok: true,
-        packages,
-        perfaraAlreadyInstalled: false,
-        usedPmListFallback: true,
-      };
-    } catch (e) {
-      return {
-        ok: false,
-        reason: `获取第三方应用列表失败: ${e.message || e}`,
-      };
-    }
-  }
-
-  try {
-    const alreadyHadPerfara = await isPackageInstalled(deviceId, PERFARA_PKG);
-    const apkPath = resolvePerfaraApkPath();
-    if (!alreadyHadPerfara && apkPath) {
-      try {
-        await adb(['-s', deviceId, 'install', '-r', apkPath], 180000);
-      } catch (_) {
-        /* 安装失败忽略 */
-      }
-    }
-    const hasPerfara = await isPackageInstalled(deviceId, PERFARA_PKG);
-    let broadcastOk = false;
-    let packages = [];
-    if (hasPerfara) {
-      try {
-        packages = await getAppListFromPerfaraBroadcast(deviceId);
-        broadcastOk = Array.isArray(packages) && packages.length > 0;
-      } catch (_) {
-        packages = [];
-      }
-    }
-    if (!broadcastOk) {
-      return await loadPackagesLikeNonApkMode();
-    }
-    return {
-      ok: true,
-      packages,
-      perfaraAlreadyInstalled: alreadyHadPerfara,
-      usedPmListFallback: false,
-    };
-  } catch (_) {
-    return await loadPackagesLikeNonApkMode();
-  }
-}
-
 module.exports = {
   getDevices, getDeviceInfo, getThirdPartyPackages, getPid, getUid, ensureAppRunning,
   getCpuStats, getMemInfo, getFps,
   getNetStats, getBatteryInfo, getThermalInfo, getGpuUsage,
   getCpuCoreStats,
   resetDeviceState, connectWifi, autoConnectWifi, disconnectWifi,
-  resolvePerfaraApkPath, isPackageInstalled, prepareAndroidPerfaraPackages,
-  parsePerfaraBroadcastAppList, getAppListFromPerfaraBroadcast,
   cancelAllInflight,
   // 纯算法导出：供离线回归测试锁定 FPS/Jank 判定口径（不影响运行时行为）
   __algo: {

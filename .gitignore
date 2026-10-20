@@ -39,6 +39,10 @@ _perfdog_opt_evidence/
 _asar_*/
 _backup_*/
 _removed-from-portable/
+# 移除 perfara.apk 依赖后归档的 APK（5.6MB，不入库）
+_archive_removed_apk/
+# 新增的便携版产物：安装包按需单独分发，避免每次构建都把 200MB+ 推上 LFS
+release/*_r*.zip
 # 根目录散落的过程截图（各阶段验证用，归档在 F 盘）
 /*.png
 

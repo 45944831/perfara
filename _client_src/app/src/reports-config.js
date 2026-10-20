@@ -6,8 +6,6 @@ const path = require('path');
 /** 与 configout/config.js 中 `var upload={...}` 字段一致（不含 logpannel，logpannel 仅来自 configout 文件） */
 const DEFAULT_CONFIG = {
   usePreGpuIos17: 0,
-  /** 为 true 时：选设备后通过 adb 安装同目录 perfara.apk，并用广播拉取应用列表 */
-  apk: false,
   appname: 'Perfara',
   username: '',
   check: true,
