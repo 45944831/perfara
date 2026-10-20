@@ -110,6 +110,16 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 - **回归测试补强**：新增 `lazy_module` 相对路径用例（24 项）、`perf_html` 全 0 帧用例（19 项）、
   `report_serialize_bench` 序列化基准。
 
+## 本次新增（v2026.10.20.1）
+
+- **修复关闭程序后进程残留**：便携版启动器原先只结束了 PyInstaller onefile 的 bootloader 父进程，
+  真正的 `PerfaraServer.exe` 子进程被留下占着端口；下次启动端口被占就顺延 8001/8002/8003，越积越多。
+  现在退出时直接结束本包服务进程的父/子两层，并确认端口释放；服务进程同时挂在 Job Object 上，
+  启动器被强杀也会连带清理；启动时还会先清理本包遗留进程。启动器源码 `tools/launcher_portable.py` 已入库。
+- **修复打包版看板白屏**：`server/PerfaraServer.exe` 落后于 `backend/app.py` 的 MIME 修正，
+  前端 `.js` 被当 `text/plain` 返回导致页面空白；已按新增的 `perfara/perfara_server.spec` 重打。
+- **文案修正**：看板提示里的「32 位分享令牌」改为「32 位 ID」，与「复制 testid」按钮一致。
+
 ---
 
 ## 下载与运行
@@ -117,7 +127,7 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 前往 [**Releases**](https://github.com/45944831/perfara/releases) 下载最新便携版：
 
 ```
-Perfara_Portable_20261020_r5.zip   （约 224MB）
+Perfara_Portable_20261020_r6.zip   （约 223MB，对应 v2026.10.20.1）
 ```
 
 1. 解压到任意目录（路径不要含特殊字符）
@@ -217,6 +227,7 @@ A：不会离开本机。看板服务只监听 `127.0.0.1`，数据存在本地 
 
 | 版本 | 内容 |
 | --- | --- |
+| `v2026.10.20.1` | 修复关闭程序后 `PerfaraServer.exe` 进程残留与端口漂移、打包版看板白屏（`.js` MIME）、看板文案改为 testid |
 | `v2026.10.20` | 移除 APK 依赖、修复打包版采集无法启动、启动失败可见、无渲染层提示与报告空状态 |
 | `20261020` | 补齐 PerfDog 口径指标（1%Low / Drop / FPS≥目标 / 稳帧范围 / 标准差 / Stutter / Jank·10min / 上下文切换 / CPU 限频） |
 
