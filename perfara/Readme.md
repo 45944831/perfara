@@ -25,22 +25,25 @@
 
 采集端把 JSON 提交给本机看板后，由本地服务解析、渲染与分享。
 
-### 界面预览（请将以下图片置于本文件同目录或 `docs/` 下）
+### 界面预览（截图位于仓库 `docs/screenshots/`，均为本项目真实界面）
 
 | 文件 | 说明 |
 |------|------|
-| `Android1.jpg` | Android 数据展示示例 |
-| `an2.gif` | Android 补充视图 |
-| `web1.jpg` | 本地看板：测试列表与数据汇聚 |
-| `anti.jpg` | **趋势统计**：同场景多次测试的均值/峰值曲线，用于持续观测与防劣化 |
+| `docs/screenshots/dashboard.png` | 本地看板：测试列表、场景标记与分享令牌 |
+| `docs/screenshots/test-detail.png` | 测试详情：指标卡与整体统计（均值 / 峰值 / P98） |
+| `docs/screenshots/report.png` | 报告页：关键指标 + 自动解读总结 |
+| `docs/screenshots/report-charts.png` | 报告页：FPS / 卡顿 / 网络 / 温度多图联动 |
+| `docs/screenshots/trends.png` | **趋势统计**：同场景多次测试的均值/峰值曲线，用于持续观测与防劣化 |
 
-![Android 数据展示](Android1.jpg)
+![本地看板](../docs/screenshots/dashboard.png)
 
-![Android 补充视图](an2.gif)
+![测试详情](../docs/screenshots/test-detail.png)
 
-![本地看板](web1.jpg)
+![报告页](../docs/screenshots/report.png)
 
-![趋势统计与防劣化示意](anti.jpg)
+![报告页曲线](../docs/screenshots/report-charts.png)
+
+![趋势统计与防劣化示意](../docs/screenshots/trends.png)
 
 *上图：在「趋势统计」中选定项目、平台、**场景标记**与时间范围后，可对齐同一场景的多轮测试，观察 FPS、CPU、内存等随时间的走势，支撑版本对比与劣化预警。*
 
@@ -155,22 +158,25 @@ Submit performance JSON to the local dashboard; the local service parses, charts
 
 ### Screenshots
 
-Place these next to this file or under `docs/`:
+All screenshots live in `docs/screenshots/` and come from this project's real UI:
 
 | File | Description |
 |------|-------------|
-| `Android1.jpg` | Android dashboard sample |
-| `an2.gif` | Additional Android view |
-| `web1.jpg` | Web-side collection & aggregation |
-| `anti.jpg` | **Trends**: mean vs peak curves across runs for the same scenario |
+| `docs/screenshots/dashboard.png` | Local dashboard: test list, scenario tags, share token |
+| `docs/screenshots/test-detail.png` | Test detail: metric cards and mean / peak / P98 table |
+| `docs/screenshots/report.png` | Report: key metrics plus automatic diagnosis summary |
+| `docs/screenshots/report-charts.png` | Report: FPS, jank, network and thermal charts |
+| `docs/screenshots/trends.png` | **Trends**: mean vs peak curves across runs for the same scenario |
 
-![Android dashboard](Android1.jpg)
+![Local dashboard](../docs/screenshots/dashboard.png)
 
-![Android — additional view](an2.gif)
+![Test detail](../docs/screenshots/test-detail.png)
 
-![Web capture & aggregation](web1.jpg)
+![Report](../docs/screenshots/report.png)
 
-![Trend statistics & regression awareness](anti.jpg)
+![Report charts](../docs/screenshots/report-charts.png)
+
+![Trend statistics & regression awareness](../docs/screenshots/trends.png)
 
 *Select project, platform, **scenario tag**, and date range under **Trends** to align multiple runs of the same scenario and track FPS, CPU, memory over time—ideal for release comparison and anti-regression.*
 

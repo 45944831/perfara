@@ -28,17 +28,27 @@
 
 ## 界面预览
 
-**本地看板**：项目 / 测试列表，按设备、应用、场景标记筛选，一键复制 32 位分享令牌
+> 以下截图均取自本项目真实运行界面（真机采集数据 + 本地看板 / 本地报告），未做美化替换。
 
-![本地看板](perfara/web1.jpg)
+**本地看板**：项目 / 测试列表，按日期、项目、场景标记筛选，一键复制 32 位分享令牌
 
-**报告页**：FPS、各核心 CPU、内存明细等多图联动，统计表带指标口径说明
+![本地看板](docs/screenshots/dashboard.png)
 
-![报告页](perfara/Android1.jpg)
+**测试详情**：FPS、Jank、进程 / 系统 CPU、物理内存、线程数、磁盘读写分卡展示，「整体统计」给出均值 / 峰值 / P98
+
+![测试详情](docs/screenshots/test-detail.png)
+
+**报告页**：关键指标卡 + 自动解读总结（综合评分、达帧率缺口、卡顿归因、风险与优化提示）
+
+![报告页](docs/screenshots/report.png)
+
+**报告页曲线**：FPS 与分级卡顿、网络上下行、GPU 温度、设备温度同屏联动
+
+![报告页曲线](docs/screenshots/report-charts.png)
 
 **趋势统计**：同场景多次测试的均值 / 峰值曲线，用于持续观测与防劣化
 
-![趋势统计](perfara/anti.jpg)
+![趋势统计](docs/screenshots/trends.png)
 
 ---
 
@@ -136,6 +146,7 @@ Perfara_Portable_20261020_r5.zip   （约 224MB）
 | `perfara/frontend/` | Web 看板前端（Vue + Vite） |
 | `perfara/collector/resources/reports/` | 报告模板（`perf.html` / `library.html`，入库，改完即时生效） |
 | `perfara/tests/` | 回归测试脚本（25 套，属代码资产，禁止清理） |
+| `docs/screenshots/` | README 界面预览截图（取自本项目真实运行界面） |
 | `tools/` | 构建与维护脚本 |
 | `build/` | 启动器 PyInstaller 构建配置（`.spec`） |
 
