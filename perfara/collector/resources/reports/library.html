@@ -1858,8 +1858,59 @@ function renderCompareLegend(reps) {
   $('cmp-legend').innerHTML = '<span style="color:var(--text2)">曲线颜色：</span>' +
     reps.map((r, i) =>
       '<span><i style="background:' + PALETTE[i % PALETTE.length] + '"></i>' +
-      escapeHtml((r.createdAtLocal || '').slice(5)) + '</span>'
-    ).join('');
+      escapeHtml(CIRCLED[i] || (i + 1) + '.') + ' ' +
+      escapeHtml((r.createdAtLocal || '').slice(5)) +
+      (r.durationSec != null ? ' · ' + Math.round(r.durationSec) + 's' : '') + '</span>'
+    ).join('') +
+    '<span style="color:var(--text2)">每段为一次运行，横轴为该次运行已进行的秒数</span>';
+}
+
+/** 段首标注用的圈号（最多同时对比 6 份，一二三四五六刚好够用） */
+const CIRCLED = ['\u2460', '\u2461', '\u2462', '\u2463', '\u2464', '\u2465'];
+
+/**
+ * 把多条长度不一的时间序列排成「分段并列」的泳道，每次运行独占一段。
+ *
+ * 背景：对比图原来把所有运行都归一到 x=0 起画在同一条值轴上。几次测试时长差得远时
+ * （真实案例 37.4s / 14.8s / 8.0s / 只有一个采样点），短运行的曲线全挤在左上角，
+ * 和长运行的起点糊在一起，看上去像一条线连了过去，分不出谁是谁。
+ * 现在按「各自从 0 开始、段与段之间留间隙」的顺序排布，曲线之间不可能再搭上；
+ * 每段内部仍是从 0 起的相对秒数，逐段看趋势的语义不变。
+ *
+ * @param {Array<Array<[number, *]>>} seriesList 各运行的 [相对秒, 值] 序列
+ * @param {Array<string>} labels 各运行的显示名（用于段首标注）
+ * @returns {{bands: Array<object|null>, total: number}}
+ *   bands[i] = {start,end,dur,mark,label} 或 null（该运行此项没有数据，不占位）
+ */
+function layoutBands(seriesList, labels) {
+  const MIN_BAND = 2;   // 单点 / 极短运行也给一条最小宽度的泳道，免得和别段的起点粘在一起
+  const spans = seriesList.map(list => {
+    if (!list.some(pt => pt[1] != null)) return null;          // 整段无值：不占泳道
+    let x0 = Infinity, x1 = -Infinity;
+    for (const p of list) {
+      const x = p[0];
+      if (typeof x !== 'number' || !isFinite(x)) continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+    }
+    if (!(x1 >= x0)) return null;
+    return { x0, x1, dur: x1 - x0 };
+  });
+
+  const longest = spans.reduce((m, s) => (s && s.dur > m ? s.dur : m), 0);
+  const gap = Math.max(1.5, longest * 0.04);
+  const bands = [];
+  let cursor = 0;
+  spans.forEach((s, i) => {
+    if (!s) { bands.push(null); return; }
+    const w = Math.max(s.dur, MIN_BAND);
+    bands.push({
+      start: cursor, end: cursor + w, dur: s.dur, x0: s.x0,
+      mark: CIRCLED[i] || (i + 1) + '.', label: labels[i] || '',
+    });
+    cursor += w + gap;
+  });
+  return { bands, total: Math.max(0, cursor - gap) };
 }
 
 function renderCompareCharts(reps, payloads) {
@@ -1891,16 +1942,52 @@ function renderCompareCharts(reps, payloads) {
     const el = wrap.querySelector('.chart');
     const chart = echarts.init(el, null, { renderer: 'canvas' });
 
-    const series = reps.map((r, i) => ({
-      name: (r.createdAtLocal || '').slice(5),
-      type: 'line',
-      showSymbol: false,
-      smooth: false,
-      lineStyle: { width: 1.6, color: PALETTE[i % PALETTE.length] },
-      itemStyle: { color: PALETTE[i % PALETTE.length] },
-      connectNulls: false,
-      data: seriesList[i].map(pt => [pt[0], pt[1]]),
-    }));
+    // ── 分段并列：每次运行一条泳道，段间留间隙 ──
+    const labels = reps.map(r => (r.createdAtLocal || '').slice(5));
+    const { bands, total } = layoutBands(seriesList, labels);
+    const bandAt = (v) => {
+      for (const b of bands) {
+        if (b && v >= b.start - 1e-9 && v <= b.end + 1e-9) return b;
+      }
+      return null;
+    };
+
+    const series = reps.map((r, i) => {
+      const b = bands[i];
+      // 段内坐标 = 原相对秒 - 本段起点偏移，段与段因此绝不会挨在一起
+      const data = b ? seriesList[i].map(pt => [pt[0] - b.x0 + b.start, pt[1]]) : [];
+      // 只有一两个有效采样点的运行：showSymbol:false 时 echarts 画不出任何东西，至少给个点
+      const pts = data.filter(p => p[1] != null).length;
+      return {
+        name: labels[i],
+        type: 'line',
+        showSymbol: pts <= 2,
+        symbolSize: 6,
+        smooth: false,
+        lineStyle: { width: 1.6, color: PALETTE[i % PALETTE.length] },
+        itemStyle: { color: PALETTE[i % PALETTE.length] },
+        connectNulls: false,
+        data,
+      };
+    });
+
+    // 段底色 + 段首圈号：哪段曲线属于哪次运行一眼可辨。
+    // 只挂在第一个有数据的系列上，避免每段都重复画一遍底色和文字。
+    const anchor = series.findIndex(s => s.data.length > 0);
+    if (anchor >= 0) {
+      series[anchor].markArea = {
+        silent: true,
+        label: { show: true, position: 'insideTop', color: '#aab2c4', fontSize: 10 },
+        // 交替深浅底色，段与段的边界更清晰
+        data: bands.filter(Boolean).map((b, bi) => ([
+          {
+            xAxis: b.start, name: b.mark,
+            itemStyle: { color: bi % 2 ? 'rgba(255,255,255,0.045)' : 'rgba(255,255,255,0.015)' },
+          },
+          { xAxis: b.end },
+        ])),
+      };
+    }
 
     chart.setOption({
       backgroundColor: 'transparent',
@@ -1911,13 +1998,36 @@ function renderCompareCharts(reps, payloads) {
         borderColor: '#2a2f3d',
         textStyle: { color: '#e0e4ef', fontSize: 11 },
         axisPointer: { type: 'line', lineStyle: { color: '#4f8ef7', opacity: .5 } },
-        valueFormatter: (v) => (v == null ? '—' : fmt(v) + ' ' + unit),
+        // 悬停提示要能回答「这是哪次运行、进行到第几秒」
+        formatter: (params) => {
+          const arr = (Array.isArray(params) ? params : [params]).filter(p => p && p.value);
+          if (!arr.length) return '';
+          const x = arr[0].axisValue;
+          const b = bandAt(x);
+          const head = '<div style="font-weight:600;margin-bottom:3px">' +
+            escapeHtml(b ? b.label : '') +
+            (b ? ' · 第 ' + fmt(x - b.start, 1) + ' 秒' : '') + '</div>';
+          const rows = arr.filter(p => p.value[1] != null).map(p =>
+            '<div>' + p.marker + escapeHtml(p.seriesName) +
+            '：<b>' + fmt(p.value[1]) + '</b> ' + unit + '</div>');
+          return head + (rows.length ? rows.join('') : '<div style="color:#8a90a0">无数据</div>');
+        },
       },
       xAxis: {
         type: 'value',
         name: 's',
         nameTextStyle: { color: '#8a90a0', fontSize: 10 },
-        axisLabel: { color: '#8a90a0', fontSize: 10 },
+        min: 0,
+        max: total > 0 ? total : 1,
+        axisLabel: {
+          color: '#8a90a0',
+          fontSize: 10,
+          // 段内显示「该次运行已进行的秒数」，段间空隙不标刻度
+          formatter: (v) => {
+            const b = bandAt(v);
+            return b ? String(Math.round(v - b.start)) : '';
+          },
+        },
         axisLine: { lineStyle: { color: '#2a2f3d' } },
         splitLine: { show: false },
       },
@@ -1933,6 +2043,18 @@ function renderCompareCharts(reps, payloads) {
 
     state.charts.push(chart);
   }
+
+  // ── 尺寸校正 ──
+  // 这份 echarts 构建里没有 ResizeObserver（bundle 内 0 处匹配），图表不会自动跟随容器；
+  // 而对比图是一张张 append 进 grid 的：第一张图 init 时还是「grid 里唯一的子项」，
+  // canvas 会按整行宽度定死，第二张按两列宽度定死……等 grid 重排成 3 列后容器缩到 453px，
+  // 前面几张的 canvas 却还是 1434 / 698 px，多出来的部分被右侧图表的底色盖掉，
+  // 于是只剩左边一小条——FPS、CPU 这两张最重要的图首当其冲，
+  // 曲线全挤在可见的那一小段里，看上去就像连在了一起（轴上也只能看到 0/10/20 几个刻度）。
+  // 全部 append 完统一 resize 一次，让 canvas 与容器对齐。
+  requestAnimationFrame(() => {
+    for (const c of state.charts) { try { c.resize(); } catch (_) {} }
+  });
 
   if (!state.charts.length) {
     box.innerHTML = '<div class="empty" style="grid-column:1/-1;padding:30px">' +
