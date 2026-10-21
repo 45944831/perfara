@@ -5,7 +5,7 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from .models import TestRun, MetricBlob, Project
-from .utils import compute_content_hash, fps_stats_excluding_loading
+from .utils import as_text, compute_content_hash, fps_stats_excluding_loading
 
 
 # ─── 采集参数配置（metricConfig）─────────────────────────────────────────────
@@ -249,7 +249,7 @@ def parse_uploaded_json(
     _validate_tag(len(perf), payload.get("tag"))
     started_at = parse_timestamp(perf[0].get("timestamp"))
     ended_at = parse_timestamp(perf[-1].get("timestamp"))
-    label = payload.get("label") or payload.get("scenario") or ""
+    label = as_text(payload.get("label")) or as_text(payload.get("scenario")) or ""
     device = normalize_device(payload)
 
     # 采集参数配置（旧数据无配置 → 全部展示）
@@ -274,7 +274,7 @@ def parse_uploaded_json(
         started_at=started_at,
         ended_at=ended_at,
         device=device,
-        label=label or payload.get("file", ""),
+        label=label or as_text(payload.get("file")) or "",
         raw_json=json.dumps(raw_payload, ensure_ascii=False),
     )
 

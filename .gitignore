@@ -84,3 +84,6 @@ perfara/data/
 # ── 从发布包移出的体积项（保留在本地备查，不进 git）────────────────
 # 例：_archive_removed/ios-tools-bin/lowgpu.json（27.7MB，运行期无引用）
 _archive_removed/
+
+# ── 运行期产物（采集端本地报告归档，测试也会生成）────────────────────
+_client_src/app/reports/

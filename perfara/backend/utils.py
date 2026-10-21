@@ -21,12 +21,48 @@ def guess_platform(category: str) -> Optional[str]:
     return None
 
 
+def as_text(value: Any) -> Optional[str]:
+    """把 payload 里取出的字段规范化为**字符串**；容器 / 布尔等非标量一律返回 None。
+
+    背景：`/api/upload` 是开放入口，`app` / `bundleId` / `appName` 这些字段
+    没有任何 schema 约束。若调用方把 `app` 传成 dict（而不是字符串），
+    原实现会把它整个塞进 SQL 条件 —— `Project.app_name == {...}`，
+    SQLite 直接抛 `ProgrammingError: type 'dict' is not supported`，
+    上传以 **500** 收场，而不是优雅降级。
+
+    规则：
+      - str            → 原样返回
+      - int / float    → str()（数字型 bundleId 有现实可能，如 `12345`）
+      - bool           → None（`isinstance(True, int)` 为真，必须先排掉；
+                         布尔包名没有意义，不猜）
+      - dict / list / 其他 → None（不是合法的应用名 / 包名，忽略而非猜测）
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+    return None
+
+
 def ensure_project_for_payload(db: Session, payload: Dict[str, Any]) -> Project:
-    device = payload.get("device") or {}
-    pkg = device.get("bundleId") or payload.get("package") or payload.get("packageName")
-    app_name = device.get("appName") or payload.get("app") or payload.get("appName")
-    category = (device.get("category") or payload.get("category") or "")
-    platform = guess_platform(category) or payload.get("platform")
+    # payload 可能是任意 JSON（顶层数组 / 字符串 / 数字都出现过），
+    # 不是 dict 时不能 .get —— 否则 AttributeError 直接崩成 500。
+    if not isinstance(payload, dict):
+        payload = {}
+    # device 同理：不是 dict 时不能 .get
+    device = payload.get("device")
+    if not isinstance(device, dict):
+        device = {}
+    pkg = (as_text(device.get("bundleId"))
+           or as_text(payload.get("package"))
+           or as_text(payload.get("packageName")))
+    app_name = (as_text(device.get("appName"))
+                or as_text(payload.get("app"))
+                or as_text(payload.get("appName")))
+    category = (as_text(device.get("category")) or as_text(payload.get("category")) or "")
+    platform = guess_platform(category) or as_text(payload.get("platform"))
 
     # Try alias
     display_name = None
@@ -55,7 +91,11 @@ def ensure_project_for_payload(db: Session, payload: Dict[str, Any]) -> Project:
         project = db.query(Project).filter(or_(*proj_conds)).first()
     # 无包名/应用名时，尽量复用同名展示项目，避免无限创建
     if not project:
-        fallback_name = display_name or app_name or pkg or device.get("name") or payload.get("label") or payload.get("file") or "未命名项目"
+        fallback_name = (display_name or app_name or pkg
+                         or as_text(device.get("name"))
+                         or as_text(payload.get("label"))
+                         or as_text(payload.get("file"))
+                         or "未命名项目")
         project = (
             db.query(Project)
             .filter(Project.display_name == fallback_name)
@@ -69,8 +109,8 @@ def ensure_project_for_payload(db: Session, payload: Dict[str, Any]) -> Project:
             display_name=display_name
             or app_name
             or pkg
-            or payload.get("label")
-            or payload.get("file")
+            or as_text(payload.get("label"))
+            or as_text(payload.get("file"))
             or "未命名项目",
             platform=platform,
         )

@@ -65,8 +65,15 @@ def fatal(msg: str) -> None:
 
 
 def port_free(host: str, port: int) -> bool:
+    """判断端口是否空闲。
+
+    ⚠️ 不能设 SO_REUSEADDR：Windows 上该选项的语义是「**双方都设**才允许重复 bind」，
+    一旦对端也设了它，我们这里 bind 会成功，从而把「已被占用」误判成「空闲」——
+    启动器会直接起服务，然后服务 bind 失败、30s 后 fatal。
+    不设 REUSEADDR 时，无论对端设不设，只要端口上真有 socket 占着，bind 就会失败。
+    代价只是端口处于 TIME_WAIT 时更保守地顺延到下一个端口，方向是安全的。
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
             return True
