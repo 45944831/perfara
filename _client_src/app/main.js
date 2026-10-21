@@ -1420,6 +1420,52 @@ function readReportPayload(id) {
   } catch (_) { return null; }
 }
 
+/**
+ * 把 echarts 内联进报告 HTML，使其成为真正的「零外部依赖」单文件。
+ *
+ * 两种模板结构都要兼容：
+ *   ① 标签式（library.html）：<script src="echarts.min.js"></script>
+ *      —— 直接把这个标签替换成内联源码。
+ *   ② 异步加载器式（perf.html）：<head> 里是 window.echartsReady 加载器，
+ *      内部按「本地文件 → CDN → 空实现」顺序尝试，**没有** src="echarts.min.js" 标签。
+ *      —— 把源码内联到 </head> 之前即可：加载器第一件事就是
+ *      `if (typeof echarts !== 'undefined') return true;`，检测到内联的 echarts
+ *      就不再发起任何网络请求，图表直接可用。
+ *
+ * 早期实现只认 ①，对 perf.html 完全失效 —— 导出的「单文件分享报告」仍然
+ * 外链 cdn.jsdelivr.net，离线打开时图表一片空白（真机走查实测：
+ * 体积仅 213KB、canvas 数 0、离线仍发起 CDN 请求）。
+ *
+ * @param {string} html  模板 HTML
+ * @param {string} ecPath echarts.min.js 路径
+ * @returns {{ html: string, inlined: boolean }}
+ */
+function inlineEcharts(html, ecPath) {
+  if (!fs.existsSync(ecPath)) {
+    // 本地没有 echarts：交给模板自带的 CDN 兜底，不改动 HTML
+    return { html, inlined: false };
+  }
+  const ec = fs.readFileSync(ecPath, 'utf8').replace(/<\/script/gi, '<\\/script');
+  const inlineTag = '<script>\n' + ec + '\n</script>';
+
+  // ① 标签式：替换 src="echarts.min.js"
+  const EC_TAG = '<script src="echarts.min.js"></script>';
+  if (html.includes(EC_TAG)) {
+    // 用函数式替换，避免 echarts 源码里的 $& / $' 等被当成替换模式
+    return { html: html.replace(EC_TAG, () => inlineTag), inlined: true };
+  }
+
+  // ② 异步加载器式：插到 </head> 之前
+  const headEnd = html.indexOf('</head>');
+  if (headEnd >= 0) {
+    return {
+      html: html.slice(0, headEnd) + inlineTag + '\n' + html.slice(headEnd),
+      inlined: true,
+    };
+  }
+  return { html, inlined: false };
+}
+
 function buildSharedReportHtml(id) {
   const payload = readReportPayload(id);
   if (!payload) return { ok: false, reason: '未找到该报告的数据文件' };
@@ -1430,17 +1476,9 @@ function buildSharedReportHtml(id) {
 
   let html = fs.readFileSync(tpl, 'utf8');
 
-  // 1) 内联 echarts（本地文件优先，缺失则保留模板里的 CDN 兜底）
-  // 注意：用函数式替换，避免 echarts 源码里的 $& / $' 等被当成替换模式
-  const EC_TAG = '<script src="echarts.min.js"></script>';
-  if (html.includes(EC_TAG)) {
-    if (fs.existsSync(ecPath)) {
-      const ec = fs.readFileSync(ecPath, 'utf8').replace(/<\/script/gi, '<\\/script');
-      html = html.replace(EC_TAG, () => '<script>\n' + ec + '\n</script>');
-    } else {
-      html = html.replace(EC_TAG, () => '');   // 交给模板内的 CDN 兜底
-    }
-  }
+  // 1) 内联 echarts（本地文件优先；缺失则保留模板里的 CDN 兜底）
+  const ec = inlineEcharts(html, ecPath);
+  html = ec.html;
 
   // 2) 内联报告数据：移除「data.js / history/<id>.js」的外部加载
   const mark = '<!-- external: 全局 data';
@@ -1610,16 +1648,9 @@ function buildSharedCompareHtml(ids) {
 
   let html = fs.readFileSync(tplPath, 'utf8');
 
-  // 1) 内联 echarts（函数式替换，避免 echarts 源码里的 $& / $' 被当成替换模式）
-  const EC_TAG = '<script src="echarts.min.js"></script>';
-  if (html.includes(EC_TAG)) {
-    if (fs.existsSync(ecPath)) {
-      const ec = fs.readFileSync(ecPath, 'utf8').replace(/<\/script/gi, '<\\/script');
-      html = html.replace(EC_TAG, () => '<script>\n' + ec + '\n</script>');
-    } else {
-      html = html.replace(EC_TAG, () => '');   // 交给模板里的 CDN 兜底
-    }
-  }
+  // 1) 内联 echarts（标签式与异步加载器式都兼容，见 inlineEcharts 注释）
+  const ec = inlineEcharts(html, ecPath);
+  html = ec.html;
 
   // 2) 用参与对比的这几条索引替换外部的 history/index.js
   const meta = buildCompareMeta(reps);

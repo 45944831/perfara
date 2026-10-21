@@ -11,6 +11,13 @@ const ADB = require('./adb');
 const MAX_HISTORY = 14400;
 /** adb 冷启动后等待再开始采样；此期间不判定「进程消失」停止采集 */
 const ADB_LAUNCH_STABILIZE_MS = 5000;
+/**
+ * 应用从后台切到前台后的稳定期。
+ * 切前台后渲染层要重新出帧，timestats 首帧增量此刻尚未建立，
+ * 立刻采样只会拿到 method='timestats-init' 的假零点。
+ * 比冷启动短：进程本来就在跑，只需等渲染恢复。
+ */
+const SWITCH_STABILIZE_MS = 1500;
 /** 冷启动后再给一段时间，避免 pid 短暂拿不到就自动停采 */
 const POST_LAUNCH_PID_GRACE_MS = 5000;
 /**
@@ -25,10 +32,13 @@ const PID_REFRESH_EVERY = 5;
  *   none           —— 三条取帧通道全部失败（应用不在前台 / 无 Surface / 非 View 渲染）
  *   error          —— 取帧过程抛异常
  *   timestats-init —— timestats 首个采样点，还没有 totalFrames 增量
+ *   no-frames      —— timestats 匹配到图层，但本周期一帧都没产出
+ *                     （应用静止/被遮挡/已切后台）。这不是「掉到 0 帧」，
+ *                     写成 0 会把 FPS 均值与 1%Low 全部拉低。
  * 这些点若写成 fps=0，会被下游当成真实掉帧：均值被拉低、1%Low 直接归零。
  * 一律写 null（曲线断开），由报告页的加载段识别与统计剔除接手。
  */
-const FPS_NO_DATA_METHODS = new Set(['none', 'error', 'timestats-init']);
+const FPS_NO_DATA_METHODS = new Set(['none', 'error', 'timestats-init', 'no-frames']);
 
 /**
  * 采集参数配置 → 采集器内部开关。
@@ -126,6 +136,14 @@ class Collector extends EventEmitter {
         throw new Error('等待后仍未检测到应用进程，已取消采集');
       }
       this._processGoneGraceUntil = Date.now() + POST_LAUNCH_PID_GRACE_MS;
+    } else if (ensure.switched) {
+      // 应用本来就在后台，这次只是被切到前台。
+      // 切前台后渲染层要重新出帧，timestats 的首帧增量此刻还没建立，
+      // 立刻采样会拿到 method='timestats-init'（fps=0）的假零点。
+      // 给一个较短的稳定期即可（不必像冷启动那样等 5 秒）。
+      this._log(`应用已切到前台，等待 ${SWITCH_STABILIZE_MS / 1000}s 让渲染层恢复后再采样…`, token);
+      await new Promise((r) => setTimeout(r, SWITCH_STABILIZE_MS));
+      if (!this._running || token !== this._runToken) return;
     }
     const uid = await ADB.getUid(this.deviceId, this.packageName).catch(() => null);
     if (!this._running || token !== this._runToken) return;

@@ -63,7 +63,9 @@ async function main() {
 
   // ── 组装打包函数 ──
   const src = fs.readFileSync(MAIN, 'utf8');
-  const code = ['safeReportId', 'readReportPayload', 'buildSharedReportHtml', 'suggestSharedName']
+  // inlineEcharts 必须在 buildSharedReportHtml 之前抽取：
+  // 它是 echarts 内联的实现，被 buildSharedReportHtml / buildSharedCompareHtml 共用。
+  const code = ['safeReportId', 'readReportPayload', 'inlineEcharts', 'buildSharedReportHtml', 'suggestSharedName']
     .map(n => extractFn(src, n)).join('\n\n');
   const factory = new Function('fs', 'path', 'getHistoryDir', 'getBundledReportsDir',
     code + '\nreturn { safeReportId, readReportPayload, buildSharedReportHtml, suggestSharedName };');

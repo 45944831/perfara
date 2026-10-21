@@ -164,6 +164,8 @@ async function main() {
     extractConst(mainSrc, 'CMP_MAX'),
     extractFn(mainSrc, 'safeReportId'),
     extractFn(mainSrc, 'readReportPayload'),
+    // inlineEcharts：echarts 内联实现，被 buildSharedCompareHtml 调用
+    extractFn(mainSrc, 'inlineEcharts'),
     extractFn(mainSrc, 'loadPayloadAny'),
     extractFn(mainSrc, '_inlineJson'),
     extractFn(mainSrc, 'buildCompareMeta'),

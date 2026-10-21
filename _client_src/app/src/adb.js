@@ -43,7 +43,17 @@ function adb(args, timeout = 10000) {
   return new Promise((resolve, reject) => {
     const child = execFile(ADB_BIN, args, { timeout, encoding: 'utf8' }, (err, stdout, stderr) => {
       // If we were cancelled, treat as silent failure for callers to handle.
-      if (err) return reject(new Error(stderr || err.message));
+      if (err) {
+        // 设备端的真实结论在 **stdout**（如 monkey 的 "No activities found to run"、
+        // am start 的 "unable to resolve Intent"），而 adb 自身的报错在 stderr。
+        // 只取 stderr 会把关键判据丢掉，导致上层误判为「启动失败但不知道原因」，
+        // 进而白等满轮询时间。两者都带上，调用方按需匹配。
+        const parts = [];
+        if (stdout && String(stdout).trim()) parts.push(String(stdout).trim());
+        if (stderr && String(stderr).trim()) parts.push(String(stderr).trim());
+        const detail = parts.join('\n') || err.message;
+        return reject(new Error(detail));
+      }
       resolve(stdout);
     });
     try {
@@ -187,6 +197,22 @@ async function getThirdPartyPackages(deviceId) {
   return packages.map(pkg => ({ pkg, label: pkg }));
 }
 
+/**
+ * 判断包是否安装在设备上。
+ *
+ * `pm path <pkg>` 无输出即未安装（真机 generic 实测 ~90ms），
+ * 比逐条尝试启动命令再轮询 PID 快两个数量级。
+ */
+async function isPackageInstalled(deviceId, packageName) {
+  if (!packageName) return false;
+  try {
+    const out = await adbShell(deviceId, `pm path '${packageName}' 2>/dev/null`, 6000);
+    return /package:/.test(out);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function getPid(deviceId, packageName) {
   try {
     const out = await adbShell(deviceId, `pidof -s '${packageName}' 2>/dev/null`);
@@ -264,7 +290,23 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
   if (!deviceId || !packageName) {
     return { ok: false, launched: false, pid: null, error: 'deviceId 或 packageName 为空' };
   }
+
+  // ── 前置检查：包是否装在设备上 ──────────────────────────────────────────
+  // 必须在尝试启动之前做：包根本没装时，任何启动命令都不可能成功，
+  // 逐条尝试 + 轮询 PID 会白白耗掉 20+ 秒才报错（真机实测 23.5s），
+  // 用户看到的就是「点了开始没反应」。
+  const installed = await isPackageInstalled(deviceId, packageName);
+  if (!installed) {
+    log(`[adb] 设备上未安装该应用: ${packageName}`);
+    return {
+      ok: false, launched: false, pid: null,
+      error: `该应用未安装在设备上：${packageName}。请先在设备上安装后再开始采集。`,
+    };
+  }
+
   let pid = await getPid(deviceId, packageName).catch(() => null);
+  /** 进程在本次调用之前就已经存在 —— 用于区分「真启动」与「复用已有进程」 */
+  const hadProcess = !!pid;
   if (pid) {
     // 进程活着还不够：必须在**前台**才有可见图层可供取帧，否则整段 FPS 都是 null
     if (await isAppForeground(deviceId, packageName)) {
@@ -290,7 +332,10 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
     ['monkey', `monkey -p '${pkg}' -c android.intent.category.LAUNCHER 1 2>&1`],
   );
 
-  let noEntry = 0;
+  /** 本次尝试是否明确报「解析不到入口」 */
+  const isNoEntry = (s) => /unable to resolve|No activity found|Error type 3|not found|No activities found to run/i.test(s);
+  let noEntryCount = 0;
+
   for (const [label, cmd] of attempts) {
     let out = '';
     try {
@@ -299,23 +344,41 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
       // execFile 在退出码非 0 时 reject，错误信息里带着设备端输出
       out = String((e && e.message) || '');
     }
-    // 只记录「解析不到入口」，**不再提前 return** —— 换一种方式很可能就成功了
-    if (/unable to resolve|No activity found|Error type 3|not found/i.test(out)) noEntry++;
-    else noEntry = 0;
+    const noEntry = isNoEntry(out);
+    // 累计计数，**不要**在非 noEntry 时清零：
+    // 之前写成 `else noEntry = 0`，导致「三种方式都报无入口」的判定永远不成立，
+    // 无入口应用会白等满 3 轮轮询（真机实测 24s）才落到通用错误文案。
+    if (noEntry) noEntryCount++;
     log(`[adb] ${label}: ${out.trim().split('\n').slice(0, 2).join(' / ').slice(0, 160)}`);
+
+    // 明确报「无入口」时不再空转轮询 —— 该方式不可能成功，直接换下一种。
+    // （此前这里无条件轮询 5s × 3 种方式 = 15~24 秒，是「点了没反应」的根因）
+    if (noEntry) {
+      log(`[adb] ${label}: 无可启动入口，跳过等待`);
+      continue;
+    }
 
     // 应用启动通常 1~3 秒；轮询 5 秒足够
     for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 250));
       pid = await getPid(deviceId, packageName).catch(() => null);
       if (pid) {
+        // 进程本来就活着时，系统只是把已有任务带到前台
+        // （输出 "Warning: Activity not started, its current task has been brought to the front"）。
+        // 这**不是**新启动，没必要再等 5 秒稳定期 —— 之前误报 launched=true，
+        // 会让采集白白晚 5 秒才开始，日志也误导成「应用已启动」。
+        if (hadProcess) {
+          log(`[adb] 应用已切换到前台 (PID=${pid})`);
+          return { ok: true, launched: false, switched: true, pid };
+        }
         log(`[adb] 应用已启动 (PID=${pid})`);
         return { ok: true, launched: true, pid };
       }
     }
   }
+
   // 三种方式都没起来：只有「组件解析不到」且「每种方式都报无入口」才判定没有入口
-  if (!comp && noEntry >= attempts.length) {
+  if (!comp && noEntryCount >= attempts.length) {
     return {
       ok: false,
       launched: false,
@@ -660,6 +723,19 @@ async function getFps(deviceId, packageName, logFn) {
       if (prev && prev.totalFrames !== undefined) {
         const dt   = Math.max((now - prev.ts) / 1000, 0.1);
         const delta = Math.max(0, totalFrames - prev.totalFrames);
+
+        // 本采样周期一帧都没产出（delta=0）：说明应用当前没有可见渲染 ——
+        // 静止页面、被遮挡、已切到后台等。这**不是**「真的掉到 0 帧」，
+        // 写成 fps=0 会把报告里的 FPS 均值、1%Low 全部拉低，是假数据。
+        // 判为无数据（method='no-frames'），由采集端写 null、曲线断开。
+        if (delta === 0) {
+          log(`[FPS] timestats 本周期无新帧（应用无可见渲染/已静止）→ 记为无数据`);
+          return {
+            fps: 0, jank: 0, bigJank: 0, smallJank: 0, tinyJank: 0, jankRate: 0,
+            method: 'no-frames',
+          };
+        }
+
         const fps   = Math.min(Math.round(delta / dt), 120);
 
         let jank = 0, bigJank = 0, smallJank = 0, tinyJank = 0;
