@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
+const loading = require('./fps-loading');
 
 /**
  * 写入 reports/data.js、data.json 时：若有应用显示名且与包名/bundle 不同，则使用「名称(包名或 bundle_id)」；
@@ -257,6 +258,20 @@ function summarizePerf(perf, metricConfig) {
     series.tinyJank.push(_firstNum(o.tinyJank, o.tiny_jank));
     if (o.timestamp != null) ts.push(o.timestamp);
   }
+  // ── 加载阶段剔除 ───────────────────────────────────────────────────────────
+  // 冷启动 / 换场景 / 读关卡时 FPS 会连续掉到个位数，这段不代表游戏内表现。
+  // 目标帧率必须用「原始序列」推（剔除后 P95 会偏高），识别完再把 FPS 家族
+  // 的采样点置 null，后面的 KPI 计算自然跳过。识别规则见 src/fps-loading.js。
+  const fpsRawSeries = series.fps.slice();
+  const fpsRawAvg = _avg(fpsRawSeries);
+  const fpsLoading = loading.analyseLoading(fpsRawSeries);
+  const loadingMask = fpsLoading.mask;
+  if (fpsLoading.excludedSamples > 0) {
+    for (const k of ['fps', 'jank', 'bigJank', 'smallJank', 'tinyJank']) {
+      series[k] = loading.maskToNull(series[k], loadingMask);
+    }
+  }
+
   const kpi = {};
   for (const k of Object.keys(series)) {
     // 单趟求 sum / min / max：原来 _avg 与 _nums 各遍历一遍（共 3 遍），
@@ -289,57 +304,57 @@ function summarizePerf(perf, metricConfig) {
   let tsMin = Infinity, tsMax = -Infinity;
   for (const t of ts) { if (t < tsMin) tsMin = t; if (t > tsMax) tsMax = t; }
   let durSec = ts.length >= 2 ? _round((tsMax - tsMin) / 1000, 1) : null;
-  if (fpsNums.length) {
+  // 剔除加载段后实际参与统计的时长：按剔除比例折算（采样等间隔，比例近似即可），
+  // 用于把 Jank / Drop 这类「按时间折算」的指标换算到正确的时间基数上。
+  const keptRatio = fpsLoading.totalSamples
+    ? (fpsLoading.totalSamples - fpsLoading.excludedSamples) / fpsLoading.totalSamples
+    : 1;
+  const effDurSec = (durSec != null) ? durSec * keptRatio : null;
+  // 目标帧率用原始序列推出来的值（见上方 fpsLoading），不再对剔除后的序列重算
+  const target = fpsLoading.target;
+  if (fpsNums.length && target > 0) {
     const sorted = fpsNums.slice().sort((a, b) => a - b);
-    const i = (sorted.length - 1) * 0.95;
-    const lo = Math.floor(i), hi = Math.ceil(i);
-    const p95 = lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
-    let target = null;
-    for (const c of [30, 45, 60, 90, 120, 144, 165]) { if (c >= p95 * 0.97) { target = c; break; } }
-    if (target == null) target = Math.ceil(p95 / 30) * 30;
-    if (target > 0) {
-      const avg = _avg(series.fps);
-      const moving = fpsNums.filter(v => v > 0);
-      const frameTime = moving.length ? _avg(moving.map(v => 1000 / v)) : null;
-      const low = fpsNums.filter(v => v < target * 0.8).length;
-      kpi.fpsTarget = { avg: target, min: target, max: target };
-      kpi.fpsReach = { avg: _round((avg / target) * 100, 1), min: null, max: null };
-      kpi.fpsFrameTime = { avg: _round(frameTime, 1), min: null, max: null };
-      kpi.fpsLowPct = { avg: _round((low / fpsNums.length) * 100, 1), min: null, max: null };
-      // 1%Low
-      if (moving.length) {
-        const ftList = moving.map(v => 1000 / v).sort((a, b) => b - a);
-        const k = Math.max(1, Math.round(ftList.length * 0.01));
-        const worstFt = ftList.slice(0, k).reduce((a, b) => a + b, 0) / k;
-        kpi.fps1Low = { avg: _round(1000 / worstFt, 1), min: null, max: null };
-      }
-      // FPS≥目标
-      const ge = fpsNums.filter(v => v >= target).length;
-      kpi.fpsGeTarget = { avg: _round((ge / fpsNums.length) * 100, 1), min: null, max: null };
-      // 稳帧范围 MedRange
-      const mi = (sorted.length - 1) / 2;
-      const median = sorted.length % 2 ? sorted[mi]
-        : (sorted[Math.floor(mi)] + sorted[Math.ceil(mi)]) / 2;
-      const inMed = fpsNums.filter(v => Math.abs(v - median) <= median * 0.2).length;
-      kpi.fpsMedRange = { avg: _round((inMed / fpsNums.length) * 100, 1), min: null, max: null };
-      // 帧率标准差
-      const variance = fpsNums.reduce((a, v) => a + (v - avg) * (v - avg), 0) / fpsNums.length;
-      kpi.fpsStd = { avg: _round(Math.sqrt(variance), 2), min: null, max: null };
-      // 卡顿时长占比（Stutter）：帧间隔 > 2×目标帧间隔的时间 ÷ 总时间
-      const targetFt = 1000 / target;
-      let slow = 0, total = 0;
-      for (const v of moving) { const t = 1000 / v; total += t; if (t > targetFt * 2) slow += t; }
-      if (total > 0) kpi.fpsStutter = { avg: _round((slow / total) * 100, 1), min: null, max: null };
-      // Drop(FPS)：相邻两点下降 > 8 帧的次数，按小时折算
-      const durHour = durSec ? durSec / 3600 : null;
-      let drop = 0;
-      for (let i2 = 1; i2 < fpsNums.length; i2++) if (fpsNums[i2 - 1] - fpsNums[i2] > 8) drop++;
-      kpi.fpsDrop = { avg: _round(durHour ? drop / durHour : drop, 1), min: null, max: null };
+    const avg = _avg(series.fps);
+    const moving = fpsNums.filter(v => v > 0);
+    const frameTime = moving.length ? _avg(moving.map(v => 1000 / v)) : null;
+    const low = fpsNums.filter(v => v < target * 0.8).length;
+    kpi.fpsTarget = { avg: target, min: target, max: target };
+    kpi.fpsReach = { avg: _round((avg / target) * 100, 1), min: null, max: null };
+    kpi.fpsFrameTime = { avg: _round(frameTime, 1), min: null, max: null };
+    kpi.fpsLowPct = { avg: _round((low / fpsNums.length) * 100, 1), min: null, max: null };
+    // 1%Low
+    if (moving.length) {
+      const ftList = moving.map(v => 1000 / v).sort((a, b) => b - a);
+      const k = Math.max(1, Math.round(ftList.length * 0.01));
+      const worstFt = ftList.slice(0, k).reduce((a, b) => a + b, 0) / k;
+      kpi.fps1Low = { avg: _round(1000 / worstFt, 1), min: null, max: null };
     }
+    // FPS≥目标
+    const ge = fpsNums.filter(v => v >= target).length;
+    kpi.fpsGeTarget = { avg: _round((ge / fpsNums.length) * 100, 1), min: null, max: null };
+    // 稳帧范围 MedRange
+    const mi = (sorted.length - 1) / 2;
+    const median = sorted.length % 2 ? sorted[mi]
+      : (sorted[Math.floor(mi)] + sorted[Math.ceil(mi)]) / 2;
+    const inMed = fpsNums.filter(v => Math.abs(v - median) <= median * 0.2).length;
+    kpi.fpsMedRange = { avg: _round((inMed / fpsNums.length) * 100, 1), min: null, max: null };
+    // 帧率标准差
+    const variance = fpsNums.reduce((a, v) => a + (v - avg) * (v - avg), 0) / fpsNums.length;
+    kpi.fpsStd = { avg: _round(Math.sqrt(variance), 2), min: null, max: null };
+    // 卡顿时长占比（Stutter）：帧间隔 > 2×目标帧间隔的时间 ÷ 总时间
+    const targetFt = 1000 / target;
+    let slow = 0, total = 0;
+    for (const v of moving) { const t = 1000 / v; total += t; if (t > targetFt * 2) slow += t; }
+    if (total > 0) kpi.fpsStutter = { avg: _round((slow / total) * 100, 1), min: null, max: null };
+    // Drop(FPS)：相邻两点下降 > 8 帧的次数，按小时折算（时间基数用剔除后的有效时长）
+    const durHour = effDurSec ? effDurSec / 3600 : null;
+    let drop = 0;
+    for (let i2 = 1; i2 < fpsNums.length; i2++) if (fpsNums[i2 - 1] - fpsNums[i2] > 8) drop++;
+    kpi.fpsDrop = { avg: _round(durHour ? drop / durHour : drop, 1), min: null, max: null };
   }
 
   // Jank / BigJank / SmallJank / TinyJank 每 10 分钟次数（与报告页同口径）
-  const durMin = durSec ? durSec / 60 : null;
+  const durMin = effDurSec ? effDurSec / 60 : null;
   const per10 = (key) => {
     const n = _nums(series[key]);
     if (!n.length) return;
@@ -359,6 +374,16 @@ function summarizePerf(perf, metricConfig) {
     samples: rows.length,
     durationSec: durSec,
     kpi,
+    // 加载阶段剔除情况：供对比报告 / 排查用，也是「均值为什么和曲线看起来不一致」的依据
+    loading: {
+      target: fpsLoading.target,
+      segments: fpsLoading.segments,
+      excludedSamples: fpsLoading.excludedSamples,
+      excludedRatio: _round(fpsLoading.excludedRatio, 4),
+      effectiveDurationSec: (effDurSec != null) ? _round(effDurSec, 1) : null,
+      fpsAvgRaw: _round(fpsRawAvg, 1),
+      fpsAvg: kpi.fps ? kpi.fps.avg : null,
+    },
   };
 }
 
@@ -408,11 +433,12 @@ function archiveReport(payload, dataJsPath) {
     const base = id;
     while (fs.existsSync(path.join(dir, `${id}.js`))) id = `${base}_${n++}`;
 
-    // 同样不缩进（见 writeDataJs 注释）；history 里 .js 与 .json 内容一致，
-    // 序列化一次复用，避免对同一份数据跑两遍 stringify
+    // 不缩进（见 writeDataJs 注释）。只落一份 .js：报告页与报告库都直接
+    // `<script src="history/<id>.js">` 加载，`.json` 副本内容完全一致，
+    // 存两份等于把归档目录体积翻倍（每次采集 ~90 KB）。
+    // 老版本已生成的 .json 仍保留可读（main.js 的读取逻辑有 .json 兜底）。
     const json = JSON.stringify(payload);
     fs.writeFileSync(path.join(dir, `${id}.js`), `var data = ${json};\n`, 'utf8');
-    fs.writeFileSync(path.join(dir, `${id}.json`), json, 'utf8');
 
     const sum = summarizePerf(perf, payload.metricConfig);
     const meta = {

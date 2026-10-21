@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 import os
 import sqlite3
@@ -17,6 +17,26 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_pragma(dbapi_conn, _connection_record):
+    """每条连接建立时下发 PRAGMA。
+
+    默认 journal_mode=DELETE + synchronous=FULL 时，每次上传都要等 fsync，
+    且采集端上传与看板轮询并发时容易 `database is locked`。
+    WAL 让读写互不阻塞，NORMAL 只对 checkpoint 做同步，busy_timeout 给出重试窗口。
+    """
+    try:
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.execute("PRAGMA temp_store=MEMORY")
+        cur.close()
+    except Exception:
+        # PRAGMA 失败不应阻塞连接（只读介质 / 老版本 sqlite 等极端情况）
+        pass
 
 
 def get_db():

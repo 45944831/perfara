@@ -5,7 +5,7 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from .models import TestRun, MetricBlob, Project
-from .utils import compute_content_hash
+from .utils import compute_content_hash, fps_stats_excluding_loading
 
 
 # ─── 采集参数配置（metricConfig）─────────────────────────────────────────────
@@ -55,6 +55,7 @@ METRIC_SERIES_MAP = {
 # summary 键 → 参数组（该组被移除时 summary 项置 null）
 SUMMARY_GROUP = {
     "fpsAvg": "fps",
+    "fpsAvgRaw": "fps",
     "cpuProcAvg": "cpu",
     "memPssAvg": "mem",
     "memFootprintAvg": "mem",
@@ -184,6 +185,17 @@ def _avg(values: List[Any]) -> float:
     return (sum(nums) / len(nums)) if nums else None
 
 
+def _fps_summary_fields(values: List[Any]) -> Dict[str, Any]:
+    """入库 summary 的 FPS 字段：fpsAvg 剔除加载段，fpsAvgRaw 保留全程均值。
+
+    加载段（冷启动 / 换场景时的连续低帧）不代表游戏内表现，混进 fpsAvg 会把
+    看板列表与趋势整体拉低；原始值一并入库，便于对照与排查。
+    规则见 utils.fps_stats_excluding_loading（与客户端 fps-loading.js 一致）。
+    """
+    st = fps_stats_excluding_loading(values)
+    return {"fpsAvg": st["avg"], "fpsAvgRaw": st["avgRaw"]}
+
+
 def validate_schema_and_get_category(payload: Dict[str, Any]) -> str:
     _ensure(isinstance(payload, dict), "root", "payload must be object")
     device = payload.get("device")
@@ -303,7 +315,7 @@ def parse_uploaded_json(
             for idx, v in enumerate(freq):
                 series[f"cpuCores.freq.{idx}"].append(v)
         summary = {
-            "fpsAvg": _avg(series["fps"]),
+            **_fps_summary_fields(series["fps"]),
             "cpuProcAvg": _avg(series["cpu.procCpu"]),
             "memPssAvg": _avg(series["mem.totalPss"]),
             "tempAvg": _avg(series["temperature"]),
@@ -378,7 +390,7 @@ def parse_uploaded_json(
             if vm is not None:
                 prev_vm = vm
         summary = {
-            "fpsAvg": _avg(series["fps"]),
+            **_fps_summary_fields(series["fps"]),
             "cpuProcAvg": _avg(series["cpuUsage"]),
             "memFootprintAvg": _avg(series["physFootprint"]),
         }
@@ -450,7 +462,7 @@ def parse_uploaded_json(
             for idx, v in enumerate(freq):
                 series[f"cpuCores.freq.{idx}"].append(v)
         summary = {
-            "fpsAvg": _avg(series["fps"]),
+            **_fps_summary_fields(series["fps"]),
             "cpuProcAvg": _avg(series["cpu.procCpu"]),
             "memPssAvg": _avg(series["mem.totalPss"]),
             "tempAvg": _avg(series["temperature"]),

@@ -1,9 +1,11 @@
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .models import Project, ProjectAlias
 import hashlib
 import json
+import math
 
 
 def guess_platform(category: str) -> Optional[str]:
@@ -28,26 +30,29 @@ def ensure_project_for_payload(db: Session, payload: Dict[str, Any]) -> Project:
 
     # Try alias
     display_name = None
-    if pkg or app_name:
-        alias = (
-            db.query(ProjectAlias)
-            .filter(
-                (ProjectAlias.package_name == pkg) | (ProjectAlias.app_name == app_name)
-            )
-            .first()
-        )
+    # ⚠️ 不能写 `(ProjectAlias.package_name == pkg) | (...)`：
+    # pkg 为 None 时 SQLAlchemy 会生成 `package_name IS NULL`，从而匹配到
+    # **任意一个** package_name 为 NULL 的行 —— 不同应用会被并进同一个项目。
+    # 真机上传实测：第二次上传的游戏被挂到了第一次的浏览器项目下。
+    # 正确做法是「值为空就不参与匹配」。
+    alias_conds = []
+    if pkg:
+        alias_conds.append(ProjectAlias.package_name == pkg)
+    if app_name:
+        alias_conds.append(ProjectAlias.app_name == app_name)
+    if alias_conds:
+        alias = db.query(ProjectAlias).filter(or_(*alias_conds)).first()
         if alias and alias.display_name:
             display_name = alias.display_name
 
     project = None
-    if pkg or app_name:
-        project = (
-            db.query(Project)
-            .filter(
-                (Project.package_name == pkg) | (Project.app_name == app_name),
-            )
-            .first()
-        )
+    proj_conds = []
+    if pkg:
+        proj_conds.append(Project.package_name == pkg)
+    if app_name:
+        proj_conds.append(Project.app_name == app_name)
+    if proj_conds:
+        project = db.query(Project).filter(or_(*proj_conds)).first()
     # 无包名/应用名时，尽量复用同名展示项目，避免无限创建
     if not project:
         fallback_name = display_name or app_name or pkg or device.get("name") or payload.get("label") or payload.get("file") or "未命名项目"
@@ -105,6 +110,158 @@ def avg(values):
     return (sum(nums) / len(nums)) if nums else None
 
 
+# ─── 加载阶段（loading）识别 ─────────────────────────────────────────────────
+# 冷启动 / 换场景 / 读关卡时 FPS 会连续掉到个位数。这段数据真实存在（曲线照常画），
+# 但不代表游戏内表现，混进 fpsAvg / 1%Low 会把整份报告拉垮。
+# 判定规则（4 条同时满足才剔除）：
+#   1. 连续 ≥ min_run 个采样点 FPS < 目标帧率 × low_ratio（默认 3 点 / 50%）
+#   2. 段结束后 recover_window 个点内出现 FPS ≥ 目标帧率 × recover_ratio（默认 5 点 / 80%）
+#      ——「能恢复」才是加载；一直低说明真的跑不动，不能剔
+#   3. 段内允许夹少量 None（未取到帧数据），最多 max_null_bridge 个
+#   4. 剔除总量不超过 max_excluded_ratio（默认 40%），超过则整体作废，
+#      避免把「整段都差」的数据洗成好数据
+# 另：起始 warmup_samples 个点内的低帧，1 个点即视为启动预热
+#     （首个采样点常无帧数增量，会被记成 0，那 1 个 0 就能把 1%Low 打到 0）。
+#
+# ⚠️ 与 `_client_src/app/src/fps-loading.js`、
+#    `perfara/collector/resources/reports/perf.html` 内的同名实现保持完全一致。
+
+LOADING_OPTIONS = {
+    "low_ratio": 0.5,
+    "recover_ratio": 0.8,
+    "min_run": 3,
+    "recover_window": 5,
+    "max_null_bridge": 2,
+    "warmup_samples": 3,
+    "max_excluded_ratio": 0.4,
+}
+
+FPS_TARGET_CANDIDATES = (30, 45, 60, 90, 120, 144, 165)
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def p95(values: List[Any]) -> Optional[float]:
+    """P95（线性插值），与报告页 fpsTargetOfSeries 同口径。"""
+    a = sorted(v for v in (values or []) if _is_num(v))
+    if not a:
+        return None
+    i = (len(a) - 1) * 0.95
+    lo, hi = math.floor(i), math.ceil(i)
+    return a[lo] if lo == hi else a[lo] + (a[hi] - a[lo]) * (i - lo)
+
+
+def snap_fps_target(p95_value: Optional[float]) -> Optional[int]:
+    """P95 吸附到常见刷新率档位。"""
+    if p95_value is None or not (p95_value > 0):
+        return None
+    for c in FPS_TARGET_CANDIDATES:
+        if c >= p95_value * 0.97:
+            return c
+    return int(math.ceil(p95_value / 30.0) * 30)
+
+
+def fps_target_of(values: List[Any]) -> Optional[int]:
+    return snap_fps_target(p95(values))
+
+
+def detect_loading_segments(fps: List[Any], target: Optional[int],
+                            options: Optional[Dict[str, Any]] = None) -> List[Dict[str, int]]:
+    """返回加载段列表 [{start, end, samples}]（闭区间下标，升序）。"""
+    o = dict(LOADING_OPTIONS)
+    if options:
+        o.update(options)
+    arr = list(fps or [])
+    n = len(arr)
+    if not n or not target or not (target > 0):
+        return []
+
+    low_thr = target * o["low_ratio"]
+    rec_thr = target * o["recover_ratio"]
+    segs: List[Dict[str, int]] = []
+
+    i = 0
+    while i < n:
+        v = arr[i]
+        if not _is_num(v) or v >= low_thr:
+            i += 1
+            continue
+
+        j = i
+        low = 0
+        null_run = 0
+        while j < n:
+            w = arr[j]
+            if not _is_num(w):
+                null_run += 1
+                if null_run > o["max_null_bridge"]:
+                    break
+                j += 1
+                continue
+            if w >= low_thr:
+                break
+            null_run = 0
+            low += 1
+            j += 1
+
+        e = j - 1
+        while e > i and not _is_num(arr[e]):
+            e -= 1
+
+        is_warmup = i < o["warmup_samples"]
+        if low >= o["min_run"] or (is_warmup and low >= 1):
+            recovered = False
+            for k in range(j, min(n, j + o["recover_window"])):
+                if _is_num(arr[k]) and arr[k] >= rec_thr:
+                    recovered = True
+                    break
+            if recovered:
+                segs.append({"start": i, "end": e, "samples": e - i + 1})
+                i = j
+                continue
+        i = j if j > i else i + 1
+
+    covered = sum(g["samples"] for g in segs)
+    if covered / n > o["max_excluded_ratio"]:
+        return []
+    return segs
+
+
+def build_loading_mask(length: int, segments: List[Dict[str, int]]) -> List[bool]:
+    mask = [False] * max(0, int(length))
+    for g in segments or []:
+        s = max(0, int(g.get("start", 0)))
+        e = min(len(mask) - 1, int(g.get("end", -1)))
+        for k in range(s, e + 1):
+            mask[k] = True
+    return mask
+
+
+def fps_stats_excluding_loading(values: List[Any]) -> Dict[str, Any]:
+    """算 FPS 均值时剔除加载段。
+
+    返回 {avg, avgRaw, target, segments, excludedSamples, excludedRatio, effectiveRatio}。
+    `avg` 为剔除后均值（入库 fpsAvg 用），`avgRaw` 为全程均值（对照用）。
+    """
+    arr = list(values or [])
+    target = fps_target_of(arr)
+    segs = detect_loading_segments(arr, target)
+    mask = build_loading_mask(len(arr), segs)
+    kept = [v for k, v in enumerate(arr) if not mask[k] and _is_num(v)]
+    excluded = sum(1 for m in mask if m)
+    return {
+        "avg": (sum(kept) / len(kept)) if kept else None,
+        "avgRaw": avg(arr),
+        "target": target,
+        "segments": segs,
+        "excludedSamples": excluded,
+        "excludedRatio": (excluded / len(arr)) if arr else 0.0,
+        "effectiveRatio": ((len(arr) - excluded) / len(arr)) if arr else 1.0,
+    }
+
+
 def build_summary(category: str, root_series: Dict[str, Any]) -> Dict[str, Any]:
     # Expect structure: {"timestamp": [...], "series": {...}}
     series = root_series.get("series") if isinstance(root_series, dict) else None
@@ -116,9 +273,17 @@ def build_summary(category: str, root_series: Dict[str, Any]) -> Dict[str, Any]:
         node = try_get(series, path)
         return avg(node) if isinstance(node, list) else None
 
+    def fps_pair():
+        """FPS 均值：剔除加载段（fpsAvg）+ 全程对照（fpsAvgRaw）。"""
+        node = try_get(series, "fps")
+        if not isinstance(node, list):
+            return None, None
+        st = fps_stats_excluding_loading(node)
+        return st["avg"], st["avgRaw"]
+
     summary = {}
     if "android" in cat:
-        summary["fpsAvg"] = a("fps")
+        summary["fpsAvg"], summary["fpsAvgRaw"] = fps_pair()
         summary["cpuProcAvg"] = a("cpu.procCpu")
         summary["memPssAvg"] = a("mem.totalPss")
     elif "gpu" in cat and "ios" in cat:
@@ -126,11 +291,11 @@ def build_summary(category: str, root_series: Dict[str, Any]) -> Dict[str, Any]:
         summary["fragOccAvg"] = a("Fragment Occupancy")
         summary["aluUtilAvg"] = a("ALU Utilization")
     elif "ios" in cat:
-        summary["fpsAvg"] = a("fps")
+        summary["fpsAvg"], summary["fpsAvgRaw"] = fps_pair()
         summary["cpuProcAvg"] = a("cpuUsage")
         summary["memFootprintAvg"] = a("physFootprint")
     elif cat == "pc":
-        summary["fpsAvg"] = a("fps")
+        summary["fpsAvg"], summary["fpsAvgRaw"] = fps_pair()
         summary["cpuProcAvg"] = a("cpu.procCpu")
         summary["memPssAvg"] = a("mem.totalPss")
         summary["tempAvg"] = a("temperature")

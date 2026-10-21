@@ -3,11 +3,32 @@
 const EventEmitter = require('events');
 const ADB = require('./adb');
 
-const MAX_HISTORY = 3600;
+/**
+ * 内存里保留的采样点上限。
+ * 1 Hz 采集时 3600 点正好 1 小时，跑更久会静默丢掉开头（历史曲线缺失）。
+ * 单样本约 600 B，14400 点（4 小时）约 9 MB，代价可接受。
+ */
+const MAX_HISTORY = 14400;
 /** adb 冷启动后等待再开始采样；此期间不判定「进程消失」停止采集 */
 const ADB_LAUNCH_STABILIZE_MS = 5000;
 /** 冷启动后再给一段时间，避免 pid 短暂拿不到就自动停采 */
 const POST_LAUNCH_PID_GRACE_MS = 5000;
+/**
+ * PID 刷新间隔（tick 数）。
+ * PID 变化极慢，每 tick 都查等于每 5 秒多付 4 次 adb 进程创建；
+ * 但完全缓存又会在应用被杀后迟迟不发现，故按 5 tick 刷新，异常时立即重查。
+ */
+const PID_REFRESH_EVERY = 5;
+
+/**
+ * getFps 的 method 取值中，这些表示「本次没取到帧数据」，而不是「真实 0 帧」：
+ *   none           —— 三条取帧通道全部失败（应用不在前台 / 无 Surface / 非 View 渲染）
+ *   error          —— 取帧过程抛异常
+ *   timestats-init —— timestats 首个采样点，还没有 totalFrames 增量
+ * 这些点若写成 fps=0，会被下游当成真实掉帧：均值被拉低、1%Low 直接归零。
+ * 一律写 null（曲线断开），由报告页的加载段识别与统计剔除接手。
+ */
+const FPS_NO_DATA_METHODS = new Set(['none', 'error', 'timestats-init']);
 
 /**
  * 采集参数配置 → 采集器内部开关。
@@ -63,6 +84,12 @@ class Collector extends EventEmitter {
     /** @type {Record<string, boolean>} 采集参数开关（默认全采） */
     this._mc = normalizeMetricConfig(metricConfig);
     this.history = [];
+    /** @type {boolean} 上一 tick 是否仍在跑（重入门闩） */
+    this._tickBusy = false;
+    /** @type {number} 本轮已执行的 tick 数，用于 PID 刷新节流 */
+    this._tickCount = 0;
+    /** @type {number} 连续跳过的重叠 tick 数（只用于日志降噪） */
+    this._skippedTicks = 0;
   }
 
   _log(msg, token = this._runToken) {
@@ -76,6 +103,9 @@ class Collector extends EventEmitter {
     const token = ++this._runToken;
     this._running = true;
     this._processGoneGraceUntil = 0;
+    this._tickBusy = false;
+    this._tickCount = 0;
+    this._skippedTicks = 0;
     // Cancel any previous inflight adb tasks before starting new run
     try { ADB.cancelAllInflight(); } catch (_) {}
     this._log(`开始采集: ${this.packageName} @ ${this.deviceId}`, token);
@@ -123,20 +153,56 @@ class Collector extends EventEmitter {
     });
   }
 
+  /**
+   * 采样周期入口：只做「防叠加」这一件事。
+   *
+   * setInterval 不等待上一次完成，而单次 tick 要起 8~9 个 adb 进程（实测 290–450 ms）。
+   * 设备一卡（dumpsys 慢）单个调用可挂到超时，于是 10 s 内能叠 10 个 tick = 90 个 adb 进程，
+   * 越卡越卡。这里用布尔门闩把并发钉死在 1 个 tick。
+   */
   async _tick() {
     if (!this._running) return;
-    // Always refresh PID: if app is killed, pid becomes null and we must stop (Android only).
-    const pidNow = await ADB.getPid(this.deviceId, this.packageName).catch(() => null);
-    if (!pidNow) {
-      if (this._processGoneGraceUntil && Date.now() < this._processGoneGraceUntil) {
-        return;
+    if (this._tickBusy) {
+      this._skippedTicks++;
+      // 只在前几次和每 10 次报一次，避免日志被刷屏
+      if (this._skippedTicks === 1 || this._skippedTicks % 10 === 0) {
+        this._log(`上一采样周期尚未完成，已跳过 ${this._skippedTicks} 次重叠采样（设备响应偏慢）`);
       }
-      this._log(`检测到应用未运行（可能被系统杀死）：${this.packageName}，已自动停止采集`);
-      this.stop('process_gone');
       return;
     }
-    this._pid = pidNow;
-    if (this._processGoneGraceUntil) this._processGoneGraceUntil = 0;
+    this._tickBusy = true;
+    this._skippedTicks = 0;
+    try {
+      await this._tickBody();
+    } catch (err) {
+      this.emit('error', err);
+    } finally {
+      this._tickBusy = false;
+    }
+  }
+
+  async _tickBody() {
+    if (!this._running) return;
+    const token = this._runToken;
+    this._tickCount++;
+
+    // PID 每 PID_REFRESH_EVERY 个 tick 刷新一次，其余 tick 复用缓存：
+    // 应用被杀最多延迟 5 s 被发现（配合 _processGoneGraceUntil 不会误停）。
+    const needPid = !this._pid || this._tickCount % PID_REFRESH_EVERY === 1;
+    if (needPid) {
+      const pidNow = await ADB.getPid(this.deviceId, this.packageName).catch(() => null);
+      if (!this._running || token !== this._runToken) return;
+      if (!pidNow) {
+        if (this._processGoneGraceUntil && Date.now() < this._processGoneGraceUntil) {
+          return;
+        }
+        this._log(`检测到应用未运行（可能被系统杀死）：${this.packageName}，已自动停止采集`);
+        this.stop('process_gone');
+        return;
+      }
+      this._pid = pidNow;
+      if (this._processGoneGraceUntil) this._processGoneGraceUntil = 0;
+    }
 
     const logFn = (msg) => this._log(msg);
     const mc = this._mc;
@@ -153,6 +219,8 @@ class Collector extends EventEmitter {
       if (mc.temp)  jobs.push(['thermal', ADB.getThermalInfo(this.deviceId)]);
       if (mc.gpu)   jobs.push(['gpu',     ADB.getGpuUsage(this.deviceId)]);
       const settled = await Promise.allSettled(jobs.map(j => j[1]));
+      // 采集期间被 stop()：结果直接丢弃，不写入 history、不 emit
+      if (!this._running || token !== this._runToken) return;
 
       const val = {};
       jobs.forEach((j, i) => {
@@ -173,6 +241,10 @@ class Collector extends EventEmitter {
       const smallJank = typeof fpsData === 'object' ? (fpsData.smallJank || 0) : 0;  // PerfDog 微小卡顿（≥84ms 档）
       const tinyJank  = typeof fpsData === 'object' ? (fpsData.tinyJank  || 0) : 0;  // PerfDog 极小卡顿（≥1.5×vsync 档）
       const jankRate= typeof fpsData === 'object' ? fpsData.jankRate: 0;
+      // 没取到帧数据（加载中 / 不在前台 / 首帧未就绪）→ 写 null，不写 0
+      const fpsNoData = typeof fpsData === 'object'
+        ? FPS_NO_DATA_METHODS.has(String(fpsData.method || ''))
+        : false;
 
       const data = {
         timestamp:   Date.now(),
@@ -185,8 +257,14 @@ class Collector extends EventEmitter {
       }
       if (mc.mem)   data.mem = val.mem || { totalPss: 0, nativeHeap: 0, dalvikHeap: 0 };
       if (mc.fps) {
-        data.fps = fps; data.jank = jank; data.bigJank = bigJank;
-        data.smallJank = smallJank; data.tinyJank = tinyJank; data.jankRate = jankRate;
+        if (fpsNoData) {
+          // 无数据 ≠ 0 帧：写成 null，让曲线断开、统计跳过
+          data.fps = null; data.jank = null; data.bigJank = null;
+          data.smallJank = null; data.tinyJank = null; data.jankRate = null;
+        } else {
+          data.fps = fps; data.jank = jank; data.bigJank = bigJank;
+          data.smallJank = smallJank; data.tinyJank = tinyJank; data.jankRate = jankRate;
+        }
       }
       if (mc.net)   data.net = val.net || { rxKBps: 0, txKBps: 0 };
       if (mc.battery) data.battery = val.battery || { level: 0, voltage: 0, temperature: 0, currentNow: 0, power: 0 };

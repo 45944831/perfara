@@ -118,9 +118,15 @@ function stopStress(pids) {
   check('temperature 在合理区间', rows.every(r => r.temperature === undefined || (r.temperature > -20 && r.temperature < 120)), rows.map(r => r.temperature).slice(0, 5));
   check('battery.level 在 0..100', rows.every(r => !r.battery || (r.battery.level >= 0 && r.battery.level <= 100)), rows.map(r => r.battery && r.battery.level).slice(0, 5));
   check('gpu 为 null 或 0..100', rows.every(r => r.gpu === null || r.gpu === undefined || (r.gpu >= 0 && r.gpu <= 100)), rows.map(r => r.gpu).slice(0, 5));
-  check('jank 家族非负', rows.every(r => [r.jank, r.bigJank, r.smallJank, r.tinyJank, r.jankRate].every(v => v === undefined || (isNum(v) && v >= 0))), rows.slice(0, 3));
-  check('jankRate 在 0..100', rows.every(r => r.jankRate === undefined || (r.jankRate >= 0 && r.jankRate <= 100)), rows.map(r => r.jankRate).slice(0, 8));
-  check('max(jank) 为整数计数语义', rows.every(r => r.jank === undefined || Number.isInteger(r.jank)), rows.map(r => r.jank).slice(0, 5));
+  // null 表示「本 tick 无帧数据」（timestats-init / none / error），是刻意与 0 区分的：
+  // 写 0 会被下游当成真实掉帧，把均值和 1%Low 一起拉坏。故 null 合法，但出现数值时必须非负。
+  const absent = (v) => v === undefined || v === null;
+  check('jank 家族非负', rows.every(r => [r.jank, r.bigJank, r.smallJank, r.tinyJank, r.jankRate].every(v => absent(v) || (isNum(v) && v >= 0))), rows.slice(0, 3));
+  check('jankRate 在 0..100', rows.every(r => absent(r.jankRate) || (r.jankRate >= 0 && r.jankRate <= 100)), rows.map(r => r.jankRate).slice(0, 8));
+  check('max(jank) 为整数计数语义', rows.every(r => absent(r.jank) || Number.isInteger(r.jank)), rows.map(r => r.jank).slice(0, 5));
+  // 首采必然走 timestats-init（还没有 totalFrames 增量），必须写 null 而不是 0，
+  // 否则均值被拉低、1%Low 直接归零 —— 这是「假 0」修复的核心断言。
+  check('首采无帧数据写 null 而非 0', rows[0] && rows[0].fps === null, rows[0] && { time: rows[0].time, fps: rows[0].fps });
 
   // 数据有效性：至少有真实帧率数据
   const fpsVals = rows.map(r => r.fps).filter(v => typeof v === 'number');
@@ -162,7 +168,8 @@ function stopStress(pids) {
   check('移除的 net 不再采集', rows2.every(r => r.net === undefined), rows2.slice(0, 2));
   check('移除的 battery 不再采集', rows2.every(r => r.battery === undefined), rows2.slice(0, 2));
   check('移除的 temperature 不再采集', rows2.every(r => r.temperature === undefined), rows2.slice(0, 2));
-  check('保留的 fps 仍在采集', rows2.every(r => typeof r.fps === 'number'), rows2.slice(0, 2));
+  // 保留 fps 组：每个点要么是数值，要么是「无数据」的 null；且整段至少有一个真实数值
+  check('保留的 fps 仍在采集', rows2.every(r => absent(r.fps) || isNum(r.fps)) && rows2.some(r => isNum(r.fps)), rows2.slice(0, 2));
   check('保留的 cpu 仍在采集', rows2.every(r => r.cpu !== undefined), rows2.slice(0, 2));
 
   // ───── 阶段 D：CSV 导出 ──────────────────────────────────────────────────

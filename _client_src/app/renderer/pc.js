@@ -151,11 +151,27 @@ window.addEventListener('DOMContentLoaded', () => {
   chartMgr.init();
 });
 
+/**
+ * 日志面板最多保留的行数。
+ * 长时间采集 + adb 反复报错时日志只会 append，DOM 节点无限增长（几千行后
+ * 滚动与重排明显变慢）。超过上限时整批砍掉头部，避免每追加一行就删一行。
+ */
+const MAX_LOG_LINES = 500;
+
 function log(msg, type = '') {
   const line = document.createElement('div');
   line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
   if (type) line.className = `log-${type}`;
   logOutput.appendChild(line);
+  // 一次性砍到 MAX-50，使节点数稳定在 [450, 500] 区间，减少删除次数
+  if (logOutput.childElementCount > MAX_LOG_LINES) {
+    const drop = logOutput.childElementCount - MAX_LOG_LINES + 50;
+    for (let i = 0; i < drop; i++) {
+      const first = logOutput.firstElementChild;
+      if (!first) break;
+      logOutput.removeChild(first);
+    }
+  }
   logOutput.scrollTop = logOutput.scrollHeight;
 }
 

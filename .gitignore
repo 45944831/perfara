@@ -44,7 +44,8 @@ _removed-from-portable/
 # 移除 perfara.apk 依赖后归档的 APK（5.6MB，不入库）
 _archive_removed_apk/
 # 新增的便携版产物：安装包按需单独分发，避免每次构建都把 200MB+ 推上 LFS
-release/*_r*.zip
+# （旧规则只挡 `*_r*.zip`，`_20261021.zip` 这类日期包会漏进暂存区）
+release/*.zip
 # 根目录散落的过程截图（各阶段验证用，归档在 F 盘）
 /*.png
 
@@ -76,3 +77,7 @@ perfara/data/
 # ── 工作区元数据 ────────────────────────────────────────────────────
 .workbuddy/
 .workbuddy-ai/
+
+# ── 从发布包移出的体积项（保留在本地备查，不进 git）────────────────
+# 例：_archive_removed/ios-tools-bin/lowgpu.json（27.7MB，运行期无引用）
+_archive_removed/

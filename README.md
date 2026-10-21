@@ -80,6 +80,17 @@
 
 > 目标帧率由帧率分布 P95 自动吸附到 30/45/60/90/120/144/165，无需手工配置。
 
+**加载阶段自动排除**：冷启动、换场景、读关卡时 FPS 会连续几秒掉到个位数，这段不代表游戏内表现。
+上表所有帧率指标（含看板列表的「FPS 均值」）都会自动剔除这类「掉下去又能回来」的连续低帧段：
+
+- 判定条件：连续 ≥3 个采样点低于目标帧率 50%，且之后 5 秒内回升到目标帧率 80% 以上
+- 持续低帧**不会**被剔除——那是真实的性能不足，不能洗
+- 剔除总量超过 40% 时整段作废，避免把坏数据算成好数据
+- 曲线照常显示，被排除区间用琥珀色底纹标出，报告顶部写明「已排除 N 段共 Xs」
+- 统计表保留 `FPS(全程)` 行给出原始均值，剔除前后都能看到
+
+采集中取不到帧数据（应用不在前台 / 无渲染层 / 首帧未就绪）时写 `null` 而不是 `0`，避免被当成真实掉帧把 1%Low 打到 0。
+
 ### 系统指标
 
 CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存（PSS、Java Heap、Native Heap、Code、Graphics…）、
@@ -119,6 +130,68 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 - **修复打包版看板白屏**：`server/PerfaraServer.exe` 落后于 `backend/app.py` 的 MIME 修正，
   前端 `.js` 被当 `text/plain` 返回导致页面空白；已按新增的 `perfara/perfara_server.spec` 重打。
 - **文案修正**：看板提示里的「32 位分享令牌」改为「32 位 ID」，与「复制 testid」按钮一致。
+
+## 本次新增（v2026.10.21）· 体积与性能专项
+
+按 `docs/优化方案-体积与性能.md` 与 `docs/参数调优建议.md` 落地，全部改动均已实测。
+
+**体积（解压后，实测）**
+
+| 项 | 改前 | 改后 | 手段 |
+| --- | ---: | ---: | --- |
+| `ios-tools/bin/` | 87 MB | 61 MB | 移出 `lowgpu.json`（27.7 MB，全仓无读取代码，exe 内也无该字面量） |
+| `app.asar` | 4.26 MB / 312 文件 | 1.72 MB / 58 文件 | 剔除 `node_modules/zrender`（echarts.min.js 已自带） |
+| 发布包内置 Python | 93.4 MB / 5231 文件 | **67.8 MB**（剔除 2423 文件 / 25.5 MB） | 打包时剔除 tcl / include / libs / idlelib / ensurepip / pydoc_data / venv / pip / 反编译工具（包体 + `dist-info` + `Scripts` 启动器）/ WinPython 启动器 |
+| 发布 zip | 233.9 MB（r6） | **210.5 MB** | 上述三项 + 排除 `build/`、`dist/`、`logs/`、`-wal/-shm` |
+
+> Python 裁剪只在 `make_release_zip.py` 的 `full` 模式生效，**本地 `perfara/` 目录不删任何文件**，出问题改清单重打即可。
+
+**性能**
+
+| 项 | 改前 | 改后 |
+| --- | --- | --- |
+| 首屏 JS 传输（`index-*.js`） | 1,345,571 B | **449,936 B**（gzip，-66%） |
+| 服务冷启动 → `/api/health` 200 | 2.34 s | **2.13 s**（uvicorn 固定 h11 + asyncio，跳过 auto 探测） |
+| 单 tick adb 进程创建 | 最多叠加 10 个 tick × 9 个进程 | **门闩钉死 1 个 tick**（超时同时从 10s 收到 4s） |
+| PID 查询 | 每 tick 一次 | **每 5 tick 一次**，进程消失仍在 5 s 内发现 |
+| 无效分享 token 兜底扫描 | `limit(5000)` 拉全字段（最坏 ~70 MB 内存） | **`limit(200)` 且只取 `id`**（实测 5 ms 返回 404） |
+| 报告页渲染点数 | 全量（1 h = 3600 点/series） | **上限 2000 点/series**，超出隔点抽稀 |
+| 报告页数据灌入 | 每点 × 12 张图各 setOption 一次 | **批量追加，每图只重绘一次** |
+| SQLite | 无 PRAGMA（写等 fsync，易 `database is locked`） | **WAL + synchronous=NORMAL + busy_timeout=5000** |
+| 历史归档 | 每次 `.js` + `.json` 两份 | **只留 `.js`**（内容一致，省一半磁盘） |
+| 采集端内存样本 | 3600（正好 1 h，更久会丢开头） | **14400（4 h）** |
+| 日志面板 | DOM 无上限 | **上限 500 行** |
+| echarts 加载 | 4 个采集页 + 报告页均同步加载 1.07 MB | **异步注入**，窗口先出来、图表后补 |
+
+> 报告页抽稀只作用于**渲染视图**：`state.times` / `state.series` 仍是全量数据，
+> 子场景统计、框选统计、加载段剔除都按真实下标计算（已用 3600 点数据逐位核对）。
+> 子场景与加载段的边界下标会被强制保留为抽稀锚点，底纹不会因抽稀而消失。
+
+### 真机验证（Android 13 中端机型 / Android 13 / 中端芯片 中端 SoC）
+
+用真机跑了采集 → 上传 → 报告全链路，**发现并修掉 4 个只在真机/游戏场景暴露的问题**：
+
+| 问题 | 表现 | 原因 | 修复 |
+| --- | --- | --- | --- |
+| framestats 解析在 Android 10+ 全失效 | `gfxinfo framestats` 通道解析出 0 帧，静默降级到「Total frames 增量」，丢掉了 Jank 明细 | 写死 `cols[1]=vsync`、`cols[13]=completed`；Android 10 起 `Flags` 后插入 `FrameTimelineVsyncId` 等列（18→22 列），`cols[1]` 变成小整数，被 `vsync > 1e9` 全部丢弃 | 改为**按表头名**取列（`Vsync` / `FrameCompleted`），自动兼容 18/22 列 |
+| 游戏无法从界面启动 | 选游戏点「开始」直接报「该应用没有可启动入口」 | 定制 ROM 13 上 `am start -a MAIN -c LAUNCHER -p <pkg>` 返回 `unable to resolve Intent`，代码一见该报错就提前放弃，连 monkey 都不试 | 先用 `cmd package resolve-activity` 解析组件，再 `am start -n <pkg/cls>`；失败依次降级，**不再提前 return** |
+| 后台应用采不到 FPS | 目标应用进程活着但在后台时，整段 FPS 全是 null | `ensureAppRunning` 只看 PID 存在就返回「无需启动」，而取帧依赖**可见图层** | 新增 `isAppForeground()`；在后台时用 `am start -n` 把任务切到前台 |
+| 陈旧帧缓冲导致假 0 | 静态画面下 `fps` 恒为 0，曲线贴底并被当成真实掉帧 | framestats 是「最近 N 帧」滚动窗口，N 用满后跨度可达 190s，`frames/dur` 算的是几分钟前的平均值 | 窗口跨度 > 30s 或帧缓冲未前进时**不再用它算 fps**，交给 Total frames 增量；仍无变化则报无数据（写 null） |
+
+另外修掉一个**数据归属**问题：`ensure_project_for_payload` 里用
+`(Project.package_name == pkg) | (Project.app_name == app_name)` 查项目，
+当 `pkg` 为 `None` 时 SQLAlchemy 会生成 `package_name IS NULL`，
+**匹配到任意一个包名为空的项目** —— 不同应用的上传会被并进同一个项目。
+改为「值为空就不参与匹配」。
+
+真机回归结果：游戏 `com.example.game` 端到端 **39/39**、
+浏览器 `com.example.browser` **39/39**、报告页渲染 **11/11**；
+`test_api_full.py` 64 PASS、`test_metric_config_upload.py` 25/25、
+`run_perf_html_test.js` 19/19、`run_collector_pages_test.js` 36/36、`jank_algo_test.js` 30/30。
+
+> 已知未修：framestats 的 `tinyJank` 用 `FrameCompleted - Vsync` 作帧耗时，
+> 60Hz 下该值恒为 2 个 vsync（≈33.6ms），会让 TinyJank 计数偏高（timestats 通道为 0）。
+> 这属于指标口径定义问题，改动会影响与 PerfDog 的数值可比性，需产品确认后再动。
 
 ---
 
@@ -164,9 +237,9 @@ Perfara_Portable_20261020_r6.zip   （约 223MB，对应 v2026.10.20.1）
 
 | 脚本 | 用途 |
 | --- | --- |
-| `tools/build_app.py` | 打包 `app.asar`，带瘦身规则（剔除 echarts 冗余、调试镜像等，73MB → 4.0MB） |
+| `tools/build_app.py` | 打包 `app.asar`，带瘦身规则（剔除 echarts 冗余、zrender、调试镜像等，73MB → 1.6MB / 58 文件） |
 | `tools/asar_tool.py` | asar 解包 / 打包 / 列文件（纯 Python，不依赖 Node） |
-| `tools/make_release_zip.py` | 生成发布包（`changes` 改动文件 / `full` 完整便携版） |
+| `tools/make_release_zip.py` | 生成发布包（`changes` 改动文件 / `full` 完整便携版）；`full` 会按 `PRUNE_PREFIXES` / `PRUNE_SITE_PKGS` / `PRUNE_FLAT_DIRS` / `PRUNE_SCRIPT_STEMS` 剔除内置 Python 的纯运行期无用项 |
 | `tools/cleanup_workspace.py` | 清理备份副本与构建中间产物（默认 `--dry-run`；`perfara/tests` 等回归资产在 PROTECTED 白名单内，永不清理） |
 | `tools/inject_metric_info.py` | 报告页指标说明注入 |
 | `tools/optimize_report_readability.py` | 报告可读性样式优化 |
@@ -227,6 +300,8 @@ A：不会离开本机。看板服务只监听 `127.0.0.1`，数据存在本地 
 
 | 版本 | 内容 |
 | --- | --- |
+| `20261021` | 体积与性能专项：asar 剔 zrender（4.26→1.72MB）、移出 lowgpu.json（-27.7MB）、发布包裁剪内置 Python（93.4→67.8MB）、服务端 GZip（首屏 JS -66%）、SQLite WAL、tick 重入门闩 + adb 超时 4s + PID 每 5 tick、报告页抽稀与批量渲染、echarts 异步加载、日志面板 500 行上限、归档只留 `.js` |
+| `20261021` | 帧率统计自动排除加载阶段掉帧（假 0 改为 null + 加载段识别），报告页底纹标注并保留「FPS(全程)」对照 |
 | `v2026.10.20.1` | 修复关闭程序后 `PerfaraServer.exe` 进程残留与端口漂移、打包版看板白屏（`.js` MIME）、看板文案改为 testid |
 | `v2026.10.20` | 移除 APK 依赖、修复打包版采集无法启动、启动失败可见、无渲染层提示与报告空状态 |
 | `20261020` | 补齐 PerfDog 口径指标（1%Low / Drop / FPS≥目标 / 稳帧范围 / 标准差 / Stutter / Jank·10min / 上下文切换 / CPU 限频） |

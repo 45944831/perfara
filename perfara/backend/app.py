@@ -2,6 +2,7 @@ import os
 import hashlib
 from fastapi import FastAPI, HTTPException, Depends, Request, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload
@@ -77,6 +78,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 响应压缩：首屏 JS 1.35MB → 约 451KB，列表 JSON 约 -80%。
+# 本机访问收益有限，但 --host 0.0.0.0 局域网部署时差别明显；
+# minimum_size 过滤掉小响应，已压缩资源（png/zip）不会被重复压缩。
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # NOTE: Frontend static mounting is moved to the bottom of this file,
 # after all API routes are registered, to avoid 404/405 on /api/*.
@@ -261,6 +267,15 @@ async def upload_json(
     db.add(test_run)
     for m in metrics:
         db.add(m)
+    # share_md5 依赖自增 id，只能在 flush 之后补。
+    # 此前完全靠启动时迁移回填，导致「本次启动后新上传」的记录 share_md5 为空，
+    # 公开链接只能走兜底扫描（见 /api/public/test 的 legacy fallback）。
+    try:
+        db.flush()
+        if not getattr(test_run, "share_md5", None):
+            test_run.share_md5 = hashlib.md5(str(test_run.id).encode("utf-8")).hexdigest()
+    except Exception:
+        pass
     try:
         db.commit()
     except Exception as e:
@@ -405,7 +420,9 @@ def list_tests(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     page: int = Query(1, ge=1, le=1_000_000),
-    page_size: int = Query(100, ge=1, le=500),
+    # 校验上限留宽（le=1000），实际生效值在函数内 clamp 到 200：
+    # 直接 le=200 会让老前端传 500 时拿到 422 而不是被夹住，属于无谓的行为破坏。
+    page_size: int = Query(50, ge=1, le=1000),
     db: Session = Depends(get_db),
     uid: str = Depends(require_uid),
 ):
@@ -423,7 +440,7 @@ def list_tests(
         query = query.filter(TestRun.started_at <= date_to)
     total = query.count()
     page = max(page, 1)
-    page_size = max(1, min(page_size, 500))
+    page_size = max(1, min(page_size, 200))
     offset = (page - 1) * page_size
     items = (
         query.options(joinedload(TestRun.project))
@@ -526,7 +543,7 @@ def tests_trend(
     ),
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=5000),
     db: Session = Depends(get_db),
     uid: str = Depends(require_uid),
 ):
@@ -554,6 +571,8 @@ def tests_trend(
         dt_end = _parse_query_date_day(date_to)
         if dt_end:
             query = query.filter(TestRun.started_at < dt_end + timedelta(days=1))
+    # 实际生效点数上限 300（校验放宽到 5000，避免老前端传 500 时 422）
+    limit = max(1, min(limit, 300))
     tests = (
         query.options(joinedload(TestRun.metric_blobs))
         .order_by(TestRun.started_at.asc(), TestRun.id.asc())
@@ -635,10 +654,12 @@ def get_test_detail_public(
     if not test:
         # legacy fallback: token might be md5(str(id)) but share_md5 not backfilled yet
         # (should be rare; best-effort scan recent ids)
-        recent = db.query(TestRun).order_by(TestRun.id.desc()).limit(5000).all()
-        for t in recent:
-            if hashlib.md5(str(t.id).encode("utf-8")).hexdigest() == token:
-                test = t
+        # 只取 id 列并限制 200 条：旧实现拉 5000 条全字段（含 raw_json），
+        # 任何打错的 token 都会触发一次全表读盘 + 70MB 级内存尖峰。
+        recent = db.query(TestRun.id).order_by(TestRun.id.desc()).limit(200).all()
+        for (tid,) in recent:
+            if hashlib.md5(str(tid).encode("utf-8")).hexdigest() == token:
+                test = db.query(TestRun).filter(TestRun.id == tid).first()
                 break
     if not test:
         raise HTTPException(status_code=404, detail="Test not found")
@@ -794,7 +815,7 @@ def admin_reparse(
         q = db.query(TestRun)
         if not is_super_uid(uid):
             q = q.filter(_match_uid_to_testrun_sql(uid))
-        targets = q.order_by(TestRun.id.asc()).limit(min(limit, 5000)).all()
+        targets = q.order_by(TestRun.id.asc()).limit(min(limit, 1000)).all()
     changed = 0
     failed = 0
     for t in targets:

@@ -279,7 +279,7 @@ def health_ok(port: int) -> bool:
         return False
 
 
-def wait_health(port: int, timeout: float = 40.0) -> bool:
+def wait_health(port: int, timeout: float = 30.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if health_ok(port):
@@ -359,7 +359,7 @@ def main() -> int:
         log(f"看板服务已启动 pid={server.pid}", log_path)
 
         if not wait_health(port):
-            log("[error] 看板服务 40s 内未就绪，请查看 logs\\app.log", log_path)
+            log("[error] 看板服务 30s 内未就绪，请查看 logs\\app.log", log_path)
             fatal("看板服务启动失败。\n请查看 logs\\launcher.log 与 logs\\app.log。")
             return 1
 

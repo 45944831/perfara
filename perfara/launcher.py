@@ -84,7 +84,7 @@ def _pick_port(host: str, preferred: int) -> int:
     return preferred
 
 
-def _open_browser_when_ready(url: str, timeout: float = 30.0) -> None:
+def _open_browser_when_ready(url: str, timeout: float = 25.0) -> None:
     health = url.rstrip("/") + "/api/health"
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -156,6 +156,13 @@ def main() -> int:
         app,
         host=args.host,
         port=port,
+        # 固定协议/事件循环，跳过 uvicorn 的 auto 探测与 websockets 初始化（约 -0.2~0.3s）。
+        # 本项目没有 WebSocket 路由，也没有 lifespan 钩子（已核对 backend/app.py），
+        # 因此 ws="none" / lifespan="off" 不会丢功能。
+        http="h11",
+        loop="asyncio",
+        ws="none",
+        lifespan="off",
         log_config=None,  # 沿用 backend 里已配置好的文件 + 控制台日志
         access_log=False,
         workers=1,

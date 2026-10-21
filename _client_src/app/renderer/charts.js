@@ -151,10 +151,19 @@ class ChartManager {
   }
 
   init() {
-    requestAnimationFrame(() => setTimeout(() => this._doInit(), 120));
+    const boot = () => requestAnimationFrame(() => setTimeout(() => this._doInit(), 120));
+    // echarts 由页面内联脚本异步注入（见 *.html 的 window.echartsReady）：
+    // 等它就绪再建图表，窗口与日志面板不必等 1MB 库解析完才显示。
+    if (typeof window.echartsReady === 'function') {
+      window.echartsReady().then(boot, boot);
+    } else {
+      boot();
+    }
   }
 
   _doInit() {
+    // 加载失败时静默降级：不建图表，其余 UI 照常（日志/按钮/上传都不依赖 echarts）
+    if (typeof echarts === 'undefined') return;
     patchChartConfigsForPcPlatform();
     for (const [name, cfg] of Object.entries(CHART_CONFIGS)) {
       const el = document.getElementById(cfg.el);

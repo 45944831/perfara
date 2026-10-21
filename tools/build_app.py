@@ -48,6 +48,14 @@ ECHARTS_KEEP = {
     'node_modules/echarts/dist/package.json',
 }
 
+# 整包剔除的目录前缀。
+# zrender 2.42MB / 255 个文件：dist/echarts.min.js 是 UMD 构建，已把 zrender
+# 打进去了；全仓检索无 require('zrender')，4 个渲染页也只用 script 标签引
+# echarts.min.js，所以运行期零引用。
+EXCLUDE_PREFIXES = (
+    'node_modules/zrender/',
+)
+
 
 def rel_posix(full):
     return os.path.relpath(full, SRC).replace('\\', '/')
@@ -58,6 +66,9 @@ def is_excluded(rel):
     parts = rel.split('/')
     if parts[0] in EXCLUDE_DIRS:
         return '目录 ' + parts[0]
+    for pref in EXCLUDE_PREFIXES:
+        if rel.startswith(pref):
+            return '目录 ' + pref.rstrip('/').split('/')[-1]
     # echarts 白名单：只有 KEEP 里的文件进包，其余全剔（含 lib/ theme/ dist 其它构建产物）
     if parts[0] == 'node_modules' and len(parts) > 1 and parts[1] == 'echarts':
         if rel in ECHARTS_KEEP:

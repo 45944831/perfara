@@ -23,6 +23,19 @@ function resolveAdb() {
 
 const ADB_BIN = resolveAdb();
 
+/**
+ * 单指标 adb 调用超时。
+ * 必须显著小于采样间隔（1 s），否则设备一卡就会出现 tick 叠加：
+ * 旧值 10 s 意味着最多叠 10 个 tick × 9 个 adb 进程 = 90 个进程，越卡越卡。
+ * 配合 collector.js 的重入门闩，两处一起才能根除雪崩。
+ */
+const SHELL_TIMEOUT_MS = 4000;
+/**
+ * dumpsys 类大命令超时。这类命令输出几 KB~几十 KB，慢机型要 2~3 s，
+ * 用 4 s 容易误判超时、直接丢样本（表现为 FPS 曲线断点），故单独放宽。
+ */
+const DUMPSYS_TIMEOUT_MS = 10000;
+
 // Track inflight adb child processes so we can cancel stale tasks
 const _inflight = new Set();
 
@@ -41,7 +54,7 @@ function adb(args, timeout = 10000) {
   });
 }
 
-function adbShell(deviceId, cmd, timeout = 10000) {
+function adbShell(deviceId, cmd, timeout = SHELL_TIMEOUT_MS) {
   return adb(['-s', deviceId, 'shell', cmd], timeout);
 }
 
@@ -195,6 +208,57 @@ async function getPid(deviceId, packageName) {
  * 若目标包无进程则尝试通过 adb 拉起；已在运行则直接返回。
  * @returns {{ ok: boolean, launched: boolean, pid: number|null, error?: string }}
  */
+/**
+ * 解析包的 Launcher 组件（形如 `pkg/cls`），解析不到返回 null。
+ *
+ * 为什么必须解析组件：定制 ROM / Android 13（真机 generic）上
+ * `am start -a MAIN -c LAUNCHER -p <pkg>` 会直接返回
+ *   `Error: Activity not started, unable to resolve Intent { ... pkg=... }`
+ * 但同一个包 `cmd package resolve-activity` 能正常解析出组件，
+ * 用 `am start -n <pkg/cls>` 也一定能起来。Unity 游戏（SurfaceView/BLAST）
+ * 普遍是这个表现 —— 不解析组件就等于「所有游戏都无法从界面启动」。
+ */
+async function resolveLauncherComponent(deviceId, packageName) {
+  const pkg = packageName.replace(/'/g, "'\\''");
+  // 1) Android 8+：cmd package resolve-activity（输出最后一行就是 pkg/cls）
+  try {
+    const out = await adbShell(deviceId,
+      `cmd package resolve-activity --brief -c android.intent.category.LAUNCHER '${pkg}' 2>/dev/null`, 6000);
+    const hit = out.split('\n').map((s) => s.trim()).filter(Boolean)
+      .find((s) => s.startsWith(packageName + '/'));
+    if (hit) return hit;
+  } catch (_) {}
+  // 2) 老机型兜底：dumpsys package 里 LAUNCHER 分类附近的 activity 名
+  try {
+    const out = await adbShell(deviceId, `dumpsys package '${pkg}' 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
+    const lines = out.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!/android\.intent\.category\.LAUNCHER/.test(lines[i])) continue;
+      for (let j = i; j >= Math.max(0, i - 15); j--) {
+        const m = lines[j].match(/^\s*([\w.]+)\/([\w.$]+)\s/);
+        if (m && m[1] === packageName) return `${m[1]}/${m[2]}`;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+/**
+ * 判断包是否在前台（resumed activity）。
+ * 性能采集的取帧通道都依赖**可见渲染层**：应用进程活着但在后台时，
+ * timestats 匹配不到层、gfxinfo 也没有新帧，三条通道全废 → 采到的 fps 全是 null。
+ * 真机 generic 实测：目标游戏在后台时 method=none，整段曲线没有 FPS。
+ */
+async function isAppForeground(deviceId, packageName) {
+  try {
+    const out = await adbShell(deviceId,
+      'dumpsys activity activities 2>/dev/null | grep -m1 ResumedActivity', 6000);
+    return out.includes(packageName);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function ensureAppRunning(deviceId, packageName, logFn) {
   const log = typeof logFn === 'function' ? logFn : () => {};
   if (!deviceId || !packageName) {
@@ -202,18 +266,32 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
   }
   let pid = await getPid(deviceId, packageName).catch(() => null);
   if (pid) {
-    log(`[adb] 应用已在运行，无需启动 (PID=${pid})`);
-    return { ok: true, launched: false, pid };
+    // 进程活着还不够：必须在**前台**才有可见图层可供取帧，否则整段 FPS 都是 null
+    if (await isAppForeground(deviceId, packageName)) {
+      log(`[adb] 应用已在前台运行，无需启动 (PID=${pid})`);
+      return { ok: true, launched: false, pid };
+    }
+    log(`[adb] 应用在后台运行 (PID=${pid})，切到前台以便取帧`);
+  } else {
+    log(`[adb] 未检测到进程，尝试启动应用: ${packageName}`);
   }
-  log(`[adb] 未检测到进程，尝试启动应用: ${packageName}`);
   const pkg = packageName.replace(/'/g, "'\\''");
-  // 先 am start 再 monkey：部分 ROM（如 定制 ROM / Android 13）的 /system/bin/monkey
-  // 是个会被 shell 吃掉参数的包装脚本，拉起必失败；am start 在这些机器上实测可用。
-  // monkey 仅作为老设备的兜底（Android 10 以下 am start 不支持 -p）。
-  for (const [label, cmd] of [
-    ['am start', `am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p '${pkg}' 2>&1`],
+
+  // 启动方式按可靠性从高到低排：
+  //   ① am start -n <组件>   —— 先解析出 Launcher 组件再精确启动，最可靠
+  //   ② am start -p <包>     —— 老路径，部分 ROM（定制 ROM 13）解析不到隐式 Intent
+  //   ③ monkey -p <包>       —— 老设备兜底（Android 10 以下 am start 不支持 -p）
+  const comp = await resolveLauncherComponent(deviceId, packageName);
+  if (comp) log(`[adb] Launcher 组件: ${comp}`);
+  const attempts = [];
+  if (comp) attempts.push(['am start -n', `am start -n '${comp}' 2>&1`]);
+  attempts.push(
+    ['am start -p', `am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p '${pkg}' 2>&1`],
     ['monkey', `monkey -p '${pkg}' -c android.intent.category.LAUNCHER 1 2>&1`],
-  ]) {
+  );
+
+  let noEntry = 0;
+  for (const [label, cmd] of attempts) {
     let out = '';
     try {
       out = await adbShell(deviceId, cmd, 10000);
@@ -221,19 +299,11 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
       // execFile 在退出码非 0 时 reject，错误信息里带着设备端输出
       out = String((e && e.message) || '');
     }
-    // 包本身没有可启动入口（如轻应用/插件包）：设备端会明确报出来，
-    // 这种情况下再轮询也没用，直接换下一种方式，避免用户干等几十秒
-    if (/unable to resolve|No activity found|Error type 3|not found/i.test(out)) {
-      // 已确认包本身没有可启动入口，monkey 也不可能成功，直接结束
-      log(`[adb] ${label}: 该包没有可启动入口，停止尝试`);
-      return {
-        ok: false,
-        launched: false,
-        pid: null,
-        error: `该应用没有可启动入口（无 Launcher Activity），无法自动拉起：${packageName}。`
-          + '请换选一个应用，或先在手机上打开它再点开始。',
-      };
-    }
+    // 只记录「解析不到入口」，**不再提前 return** —— 换一种方式很可能就成功了
+    if (/unable to resolve|No activity found|Error type 3|not found/i.test(out)) noEntry++;
+    else noEntry = 0;
+    log(`[adb] ${label}: ${out.trim().split('\n').slice(0, 2).join(' / ').slice(0, 160)}`);
+
     // 应用启动通常 1~3 秒；轮询 5 秒足够
     for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 250));
@@ -243,6 +313,16 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
         return { ok: true, launched: true, pid };
       }
     }
+  }
+  // 三种方式都没起来：只有「组件解析不到」且「每种方式都报无入口」才判定没有入口
+  if (!comp && noEntry >= attempts.length) {
+    return {
+      ok: false,
+      launched: false,
+      pid: null,
+      error: `该应用没有可启动入口（无 Launcher Activity），无法自动拉起：${packageName}。`
+        + '请换选一个应用，或先在手机上打开它再点开始。',
+    };
   }
   return {
     ok: false,
@@ -256,7 +336,7 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
 
 async function getUid(deviceId, packageName) {
   try {
-    const out = await adbShell(deviceId, `dumpsys package '${packageName}' 2>/dev/null | grep -m1 userId=`);
+    const out = await adbShell(deviceId, `dumpsys package '${packageName}' 2>/dev/null | grep -m1 userId=`, DUMPSYS_TIMEOUT_MS);
     const m = out.match(/userId=(\d+)/);
     if (m) return parseInt(m[1], 10);
   } catch (_) {}
@@ -309,7 +389,7 @@ async function getCpuStats(deviceId, pid) {
 
 async function getMemInfo(deviceId, packageName) {
   try {
-    const out = await adbShell(deviceId, `dumpsys meminfo '${packageName}' 2>/dev/null`);
+    const out = await adbShell(deviceId, `dumpsys meminfo '${packageName}' 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
     const totalMatch = out.match(/^\s*TOTAL\s+(\d+)/m);
     // label may appear as "Foo Bar:" or "Foo Bar" followed by whitespace and a number
     const getLine = (label) => {
@@ -370,6 +450,13 @@ async function getMemInfo(deviceId, packageName) {
 
 const _fpsState        = new Map();
 const _timestatsEnabled = new Set();
+/**
+ * framestats 最新一帧的 FrameCompleted（按 device_pkg 缓存）。
+ * PROFILEDATA 是「最近 N 帧」的滚动窗口：N 用满后，窗口跨度会被拉到几分钟，
+ * 此时 frames/dur 算出来的是「很久以前的平均帧率」，不是这一秒的帧率。
+ * 真机 sailingera 实测：48 帧 / 190.56s → fps 恒为 0，整条曲线贴底且被当成真实掉帧。
+ */
+const _fsState = new Map();
 
 // Parse "Xms=N Yms=M …" into { X: N, Y: M, … }
 function parseHistogram(line) {
@@ -518,7 +605,7 @@ async function getFps(deviceId, packageName, logFn) {
   // ── Enable timestats once per device ──────────────────────────────────────
   if (!_timestatsEnabled.has(deviceId)) {
     try {
-      await adbShell(deviceId, 'dumpsys SurfaceFlinger --timestats -enable -clear 2>/dev/null');
+      await adbShell(deviceId, 'dumpsys SurfaceFlinger --timestats -enable -clear 2>/dev/null', DUMPSYS_TIMEOUT_MS);
       _timestatsEnabled.add(deviceId);
       log('[FPS] timestats 已启用');
     } catch (e) { log(`[FPS] timestats 启用失败: ${e.message}`); }
@@ -526,7 +613,7 @@ async function getFps(deviceId, packageName, logFn) {
 
   // ── Method 1: --timestats (BLAST/Unity layers) ────────────────────────────
   try {
-    const out = await adbShell(deviceId, 'dumpsys SurfaceFlinger --timestats -dump 2>/dev/null');
+    const out = await adbShell(deviceId, 'dumpsys SurfaceFlinger --timestats -dump 2>/dev/null', DUMPSYS_TIMEOUT_MS);
     const lines = out.split('\n');
 
     let inLayer = false, layerTag = '';
@@ -620,42 +707,75 @@ async function getFps(deviceId, packageName, logFn) {
 
   // ── Method 2: gfxinfo framestats (View-based apps) ───────────────────────
   try {
-    const out = await adbShell(deviceId, `dumpsys gfxinfo '${packageName}' framestats 2>/dev/null`);
+    const out = await adbShell(deviceId, `dumpsys gfxinfo '${packageName}' framestats 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
     const frames = [];
     let inSection = false;
 
+    // 列索引必须**按表头名**取，不能写死。
+    // Android 10+ 在 Flags 之后插入了 FrameTimelineVsyncId / InputEventId /
+    // FrameInterval 等列（18 列 → 22 列），写死 cols[1]=vsync、cols[13]=completed
+    // 在 Android 13 上 cols[1] 是 FrameTimelineVsyncId（如 20368018），
+    // 会被 `vsync > 1e9` 全部丢掉 → 解析出 0 帧，Method 2 静默失效
+    // （真机 generic / Android 13 实测复现）。
+    let iVsync = 2;        // 18 列（Android 6~9）的默认位置
+    let iCompleted = 15;
+    let sawHeader = false;
+
     for (const line of out.split('\n')) {
       if (line.includes('---PROFILEDATA---')) { inSection = !inSection; continue; }
-      if (!inSection || /^Flags/i.test(line.trim())) continue;
-      const cols = line.trim().split(',');
-      if (cols.length < 14) continue;
-      const vsync     = parseInt(cols[1],  10);
-      const completed = parseInt(cols[13], 10);
+      if (!inSection) continue;
+      const t = line.trim();
+      if (/^Flags/i.test(t)) {
+        const h = t.split(',');
+        const vi = h.indexOf('Vsync');            // 精确匹配，避开 IntendedVsync
+        const ci = h.indexOf('FrameCompleted');
+        if (vi >= 0 && ci >= 0 && ci > vi) { iVsync = vi; iCompleted = ci; sawHeader = true; }
+        continue;
+      }
+      const cols = t.split(',');
+      if (cols.length <= iCompleted) continue;
+      const vsync     = parseInt(cols[iVsync],     10);
+      const completed = parseInt(cols[iCompleted], 10);
       if (vsync > 1e9 && completed > vsync) frames.push({ vsync, completed });
     }
 
     if (frames.length >= 4) {
       frames.sort((a, b) => a.vsync - b.vsync);
       const durSec = (frames[frames.length - 1].completed - frames[0].vsync) / 1e9;
-      const fps    = durSec > 0 ? Math.min(Math.round(frames.length / durSec), 120) : 0;
-      const { jank, bigJank, smallJank, tinyJank } = calcJankFramestats(frames);
-      const jankRate = frames.length > 0 ? Math.round((jank / frames.length) * 100) : 0;
-      // 同样归一化到「次/秒」：frames 是窗口内的累计帧，窗口不一定是 1 秒
-      const perSec = (n) => (durSec > 0 ? Math.max(0, Math.round(n / durSec)) : n);
-      log(`[FPS] gfxinfo framestats ✓ frames=${frames.length} dur=${durSec.toFixed(2)}s fps=${fps} jank=${jank} bigJank=${bigJank} smallJank=${smallJank} tinyJank=${tinyJank}`);
-      return {
-        fps,
-        jank: perSec(jank), bigJank: perSec(bigJank),
-        smallJank: perSec(smallJank), tinyJank: perSec(tinyJank),
-        jankRate, method: 'framestats',
-      };
+      const lastCompleted = frames[frames.length - 1].completed;
+      const prevFs = _fsState.get(key);
+      _fsState.set(key, lastCompleted);
+      // 窗口过期判定（两条独立信号，命中任一条都不该用它算 fps）：
+      //   ① 帧缓冲没前进 —— 两次采样之间最新帧时间戳没变，应用根本没产生新帧；
+      //   ② 窗口跨度 > 30s —— 1s 的采样周期推不出一个 30s+ 的平均帧率。
+      // 命中后**不 return**，交给 Method 3 用「Total frames rendered」做真实 1s 增量；
+      // 那边同样无变化时会落到 method:'none'（采集端写 null），而不是假的 0。
+      const frozen = prevFs !== undefined && lastCompleted <= prevFs;
+      if (frozen || durSec > 30) {
+        log(`[FPS] gfxinfo framestats 窗口过期 frames=${frames.length} 跨度=${durSec.toFixed(1)}s`
+          + `${frozen ? ' 帧缓冲未前进' : ''} → 改走 gfxinfo 增量`);
+      } else {
+        const fps = durSec > 0 ? Math.min(Math.round(frames.length / durSec), 120) : 0;
+        const { jank, bigJank, smallJank, tinyJank } = calcJankFramestats(frames);
+        const jankRate = frames.length > 0 ? Math.round((jank / frames.length) * 100) : 0;
+        // 同样归一化到「次/秒」：frames 是窗口内的累计帧，窗口不一定是 1 秒
+        const perSec = (n) => (durSec > 0 ? Math.max(0, Math.round(n / durSec)) : n);
+        log(`[FPS] gfxinfo framestats ✓ frames=${frames.length} dur=${durSec.toFixed(2)}s fps=${fps} jank=${jank} bigJank=${bigJank} smallJank=${smallJank} tinyJank=${tinyJank} cols=${iCompleted + 1}${sawHeader ? '(按表头)' : '(默认索引)'}`);
+        return {
+          fps,
+          jank: perSec(jank), bigJank: perSec(bigJank),
+          smallJank: perSec(smallJank), tinyJank: perSec(tinyJank),
+          jankRate, method: 'framestats',
+        };
+      }
+    } else {
+      log(`[FPS] gfxinfo framestats 帧数不足 (${frames.length})`);
     }
-    log(`[FPS] gfxinfo framestats 帧数不足 (${frames.length})`);
   } catch (e) { log(`[FPS] gfxinfo 异常: ${e.message}`); }
 
   // ── Method 3: gfxinfo "Total frames" delta (broad fallback) ───────────────
   try {
-    const out = await adbShell(deviceId, `dumpsys gfxinfo '${packageName}' 2>/dev/null`);
+    const out = await adbShell(deviceId, `dumpsys gfxinfo '${packageName}' 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
     const m = out.match(/Total frames rendered:\s*(\d+)/);
     if (m) {
       const total = parseInt(m[1], 10);
@@ -710,7 +830,7 @@ async function getNetStats(deviceId) {
 
 async function getBatteryInfo(deviceId) {
   try {
-    const out = await adbShell(deviceId, 'dumpsys battery 2>/dev/null');
+    const out = await adbShell(deviceId, 'dumpsys battery 2>/dev/null', DUMPSYS_TIMEOUT_MS);
     const get = (k) => { const m = out.match(new RegExp(`${k}:\\s*([\\d.]+)`)); return m ? parseFloat(m[1]) : 0; };
     const level       = get('level');
     const voltage     = get('voltage');           // mV
@@ -824,14 +944,14 @@ async function getThermalInfo(deviceId) {
 
   // 2) dumpsys thermalservice（Android 10+，无需 root，能拿到 GPU 分区）
   try {
-    const out = await adbShell(deviceId, 'dumpsys thermalservice 2>/dev/null');
+    const out = await adbShell(deviceId, 'dumpsys thermalservice 2>/dev/null', DUMPSYS_TIMEOUT_MS);
     const r = parseThermalService(out);
     if (r && r.main > 0) return { temperature: r.main, gpuTemp: r.gpu };
   } catch (_) {}
 
   // 3) 电池温度（最低兜底，几乎所有机型可读）
   try {
-    const out = await adbShell(deviceId, 'dumpsys battery 2>/dev/null');
+    const out = await adbShell(deviceId, 'dumpsys battery 2>/dev/null', DUMPSYS_TIMEOUT_MS);
     const m = out.match(/temperature:\s*(\d+)/);
     if (m) {
       const t = parseInt(m[1], 10) / 10;
@@ -1057,6 +1177,7 @@ function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
 module.exports = {
   getDevices, getDeviceInfo, getThirdPartyPackages, getPid, getUid, ensureAppRunning,
+  resolveLauncherComponent, isAppForeground,
   getCpuStats, getMemInfo, getFps,
   getNetStats, getBatteryInfo, getThermalInfo, getGpuUsage,
   getCpuCoreStats,
