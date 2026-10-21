@@ -46,6 +46,9 @@ _archive_removed_apk/
 # 新增的便携版产物：安装包按需单独分发，避免每次构建都把 200MB+ 推上 LFS
 # （旧规则只挡 `*_r*.zip`，`_20261021.zip` 这类日期包会漏进暂存区）
 release/*.zip
+# 交付目录整体不入库：内含 app.asar（1.7MB）+ 报告模板 + 说明文档，
+# 这些都是构建产物，源码在 _client_src/ 与 perfara/collector/resources/ 里已有
+release/交付_*/
 # 根目录散落的过程截图（各阶段验证用，归档在 F 盘）
 /*.png
 
