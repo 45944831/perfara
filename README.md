@@ -193,6 +193,34 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 > 60Hz 下该值恒为 2 个 vsync（≈33.6ms），会让 TinyJank 计数偏高（timestats 通道为 0）。
 > 这属于指标口径定义问题，改动会影响与 PerfDog 的数值可比性，需产品确认后再动。
 
+## 本次新增（v2026.10.21 · 真机完整走查）· 4 个真缺陷修复
+
+在上述体积与性能专项之后，又用真机（Android 13 中端机型 / Android 13 / 定制 ROM）
+把「设备发现 → 采集 → 报告落盘 → 页面渲染」整条链路**完整走查一遍**，
+新增 3 套走查脚本共 **117 项断言**（`perfara/tests/realdevice/realdevice_walkthrough_s{1,2,3}.js`），
+结果 **117/117 全绿**，过程中查出并修掉 4 个此前没暴露的缺陷：
+
+| 缺陷 | 表现 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 点「开始」干等 **23.5 秒**才报错 | 用户感知就是「点了没反应」 | `ensureAppRunning` 对**包根本没装**的设备也逐条尝试 3 种启动命令 + 每次 5s 轮询；`noEntry` 计数又被 `else noEntry = 0` 重置，导致「三种方式都无入口」这个终态永远不成立 | 新增 `isPackageInstalled()`（`pm path`，~90ms）先判存在性；`noEntry` 改为累计；命令明确报「无入口」时跳过轮询直接换下一种方式；`adb()` 抛错时 stdout 与 stderr 合并（设备端结论 `No activities found to run` 在 stdout，只取 stderr 会丢判据） |
+| 「复用已有进程」被误报成「已启动」 | 日志误导 + 白等 5 秒稳定期 | `am start -n` 对已在后台的进程返回 `its current task has been brought to the front`，原代码一律记 `launched=true` | 改为返回 `switched:true`，采集端据此只等 1.5s |
+| **FPS 假 0** 污染报告 | 静止 / 被遮挡 / 后台时曲线贴底，把 FPS 均值与 1%Low 拉低 | timestats 匹配到图层但本周期一帧未产出时 `delta=0 → fps=0`，被当成真实掉帧 | 新增 `method:'no-frames'`，采集端写 `null`（曲线断开），`FPS_NO_DATA_METHODS` 同步扩充 |
+| 单文件分享报告**根本没内联 echarts** | 导出文件仅 213 KB、canvas=0、离线打开仍请求 `cdn.jsdelivr.net`，与「自包含、离线可看」矛盾 | `main.js` 找 `<script src="echarts.min.js">` 标签，但 `perf.html` 已改成异步加载器（`window.echartsReady`），根本没有该标签 → 内联逻辑完全失效 | 新增 `inlineEcharts()` 兼容两种模板结构（标签式 `library.html` / 异步加载器式 `perf.html`） |
+
+效果：
+
+| 场景 | 修复前 | 修复后 |
+| --- | ---: | ---: |
+| 目标包未安装 | 23.5 s | **101 ms** |
+| 包已装但无启动入口 | ~24 s | **958 ms** |
+| 正常拉起 | — | 773 ms |
+| 单文件报告体积 / canvas 数 | 213 KB / 0 | **1218 KB / 12** |
+| 单文件报告离线打开 | 仍请求 CDN | **零外部请求** |
+
+> 走查同时暴露了一个**环境问题**：Escrcpy 等第三方工具自带的 adb 会抢占 5037 端口，
+> 导致项目自带 adb 的 `devices` 返回空。排查时用 `netstat -ano | grep 5037` 确认端口归属即可，
+> 不要直接判定「没插设备」。
+
 ---
 
 ## 下载与运行
@@ -208,6 +236,10 @@ Perfara_Portable_20261021.zip      （约 210MB，对应 v2026.10.21）
 3. 启动器会自动拉起本地看板（`127.0.0.1:8000`）与采集客户端
 
 无需安装，无需 Python / Node 环境，卸载直接删目录。
+
+> **分发方式说明**：便携版等大体积产物**不入库**，统一以 Release 资产发布。
+> 仓库已停用 Git LFS —— 若需拉取源码历史，直接 clone 即可（仓库约 5.5 MB，无需下载任何 LFS 对象）。
+
 
 ### 三步开始采集
 
@@ -292,6 +324,8 @@ iOS 17+ 走本机隧道（`127.0.0.1:60105`），客户端会自动建立。
 **Q：仓库里为什么没有 exe？**
 A：Electron 运行时（`Perfara.exe`、dll、pak、`app.asar`）体积远超 GitHub 单文件 100MB 限制，
 通过 `.gitignore` 排除；完整可执行文件以 Release 资产分发。
+便携版 zip 同样不入库（曾用 Git LFS 存放，2026-10-21 起已停用 LFS，全部改走 Release 资产），
+所以 clone 仓库只有约 5.5 MB，不需要额外下载任何大文件。
 
 **Q：采集数据会上传到哪？**
 A：不会离开本机。看板服务只监听 `127.0.0.1`，数据存在本地 SQLite；报告是本地 HTML 文件。
@@ -302,6 +336,8 @@ A：不会离开本机。看板服务只监听 `127.0.0.1`，数据存在本地 
 | --- | --- |
 | `20261021` | 体积与性能专项：asar 剔 zrender（4.26→1.72MB）、移出 lowgpu.json（-27.7MB）、发布包裁剪内置 Python（93.4→67.8MB）、服务端 GZip（首屏 JS -66%）、SQLite WAL、tick 重入门闩 + adb 超时 4s + PID 每 5 tick、报告页抽稀与批量渲染、echarts 异步加载、日志面板 500 行上限、归档只留 `.js` |
 | `20261021` | 帧率统计自动排除加载阶段掉帧（假 0 改为 null + 加载段识别），报告页底纹标注并保留「FPS(全程)」对照 |
+| `20261021` | 真机完整走查 117 项：修复点「开始」干等 23.5s（未装包 23.5s→101ms）、复用已有进程误报为已启动、FPS 假 0（改为 `no-frames` 写 null）、单文件报告未内联 echarts（213KB→1218KB、canvas 0→12、零外部请求） |
+| `20261021` | 停用 Git LFS，便携包统一以 GitHub Releases 资产分发（仓库体积 5.5MB，clone 无需下载 LFS 对象） |
 | `v2026.10.20.1` | 修复关闭程序后 `PerfaraServer.exe` 进程残留与端口漂移、打包版看板白屏（`.js` MIME）、看板文案改为 testid |
 | `v2026.10.20` | 移除 APK 依赖、修复打包版采集无法启动、启动失败可见、无渲染层提示与报告空状态 |
 | `20261020` | 补齐 PerfDog 口径指标（1%Low / Drop / FPS≥目标 / 稳帧范围 / 标准差 / Stutter / Jank·10min / 上下文切换 / CPU 限频） |
