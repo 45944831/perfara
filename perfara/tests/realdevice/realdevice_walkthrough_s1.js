@@ -26,7 +26,7 @@ const ADB = require(path.join(APP, 'src/adb.js'));
 const CollectorMod = require(path.join(APP, 'src/collector.js'));
 const Collector = CollectorMod.Collector || CollectorMod;
 
-const DEVICE = process.argv[2] || '设备序列号';
+const DEVICE = process.argv[2] || '';
 
 let pass = 0, fail = 0;
 const fails = [];

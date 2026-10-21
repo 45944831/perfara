@@ -26,7 +26,7 @@ const Collector = CollectorMod.Collector || CollectorMod;
 const exporter = require(path.join(APP, 'src/exporter.js'));
 const reportsData = require(path.join(APP, 'src/reports-data-js.js'));
 
-const DEVICE = process.argv[2] || '设备序列号';
+const DEVICE = process.argv[2] || '';
 const PKG = process.argv[3] || 'com.example.game';
 
 let pass = 0, fail = 0;
@@ -132,7 +132,7 @@ async function collectWith(mc, seconds, label) {
   const payload = {
     perf: full.samples,
     tags: [],
-    device: { name: 'Android 13 中端机型', brand: '厂商', system: 'Android 13' },
+    device: { name: 'Android 真机', brand: 'generic', system: 'Android 13' },
     app: { id: PKG, name: PKG },
     metricConfig: null,
   };

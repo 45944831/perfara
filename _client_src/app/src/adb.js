@@ -200,7 +200,7 @@ async function getThirdPartyPackages(deviceId) {
 /**
  * 判断包是否安装在设备上。
  *
- * `pm path <pkg>` 无输出即未安装（真机 generic 实测 ~90ms），
+ * `pm path <pkg>` 无输出即未安装（真机实测 ~90ms），
  * 比逐条尝试启动命令再轮询 PID 快两个数量级。
  */
 async function isPackageInstalled(deviceId, packageName) {
@@ -237,7 +237,7 @@ async function getPid(deviceId, packageName) {
 /**
  * 解析包的 Launcher 组件（形如 `pkg/cls`），解析不到返回 null。
  *
- * 为什么必须解析组件：定制 ROM / Android 13（真机 generic）上
+ * 为什么必须解析组件：部分定制 ROM / Android 13（真机）上
  * `am start -a MAIN -c LAUNCHER -p <pkg>` 会直接返回
  *   `Error: Activity not started, unable to resolve Intent { ... pkg=... }`
  * 但同一个包 `cmd package resolve-activity` 能正常解析出组件，
@@ -273,7 +273,7 @@ async function resolveLauncherComponent(deviceId, packageName) {
  * 判断包是否在前台（resumed activity）。
  * 性能采集的取帧通道都依赖**可见渲染层**：应用进程活着但在后台时，
  * timestats 匹配不到层、gfxinfo 也没有新帧，三条通道全废 → 采到的 fps 全是 null。
- * 真机 generic 实测：目标游戏在后台时 method=none，整段曲线没有 FPS。
+ * 真机实测：目标游戏在后台时 method=none，整段曲线没有 FPS。
  */
 async function isAppForeground(deviceId, packageName) {
   try {
@@ -321,7 +321,7 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
 
   // 启动方式按可靠性从高到低排：
   //   ① am start -n <组件>   —— 先解析出 Launcher 组件再精确启动，最可靠
-  //   ② am start -p <包>     —— 老路径，部分 ROM（定制 ROM 13）解析不到隐式 Intent
+  //   ② am start -p <包>     —— 老路径，部分定制 ROM 解析不到隐式 Intent
   //   ③ monkey -p <包>       —— 老设备兜底（Android 10 以下 am start 不支持 -p）
   const comp = await resolveLauncherComponent(deviceId, packageName);
   if (comp) log(`[adb] Launcher 组件: ${comp}`);
@@ -393,7 +393,7 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
     pid: null,
     error: '未能拉起该应用：请先在手机上手动打开它再点开始。'
       + '若需自动拉起，请在系统设置中允许该应用「自启动/后台弹出界面」，'
-      + '并关闭省电限制（部分厂商 ROM 等 ROM 默认会拦截 adb 拉起）。',
+      + '并关闭省电限制（部分厂商 ROM 默认会拦截 adb 拉起）。',
   };
 }
 
@@ -551,7 +551,7 @@ const MOVIE_FRAME_X3_MS = 1000 / 24 * 3;
  * 由屏幕刷新率推算 vsync 周期（ms，向下取整以对齐直方图的整数桶）。
  * 这是最可靠的来源：不能依赖 present2present 直方图的最大桶 —— 锁 30fps 的应用
  * 绝大多数帧落在 33ms，会把 60Hz 屏误判成 vsync=33ms，使所有卡顿阈值翻倍、
- * Jank/TinyJank 恒为 0（真机 Android 13 中端机型 / Android 13 实测复现）。
+ * Jank/TinyJank 恒为 0（真机 / Android 13 实测复现）。
  */
 function vsyncMsFromRefreshRate(refreshRate) {
   if (!refreshRate || !(refreshRate > 0)) return 0;
@@ -792,7 +792,7 @@ async function getFps(deviceId, packageName, logFn) {
     // FrameInterval 等列（18 列 → 22 列），写死 cols[1]=vsync、cols[13]=completed
     // 在 Android 13 上 cols[1] 是 FrameTimelineVsyncId（如 20368018），
     // 会被 `vsync > 1e9` 全部丢掉 → 解析出 0 帧，Method 2 静默失效
-    // （真机 generic / Android 13 实测复现）。
+    // （真机 / Android 13 实测复现）。
     let iVsync = 2;        // 18 列（Android 6~9）的默认位置
     let iCompleted = 15;
     let sawHeader = false;
@@ -953,7 +953,7 @@ async function getBatteryInfo(deviceId) {
 }
 
 // ─── Temperature ─────────────────────────────────────────────────────────────
-// 多级兜底：很多机型（部分厂商 ROM 等）对 shell 关闭了 thermal_zone 读取权限，
+// 多级兜底：很多机型（部分厂商 ROM）对 shell 关闭了 thermal_zone 读取权限，
 // 此时退回 dumpsys thermalservice（Android 10+ 免 root），最后才用电池温度。
 
 /** 从 dumpsys thermalservice 里取温度；优先 CPU，其次 SKIN / BATTERY，最后取平均 */
@@ -1042,7 +1042,7 @@ async function getThermalInfo(deviceId) {
 // GPU (某机型 confirmed):
 //   gpu_busy_percentage → "89 %"   (primary)
 //   gpubusy            → "N M"     (fallback ratio)
-// 注意：不少机型（如 MTK 平台的 定制 ROM）对 shell 全部关闭了这些节点，
+// 注意：不少机型（部分厂商 ROM）对 shell 全部关闭了这些节点，
 // 此时返回 null 表示「设备未提供」，由报告页显示为无数据，而不是误导性的 0。
 
 /**

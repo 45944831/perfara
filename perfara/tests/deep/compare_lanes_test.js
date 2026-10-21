@@ -34,10 +34,10 @@ const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 
 // 4 份真实报告，时长差得远：37.4s / 单点 / 14.8s / 8.0s —— 正是会糊在一起的形态
 const IDS = [
-  '20261020-093156-厂商_generic',
-  '20261020-143158-厂商_generic',
-  '20261020-145215-厂商_generic',
-  '20261020-145531-厂商_generic',
+  '20261020-093156-DEVICE_A',
+  '20261020-143158-DEVICE_B',
+  '20261020-145215-DEVICE_C',
+  '20261020-145531-DEVICE_D',
 ];
 
 let passed = 0, failed = 0;

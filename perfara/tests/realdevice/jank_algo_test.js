@@ -1,7 +1,7 @@
 'use strict';
 /**
  * FPS / Jank 判定算法离线回归测试。
- * 背景：真机（Android 13 中端机型 / Android 13）实测发现 detectVsync 取直方图最大桶，
+ * 背景：真机（Android 13）实测发现 detectVsync 取直方图最大桶，
  * 在锁 30fps 的游戏上把 60Hz 屏误判为 vsync=33ms，导致 Jank/TinyJank 恒为 0。
  * 本测试锁定修复后的口径：既要能识别真实卡顿，又不能把锁帧场景整体误报。
  *

@@ -1,11 +1,11 @@
 {
   "device": {
-    "name": "Android 13 中端机型",
+    "name": "Android 真机",
     "model": "generic",
     "brand": "generic",
     "system": "Android 13",
     "category": "android",
-    "deviceId": "设备序列号",
+    "deviceId": "demo-device-001",
     "appName": "com.example.game",
     "appLabel": "com.example.game"
   },

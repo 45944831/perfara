@@ -3,7 +3,7 @@
 // 用法: node dev_realcollect_test.js <deviceId> [packageName]
 const ADB = require('../../../_client_src/app/src/adb');
 
-const DEVICE = process.argv[2] || '设备序列号';
+const DEVICE = process.argv[2] || '';
 let PKG = process.argv[3] || '';
 
 let pass = 0, fail = 0;

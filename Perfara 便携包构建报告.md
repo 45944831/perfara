@@ -117,7 +117,7 @@ uploadCreds = {"ok":true,"para1":"uid1","para2":"perefara"}
 
 ## 九、GPU 利用率为什么拿不到（真机定位）
 
-设备：Android 13 中端机型 / 中端 SoC（中端芯片）/ GPU / Android 13 / 未 root。
+设备：Android 13 中端机型 / 未 root。
 
 逐个探测全部候选节点，结论是**这台机器非 root 下没有任何一条路能读到 GPU 利用率**：
 

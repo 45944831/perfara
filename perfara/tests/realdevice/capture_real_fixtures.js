@@ -23,7 +23,7 @@ Module._load = function (request) {
 const Collector = require('../../../_client_src/app/src/collector');
 const PC = require('../../../_client_src/app/src/pc-collector');
 
-const DEVICE = process.argv[2] || '设备序列号';
+const DEVICE = process.argv[2] || '';
 const PKG = process.argv[3] || 'com.example.game';
 const SECONDS = parseInt(process.argv[4] || '16', 10);
 
@@ -54,7 +54,7 @@ async function captureAndroid() {
   if (!perf.length) return null;
   const payload = {
     device: {
-      name: 'Android 13 中端机型', model: 'generic', brand: '厂商', system: 'Android 13',
+      name: 'Android 真机', model: 'generic', brand: 'generic', system: 'Android 13',
       category: 'android', deviceId: DEVICE, appName: PKG, appLabel: PKG,
     },
     perf,

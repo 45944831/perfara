@@ -44,7 +44,7 @@ for vi, ((fpsr, cpur, gpur, tempr, jankr), now) in enumerate(zip(variants, stamp
         row['gpuTemp'] = round(random.uniform(39, 47), 1)
         row['temperature'] = round(random.uniform(*tempr), 1) if tempr[1] > 0 else 0
 
-    rid = f"{now.strftime('%Y%m%d-%H%M%S')}-厂商_generic"
+    rid = f"{now.strftime('%Y%m%d-%H%M%S')}-DEMO_DEVICE"
     js = 'var data = ' + json.dumps(p, ensure_ascii=False, indent=2) + ';\n'
     open(os.path.join(hist, rid + '.js'), 'w', encoding='utf-8').write(js)
     open(os.path.join(hist, rid + '.json'), 'w', encoding='utf-8').write(
@@ -73,8 +73,8 @@ for vi, ((fpsr, cpur, gpur, tempr, jankr), now) in enumerate(zip(variants, stamp
     index.append({'id': rid, 'file': f'history/{rid}.js',
                   'createdAt': now.isoformat(),
                   'createdAtLocal': now.strftime('%Y-%m-%d %H:%M:%S'),
-                  'platform': 'android', 'deviceName': 'Android 13 中端机型',
-                  'deviceId': '设备序列号',
+                  'platform': 'android', 'deviceName': '演示设备',
+                  'deviceId': 'demo-device-001',
                   'app': 'com.example.game',
                   'samples': len(perf),
                   'durationSec': round((max(ts) - min(ts)) / 1000, 1), 'kpi': kpi})

@@ -42,7 +42,7 @@ process.resourcesPath = 'E:/WorkBuddy1/2026-10-19-13-59-27/perfara/collector/res
 const CollectorMod = require(path.join(APP, 'src/collector.js'));
 const Collector = CollectorMod.Collector || CollectorMod;
 
-const DEVICE = process.argv[2] || '设备序列号';
+const DEVICE = process.argv[2] || '';
 const PKG = process.argv[3] || 'com.example.game';
 
 let pass = 0, fail = 0;
@@ -71,7 +71,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
   const payload = {
     perf: samples,
     tags: [],
-    device: { name: 'Android 13 中端机型', model: 'generic', brand: '厂商', system: 'Android 13', category: 'android', deviceId: DEVICE, appName: PKG },
+    device: { name: 'Android 真机', model: 'generic', brand: 'generic', system: 'Android 13', category: 'android', deviceId: DEVICE, appName: PKG },
     app: { id: PKG, name: PKG },
     metricConfig: null,
   };
@@ -197,7 +197,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     const idx = [{
       id: 'test-report-1', file: 'history/test-report-1.js',
       createdAt: new Date().toISOString(), createdAtLocal: '2026-10-21 16:00:00',
-      platform: 'android', deviceName: 'Android 13 中端机型', deviceId: DEVICE,
+      platform: 'android', deviceName: 'Android 真机', deviceId: DEVICE,
       app: PKG, samples: samples.length, durationSec: samples.length,
       kpi: { fps: { avg: 58, min: 45, max: 60 }, cpu: { avg: 12, min: 3, max: 30 } },
       metricConfig: null,
@@ -214,7 +214,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     const r = await page.evaluate((pkgName) => ({
       bodyLen: document.body.innerText.length,
       hasReportWord: /报告|Report|历史/i.test(document.body.innerText),
-      hasDeviceName: document.body.innerText.includes('Android 13 中端机型'),
+      hasDeviceName: document.body.innerText.includes('Android 真机'),
       hasApp: document.body.innerText.includes(pkgName),
       listItems: document.querySelectorAll('.report-item, .report-card, li, .card').length,
       saveBtn: !!document.querySelector('#btn-export-compare'),

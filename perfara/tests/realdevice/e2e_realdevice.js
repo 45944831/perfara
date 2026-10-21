@@ -35,7 +35,7 @@ const Collector = require('../../../_client_src/app/src/collector');
 const exporter = require('../../../_client_src/app/src/exporter');
 const reportsData = require('../../../_client_src/app/src/reports-data-js');
 
-const DEVICE = process.argv[2] || '设备序列号';
+const DEVICE = process.argv[2] || '';
 const PKG = process.argv[3] || 'com.example.game';
 const SECONDS = parseInt(process.argv[4] || '24', 10);
 

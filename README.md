@@ -167,14 +167,14 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 > 子场景统计、框选统计、加载段剔除都按真实下标计算（已用 3600 点数据逐位核对）。
 > 子场景与加载段的边界下标会被强制保留为抽稀锚点，底纹不会因抽稀而消失。
 
-### 真机验证（Android 13 中端机型 / Android 13 / 中端芯片 中端 SoC）
+### 真机验证（Android 13 中端机型）
 
 用真机跑了采集 → 上传 → 报告全链路，**发现并修掉 4 个只在真机/游戏场景暴露的问题**：
 
 | 问题 | 表现 | 原因 | 修复 |
 | --- | --- | --- | --- |
 | framestats 解析在 Android 10+ 全失效 | `gfxinfo framestats` 通道解析出 0 帧，静默降级到「Total frames 增量」，丢掉了 Jank 明细 | 写死 `cols[1]=vsync`、`cols[13]=completed`；Android 10 起 `Flags` 后插入 `FrameTimelineVsyncId` 等列（18→22 列），`cols[1]` 变成小整数，被 `vsync > 1e9` 全部丢弃 | 改为**按表头名**取列（`Vsync` / `FrameCompleted`），自动兼容 18/22 列 |
-| 游戏无法从界面启动 | 选游戏点「开始」直接报「该应用没有可启动入口」 | 定制 ROM 13 上 `am start -a MAIN -c LAUNCHER -p <pkg>` 返回 `unable to resolve Intent`，代码一见该报错就提前放弃，连 monkey 都不试 | 先用 `cmd package resolve-activity` 解析组件，再 `am start -n <pkg/cls>`；失败依次降级，**不再提前 return** |
+| 游戏无法从界面启动 | 选游戏点「开始」直接报「该应用没有可启动入口」 | 部分厂商定制 ROM 上 `am start -a MAIN -c LAUNCHER -p <pkg>` 返回 `unable to resolve Intent`，代码一见该报错就提前放弃，连 monkey 都不试 | 先用 `cmd package resolve-activity` 解析组件，再 `am start -n <pkg/cls>`；失败依次降级，**不再提前 return** |
 | 后台应用采不到 FPS | 目标应用进程活着但在后台时，整段 FPS 全是 null | `ensureAppRunning` 只看 PID 存在就返回「无需启动」，而取帧依赖**可见图层** | 新增 `isAppForeground()`；在后台时用 `am start -n` 把任务切到前台 |
 | 陈旧帧缓冲导致假 0 | 静态画面下 `fps` 恒为 0，曲线贴底并被当成真实掉帧 | framestats 是「最近 N 帧」滚动窗口，N 用满后跨度可达 190s，`frames/dur` 算的是几分钟前的平均值 | 窗口跨度 > 30s 或帧缓冲未前进时**不再用它算 fps**，交给 Total frames 增量；仍无变化则报无数据（写 null） |
 
@@ -184,7 +184,7 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 **匹配到任意一个包名为空的项目** —— 不同应用的上传会被并进同一个项目。
 改为「值为空就不参与匹配」。
 
-真机回归结果：游戏 `com.example.game` 端到端 **39/39**、
+真机回归结果：一款真机游戏端到端 **39/39**、
 浏览器 `com.example.browser` **39/39**、报告页渲染 **11/11**；
 `test_api_full.py` 64 PASS、`test_metric_config_upload.py` 25/25、
 `run_perf_html_test.js` 19/19、`run_collector_pages_test.js` 36/36、`jank_algo_test.js` 30/30。
@@ -195,7 +195,7 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 
 ## 本次新增（v2026.10.21 · 真机完整走查）· 4 个真缺陷修复
 
-在上述体积与性能专项之后，又用真机（Android 13 中端机型 / Android 13 / 定制 ROM）
+在上述体积与性能专项之后，又用真机（Android 13 中端机型）
 把「设备发现 → 采集 → 报告落盘 → 页面渲染」整条链路**完整走查一遍**，
 新增 3 套走查脚本共 **117 项断言**（`perfara/tests/realdevice/realdevice_walkthrough_s{1,2,3}.js`），
 结果 **117/117 全绿**，过程中查出并修掉 4 个此前没暴露的缺陷：
@@ -228,11 +228,12 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 前往 [**Releases**](https://github.com/45944831/perfara/releases) 下载最新便携版：
 
 ```
-Perfara_Portable_20261021_r2.zip   （约 210MB，对应 v2026.10.21，数据安全修复版）
+Perfara_Portable_20261021_r3.zip   （约 210MB，对应 v2026.10.21，数据安全修复版）
 ```
 
-> **注意**：v2026.10.21 最初的 `Perfara_Portable_20261021.zip`（无 _r2 后缀）因误打包开发期
+> **注意**：v2026.10.21 最初的 `Perfara_Portable_20261021.zip`（无 _rN 后缀）因误打包开发期
 > 测试数据库已下架删除，请勿使用；v2026.10.20.1（r6）资产因同一原因下架。
+> `_r2` 版本随后也被 `_r3` 取代（`_r3` 另行剔除了 app.asar 内的测试机型注释，功能无差异）。
 
 1. 解压到任意目录（路径不要含特殊字符）
 2. 双击 **`Perfara.exe`**
