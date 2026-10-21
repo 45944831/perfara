@@ -200,7 +200,7 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 前往 [**Releases**](https://github.com/45944831/perfara/releases) 下载最新便携版：
 
 ```
-Perfara_Portable_20261020_r6.zip   （约 223MB，对应 v2026.10.20.1）
+Perfara_Portable_20261021.zip      （约 210MB，对应 v2026.10.21）
 ```
 
 1. 解压到任意目录（路径不要含特殊字符）
