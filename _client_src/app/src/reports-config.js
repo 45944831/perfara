@@ -11,8 +11,9 @@ const DEFAULT_CONFIG = {
   check: true,
   para1: '',
   para2: '',
-  // loginurl kept for backward compatibility; new config prefers report_config.url
-  loginurl: 'https://www.appstoreflow.com/api/auth/licence',
+  // 本工具完全离线：不向任何外部域名发起请求，loginurl 保持为空。
+  // （原值指向第三方授权域名，已移除；若将来需要上报，须改为显式可配置且默认留空。）
+  loginurl: '',
   report_config: {
     url: '',
   },
@@ -130,18 +131,11 @@ function readUsePreGpuIos17FromReports() {
   return Number(readConfigOut().usePreGpuIos17) === 1;
 }
 
-function readLoginUrlFromConfig() {
-  // User requirement: always use the loginurl defined in this file,
-  // do not fallback to configout/config.js overrides.
-  return DEFAULT_CONFIG.loginurl != null ? String(DEFAULT_CONFIG.loginurl).trim() : '';
-}
-
 module.exports = {
   readConfigOut,
   loadLogpannelFromConfigOutOnce,
   getLogpannelFromConfigOut,
   readAppNameFromReports,
   readUsePreGpuIos17FromReports,
-  readLoginUrlFromConfig,
   configOutPaths,
 };

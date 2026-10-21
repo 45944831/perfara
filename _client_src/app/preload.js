@@ -4,20 +4,6 @@ contextBridge.exposeInMainWorld('perfAPI', {
   getAppName: () => ipcRenderer.invoke('get-app-name'),
   getConfigOut: () => ipcRenderer.invoke('get-config-out'),
   getMachineUid: () => ipcRenderer.invoke('get-machine-uid'),
-  activationGetState: () => ipcRenderer.invoke('activation-get-state'),
-  activationSubmit: (code) => ipcRenderer.invoke('activation-submit', code),
-  activationOpenFetchUrl: () => ipcRenderer.invoke('activation-open-fetch-url'),
-  onActivationRefresh: (callback) => {
-    ipcRenderer.on('activation-refresh', () => callback());
-  },
-
-  trialBudgetGet: () => ipcRenderer.invoke('trial-budget-get'),
-  onTrialBudgetTick: (callback) => {
-    ipcRenderer.on('trial-budget-tick', (_e, payload) => callback(payload));
-  },
-  onTrialBudgetExhausted: (callback) => {
-    ipcRenderer.on('trial-budget-exhausted', () => callback());
-  },
   onTrialBudgetChanged: (callback) => {
     ipcRenderer.on('trial-budget-changed', (_e, payload) => callback(payload));
   },

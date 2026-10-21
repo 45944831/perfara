@@ -16,7 +16,6 @@ const reportsDataJs = require('./src/reports-data-js');
 const {
   readAppNameFromReports,
   readConfigOut,
-  readLoginUrlFromConfig,
   loadLogpannelFromConfigOutOnce,
 } = require('./src/reports-config');
 const { getMachineUid } = require('./src/machine-uid');
@@ -1182,44 +1181,6 @@ ipcMain.handle('get-config-out', () => {
 });
 
 ipcMain.handle('get-machine-uid', () => getMachineUid());
-
-ipcMain.handle('trial-budget-get', () =>
-  trialSession.getBudgetState(app, getMachineUid, activationStore, readConfigOut),
-);
-
-ipcMain.handle('activation-get-state', () => {
-  const uid = getMachineUid();
-  return activationStore.getActivationState(app, uid);
-});
-
-ipcMain.handle('activation-submit', (_e, code) => {
-  const uid = getMachineUid();
-  const r = activationStore.saveActivation(app, uid, code);
-  if (r && r.ok) {
-    activationStore.setServerTrialDisabled(app, false);
-    trialSession.resetSession();
-  }
-  return r;
-});
-
-/** 浏览器打开 loginurl 取码：仅 uid、para1（与启动 GET 的 type=test 区分，不带 type 参数） */
-ipcMain.handle('activation-open-fetch-url', () => {
-  const uid = getMachineUid();
-  const base = readLoginUrlFromConfig();
-  if (!base) return { ok: false, reason: '未配置 loginurl（configout/config.js）' };
-  let urlStr;
-  try {
-    const u = new URL(base);
-    u.searchParams.set('uid', uid);
-    u.searchParams.set('para1', uid);
-    urlStr = u.toString();
-  } catch (_) {
-    const sep = base.includes('?') ? '&' : '?';
-    urlStr = `${base}${sep}uid=${encodeURIComponent(uid)}&para1=${encodeURIComponent(uid)}`;
-  }
-  shell.openExternal(urlStr);
-  return { ok: true };
-});
 
 
 /** 与 extraResources 中 reports 一致：开发为项目下 reports，打包后为 resources/reports */

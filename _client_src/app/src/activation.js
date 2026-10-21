@@ -14,9 +14,11 @@
 
 const path = require('path');
 
-/** 保留常量以兼容外部引用（不再参与任何校验） */
-const SECRET_KEY = 'PERFXD_SECRET_KEY_2024';
-const ACTIVATION_HASH_ALG = 'sha512';
+/**
+ * 激活码校验已彻底移除。
+ * 原先的 SECRET_KEY / ACTIVATION_HASH_ALG 常量（用于「8位base36到期时间 + SHA512 签名」校验）
+ * 已一并删除——它们不再参与任何逻辑，留在源码里只会造成安全卫生困扰与误读。
+ */
 const ACTIVATION_FILENAME = 'activitecode.json';
 
 /** 永久有效的到期时间（2099-12-31 23:59:59 UTC） */
@@ -123,6 +125,4 @@ module.exports = {
   isServerTrialDisabled,
   setServerTrialDisabled,
   activationFilePath,
-  SECRET_KEY,
-  ACTIVATION_HASH_ALG,
 };

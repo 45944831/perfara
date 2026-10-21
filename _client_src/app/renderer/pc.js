@@ -356,17 +356,6 @@ window.addEventListener('DOMContentLoaded', () => {
       };
     }
   }
-  try {
-    window.perfAPI.onTrialBudgetExhausted(async () => {
-      if (isCollecting) {
-        log('试用时长已用完，请激活后继续使用', 'warn');
-        try {
-          await window.perfAPI.pcStopCollect();
-        } catch (_) {}
-        setCollecting(false);
-      }
-    });
-  } catch (_) {}
 });
 
 function setCollecting(v) {

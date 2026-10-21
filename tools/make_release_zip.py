@@ -26,7 +26,9 @@ SKIP_DIR = {'logs', 'crashDumps', '__pycache__'}
 # 注意不能放进 SKIP_DIR：`frontend/dist` 是前端构建产物，必须保留。
 # 而 perfara/build（PyInstaller 中间产物 37MB）、perfara/dist（22MB 的
 # PerfaraServer.exe 副本）只是构建副产物，绝不能进发布包。
-SKIP_DIR_ROOT = {'build', 'dist'}
+# client-patch 是「给旧版 app.asar 打激活移除补丁」的历史说明与补丁文件，
+# 激活链路已彻底清除，该目录不再需要随包分发。
+SKIP_DIR_ROOT = {'build', 'dist', 'client-patch'}
 
 # ── 发布包体积剔除清单 ──────────────────────────────────────────────────────
 # 依据 docs/优化方案-体积与性能.md 的 S1 / S2。

@@ -766,15 +766,4 @@ window.addEventListener('DOMContentLoaded', () => {
   hidePrepHint(); // 确保初始不显示任何红点/文字
   initContinuousScreenBtnIosGpu();
   refreshDevices();
-  try {
-    window.perfAPI.onTrialBudgetExhausted(async () => {
-      if (isCollecting) {
-        log('试用时长已用完，请激活后继续使用', 'warn');
-        try {
-          await window.perfAPI.iosGpuStopCollect();
-        } catch (_) {}
-        stopUI();
-      }
-    });
-  } catch (_) {}
 });

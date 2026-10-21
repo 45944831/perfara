@@ -675,15 +675,4 @@ window.addEventListener('DOMContentLoaded', () => {
   initContinuousScreenBtnIos();
   initMetricSettingsUI();
   refreshDevices();
-  try {
-    window.perfAPI.onTrialBudgetExhausted(async () => {
-      if (isCollecting) {
-        log('试用时长已用完，请激活后继续使用', 'warn');
-        try {
-          await window.perfAPI.iosStopCollect();
-        } catch (_) {}
-        stopUI();
-      }
-    });
-  } catch (_) {}
 });

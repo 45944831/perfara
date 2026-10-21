@@ -242,17 +242,6 @@ function initMetricSettingsUI() {
 window.addEventListener('DOMContentLoaded', () => {
   initContinuousScreenBtnAndroid();
   initMetricSettingsUI();
-  try {
-    window.perfAPI.onTrialBudgetExhausted(async () => {
-      if (isCollecting) {
-        log('试用时长已用完，请激活后继续使用', 'warn');
-        try {
-          await window.perfAPI.stopCollect();
-        } catch (_) {}
-        setCollecting(false);
-      }
-    });
-  } catch (_) {}
 });
 
 // ─── Device refresh ──────────────────────────────────────────────────────────
