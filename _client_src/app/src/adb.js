@@ -492,7 +492,7 @@ async function getMemInfo(deviceId, packageName) {
 // Strategy (by priority):
 //
 //  Method 1 — SurfaceFlinger --timestats (BLAST/Unity, Android 11+)
-//    ● Confirmed working on 某机型 (中端 SoC):
+//    ● Confirmed working on 某机型（中端 SoC）:
 //        `adb shell dumpsys SurfaceFlinger --timestats -enable`
 //        `adb shell dumpsys SurfaceFlinger --timestats -dump`
 //    ● Fields used: totalFrames (delta→FPS), averageFPS, present2present histogram
@@ -1039,7 +1039,7 @@ async function getThermalInfo(deviceId) {
 }
 
 // ─── GPU ─────────────────────────────────────────────────────────────────────
-// GPU (某机型 confirmed):
+// GPU（某机型确认）:
 //   gpu_busy_percentage → "89 %"   (primary)
 //   gpubusy            → "N M"     (fallback ratio)
 // 注意：不少机型（部分厂商 ROM）对 shell 全部关闭了这些节点，
