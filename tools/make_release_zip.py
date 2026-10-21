@@ -13,12 +13,13 @@ import sys
 import time
 import zipfile
 
-# 完整便携版里这些是运行期产生的日志/缓存，不进发布包
+# 完整便携版里这些是运行期产生的日志/缓存/数据，不进发布包
 SKIP_SUFFIX = {
     '.log', '.tmp',
-    # SQLite WAL 模式（database.py 的 PRAGMA）会额外产生 -wal / -shm，
-    # 属于运行期文件，绝不能打进发布包（否则等于把别人的数据发出去）
-    '.db-wal', '.db-shm', '.db-journal',
+    # SQLite 主库 + WAL 模式（database.py 的 PRAGMA）的 -wal / -shm：
+    # 全是运行期数据，绝不能打进发布包（否则等于把别人的数据发出去）。
+    # 便携版首次启动会自建空库，无需预置。
+    '.db', '.db-wal', '.db-shm', '.db-journal',
 }
 SKIP_DIR = {'logs', 'crashDumps', '__pycache__'}
 # 只在源目录**顶层**跳过的目录。
@@ -32,6 +33,9 @@ SKIP_DIR_ROOT = {'build', 'dist'}
 # 均为「运行期零引用」项；本地源目录不做删除，只是不放进 zip。
 _PY = 'collector/resources/ios-tools/python'
 PRUNE_PREFIXES = (
+    # S0：data/ 下的临时调试脚本（_ 开头约定）与导出文本，开发期残留，
+    # 发布包里只有噪音。webperf.db 已由 SKIP_SUFFIX '.db' 排除。
+    'data/_',
     # S1：27.7MB 的 GPU 采样样例 JSON。全仓无读取代码，ios_gpulow.exe 也不按名读它
     # （二进制内检索无 "lowgpu.json" 字面量，只有模块名 ios_lowgpucounters）。
     'collector/resources/ios-tools/bin/lowgpu.json',
