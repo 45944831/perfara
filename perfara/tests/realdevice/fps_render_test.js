@@ -151,6 +151,34 @@ function swipe(dir) {
   check('内存采样正常', samples.every(s => s.mem !== undefined), samples.filter(s => s.mem).length);
   check('无致命错误事件', !logs.some(l => /error|异常|失败/i.test(l) && /FPS/.test(l)), logs.filter(l => /error|异常|失败/i.test(l)).slice(0, 3));
 
+  // ---- framestats 卡顿分级口径（回归：TinyJank 曾 ≈ 总帧数）----
+  // 旧实现把 FrameCompleted−Vsync（三缓冲下的呈现延迟，真机恒 ≈33.6ms）当帧间隔，
+  // 于是 TinyJank 阈值（1.5×16.67≈25ms）被每一帧越过 → TinyJank ≈ frames。
+  // 修复后帧间隔取相邻 Vsync 差值，TinyJank 应远小于 frames。
+  const fsLines = logs
+    .map(l => l.match(/framestats ✓ frames=(\d+) dur=([\d.]+)s fps=(\d+) jank=(\d+) bigJank=(\d+) smallJank=(\d+) tinyJank=(\d+)/))
+    .filter(Boolean)
+    .map(m => ({ frames: +m[1], dur: +m[2], fps: +m[3], jank: +m[4], bigJank: +m[5], smallJank: +m[6], tinyJank: +m[7] }));
+
+  console.log(`  framestats 日志 ${fsLines.length} 条`);
+  fsLines.slice(0, 5).forEach(o => console.log('    ', JSON.stringify(o)));
+
+  if (fsLines.length === 0) {
+    console.log('  SKIP  本机未走 framestats 通道（走 timestats/gfxinfo 增量），口径断言跳过');
+  } else {
+    const big = fsLines.filter(o => o.frames >= 20);
+    check('framestats 有足量帧的样本（≥20 帧）', big.length > 0, big.length);
+    check('TinyJank 不再等于总帧数（< frames）', big.every(o => o.tinyJank < o.frames),
+      big.slice(0, 4).map(o => `${o.tinyJank}/${o.frames}`));
+    check('TinyJank 占比 < 60%（滑动期应平滑）', big.every(o => o.tinyJank / o.frames < 0.6),
+      big.slice(0, 4).map(o => Number((o.tinyJank / o.frames).toFixed(2))));
+    check('卡顿层级成立 bigJank ≤ jank ≤ tinyJank ≤ frames',
+      big.every(o => o.bigJank <= o.jank && o.jank <= o.tinyJank && o.tinyJank <= o.frames),
+      big.slice(0, 3));
+    check('smallJank 是 tinyJank 的子集（84ms 档更严）', big.every(o => o.smallJank <= o.tinyJank),
+      big.slice(0, 3));
+  }
+
   // ---- 汇总 ----
   if (fpsVals.length) {
     const avg = fpsVals.reduce((a, b) => a + b, 0) / fpsVals.length;

@@ -316,7 +316,7 @@ Perfara_Portable_20261023.zip   （约 210MB，对应 v2026.10.23）
 | `perfara/backend/` | 看板服务端 API（FastAPI + SQLite） |
 | `perfara/frontend/` | Web 看板前端（Vue + Vite） |
 | `perfara/collector/resources/reports/` | 报告模板（`perf.html` / `library.html`，入库，改完即时生效） |
-| `perfara/tests/` | 回归测试脚本（27 套，属代码资产，禁止清理） |
+| `perfara/tests/` | 回归测试脚本（29 套，属代码资产，禁止清理） |
 | `docs/screenshots/` | README 界面预览截图（取自本项目真实运行界面） |
 | `tools/` | 构建与维护脚本 |
 | `build/` | 启动器 PyInstaller 构建配置（`.spec`） |
@@ -395,6 +395,7 @@ A：不会离开本机。看板服务只监听 `127.0.0.1`，数据存在本地 
 | 版本 | 内容 |
 | --- | --- |
 | `20261023` | **修复采集通道断开时「假活」**：所有采集调用全失败时旧逻辑用 0 兜底照常产样本，`_lastDataTs` 被刷新导致无数据熔断永不触发（界面「采集中」、曲线一条零线）；改为全失败不产样本 + 连续 3 轮立即熔断（实测 2.2s）。新增 `probeChannel()` 探活，区分「应用被杀」与「连接断开」，不再把 USB 掉线误诊为应用崩溃。打包卫生：asar 剔除 `reports/history`、`reports/shots`；示例数据/用例/文档中的机型·ROM·应用标识全量脱敏 |
+| `20261023` | **修复卡顿分级口径**：framestats 路径把 `FrameCompleted−Vsync`（呈现延迟，60Hz 三缓冲 ≈33.6ms、120Hz ≈7.6ms）当帧间隔，TinyJank 阈值被每一帧越过 → TinyJank ≈ 总帧数；改为按相邻 `Vsync` 差值计算，基准与 timestats 路径统一为 `max(vsync, 平均帧间隔)×1.5`。**修复 iOS / PC 假 0**：无帧数据时写 `null` 而非 `0`（iOS 旧逻辑还会丢掉整条样本，连 CPU/内存一起丢）；PC 侧 `fpsSource` 保留供提权提示。测试基建：批量脚本退出码改为取被测进程真实状态（原来取的是 `tail` 的，恒为 0）；用例默认包名从占位符改为 `com.android.chrome` |
 | `20261021` | 采集前健康检查（设备响应/整机内存/GPU 负载/屏幕状态，并行有界探测 + 熄屏自动唤醒）+ 采集超时熔断（单轮看门狗 16s、无数据巡检 20s、start 全流程 30s 硬超时），熔断原因直达主界面；顺带修掉 fps=null 后告警条不再亮起的回归 |
 | `20261021` | 体积与性能专项：asar 剔 zrender（4.26→1.72MB）、移出 lowgpu.json（-27.7MB）、发布包裁剪内置 Python（93.4→67.8MB）、服务端 GZip（首屏 JS -66%）、SQLite WAL、tick 重入门闩 + adb 超时 4s + PID 每 5 tick、报告页抽稀与批量渲染、echarts 异步加载、日志面板 500 行上限、归档只留 `.js` |
 | `20261021` | 帧率统计自动排除加载阶段掉帧（假 0 改为 null + 加载段识别），报告页底纹标注并保留「FPS(全程)」对照 |

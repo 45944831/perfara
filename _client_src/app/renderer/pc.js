@@ -411,8 +411,8 @@ function updateCards(d) {
   const proc = cpu.procCpu;
   const rss = mem.totalPss;
   const fps = d.fps;
-  const jk = d.jank ?? 0;
-  const bjk = d.bigJank ?? 0;
+  const jk = d.jank;
+  const bjk = d.bigJank;
   const rx = net.rxKBps;
   const tx = net.txKBps;
   const gpu = d.gpu;
@@ -422,8 +422,9 @@ function updateCards(d) {
   if (valProcCpu) valProcCpu.textContent = proc != null ? String(proc) : '--';
   if (valMem) valMem.textContent = rss != null ? String(rss) : '--';
   if (valFps) valFps.textContent = fps != null ? String(fps) : '--';
-  if (valJank) valJank.textContent = String(jk);
-  if (valBigJank) valBigJank.textContent = String(bjk);
+  // 卡顿分级 PC 侧不做测量：null = 未测量，显示 '--'，不能显示 0（会被读成「零卡顿」）
+  if (valJank) valJank.textContent = jk != null ? String(jk) : '--';
+  if (valBigJank) valBigJank.textContent = bjk != null ? String(bjk) : '--';
   if (valJankRate) valJankRate.textContent = d.jankRate ? `${d.jankRate}%` : '';
   if (valNet) valNet.textContent = `${rx != null ? rx : '--'} / ${tx != null ? tx : '--'}`;
   if (valGpu) valGpu.textContent = gpu != null ? String(gpu) : '--';
@@ -432,9 +433,13 @@ function updateCards(d) {
 
   colorWarn('card-cpu', Number(sys) || 0, 80, 95);
   colorWarn('card-mem', Number(rss) || 0, 300, 500);
-  colorWarn('card-fps', 60 - (Number(fps) || 0), 15, 30);
-  colorWarn('card-jank', Number(jk) || 0, 3, 10);
-  colorWarn('card-bigjank', Number(bjk) || 0, 1, 3);
+  // 无帧率数据时不做任何着色（旧写法 60-0=60 会被判成「正常」，等于给假 0 背书）
+  if (fps != null) colorWarn('card-fps', 60 - Number(fps), 15, 30);
+  else colorWarn('card-fps', -Infinity, 15, 30);
+  if (jk != null) colorWarn('card-jank', Number(jk), 3, 10);
+  else colorWarn('card-jank', -Infinity, 3, 10);
+  if (bjk != null) colorWarn('card-bigjank', Number(bjk), 1, 3);
+  else colorWarn('card-bigjank', -Infinity, 1, 3);
   colorWarn('card-temp', Number(temp) || 0, 50, 65);
   colorWarn('card-gpu', Number(gpu) || 0, 80, 95);
 }

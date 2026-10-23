@@ -36,7 +36,9 @@ const exporter = require('../../../_client_src/app/src/exporter');
 const reportsData = require('../../../_client_src/app/src/reports-data-js');
 
 const DEVICE = process.argv[2] || '';
-const PKG = process.argv[3] || 'com.example.game';
+// 默认用 Chrome（任何设备都有、能稳定出帧）。脱敏后这里曾是占位包名
+// com.example.game，默认跑法会因「应用未安装」直接失败，误伤排查。
+const PKG = process.argv[3] || 'com.android.chrome';
 const SECONDS = parseInt(process.argv[4] || '24', 10);
 
 let pass = 0, fail = 0;

@@ -90,25 +90,72 @@ check('负增量被丢弃', A.histDelta(H({ 16: 100 }), H({ 16: 90 }))[16] === u
   A.histDelta(H({ 16: 100 }), H({ 16: 90 })));
 
 // ── 7. calcJankFramestats 口径 ─────────────────────────────────────────────
+// 帧间隔取「相邻 Vsync 差值」；completed 只表示渲染完成时刻。
+// 真机上 completed − vsync 恒 ≈33.6ms（三缓冲呈现延迟），与帧节奏无关 —— 构造数据必须
+// 同时给出这两个量，才能复现真机形态。
 console.log('-- calcJankFramestats --');
-// 构造：稳定 16ms 帧 + 一帧 200ms
-const frames = [];
-let t = 1e9;
-for (let i = 0; i < 10; i++) { frames.push({ vsync: t, completed: t + 16e6 }); t += 16e6; }
-frames.push({ vsync: t, completed: t + 200e6 });
-const fj = A.calcJankFramestats(frames);
-console.log('   结果 =', JSON.stringify(fj));
-check('200ms 帧计为 jank', fj.jank >= 1, fj);
-check('200ms 帧计为 bigJank', fj.bigJank >= 1, fj);
-check('稳定帧不误报 jank（无多余计数）', fj.jank <= 2, fj);
 
-const stableFrames = [];
-let t2 = 1e9;
-for (let i = 0; i < 30; i++) { stableFrames.push({ vsync: t2, completed: t2 + 16e6 }); t2 += 16e6; }
-const sj = A.calcJankFramestats(stableFrames);
-console.log('   稳定帧 =', JSON.stringify(sj));
-check('全稳定帧 jank=0', sj.jank === 0, sj);
-check('全稳定帧 bigJank=0', sj.bigJank === 0, sj);
+// 构造器：intervals 为相邻帧的 vsync 间隔（ms），latency 为呈现延迟（ms）
+function mkFrames(intervals, latency = 33.6) {
+  const out = [];
+  let t = 1e9;
+  out.push({ vsync: t, completed: t + latency * 1e6 });
+  for (const iv of intervals) {
+    t += iv * 1e6;
+    out.push({ vsync: t, completed: t + latency * 1e6 });
+  }
+  return out;
+}
+
+// 7.1 真机实测形态：60Hz 稳定渲染，呈现延迟恒 33.6ms
+//     旧实现 ft = completed−vsync = 33.6ms ≥ 25ms → TinyJank = 总帧数（本次修复的核心场景）
+const real60 = mkFrames(new Array(40).fill(16.67), 33.6);
+const r60 = A.calcJankFramestats(real60);
+console.log('   60Hz+33.6ms 延迟 =', JSON.stringify(r60));
+check('呈现延迟不被当成帧间隔（TinyJank=0）', r60.tinyJank === 0, r60);
+check('稳定 60Hz 不误报 jank', r60.jank === 0, r60);
+check('稳定 60Hz 不误报 bigJank', r60.bigJank === 0, r60);
+// 41 帧 → 40 个帧间隔，判定从第 4 个间隔开始 → 37 次
+check('evaluated 反映实际判定帧数', r60.evaluated === real60.length - 4, r60);
+
+// 7.2 锁 30fps 游戏：帧间隔 33.3ms，延迟同为 33.6ms
+//     若基准仍按 16.67ms 算（阈值 25ms），全部帧都会被判微卡顿
+const lock30Frames = mkFrames(new Array(30).fill(33.3), 33.6);
+const l30 = A.calcJankFramestats(lock30Frames);
+console.log('   锁 30fps =', JSON.stringify(l30));
+check('锁 30fps 不整体误报 tinyJank', l30.tinyJank === 0, l30);
+check('锁 30fps 不计 jank', l30.jank === 0, l30);
+
+// 7.3 真实长卡顿：vsync 直接跳过 200ms，必须被抓到
+const hitch = mkFrames([...new Array(10).fill(16.67), 200, ...new Array(10).fill(16.67)]);
+const hj = A.calcJankFramestats(hitch);
+console.log('   200ms 卡顿 =', JSON.stringify(hj));
+check('200ms 帧计为 jank', hj.jank >= 1, hj);
+check('200ms 帧计为 bigJank', hj.bigJank >= 1, hj);
+check('200ms 帧计为 smallJank', hj.smallJank >= 1, hj);
+check('200ms 帧计为 tinyJank', hj.tinyJank >= 1, hj);
+check('卡顿只计一次，不连坐相邻帧', hj.jank <= 2, hj);
+
+// 7.4 层级关系：bigJank ≤ jank ≤ tinyJank
+check('bigJank ≤ jank', hj.bigJank <= hj.jank, hj);
+check('jank ≤ tinyJank', hj.jank <= hj.tinyJank, hj);
+
+// 7.5 同一 vsync 内提交多帧（vsync 值重复）不应造出 0ms 假间隔
+const dup = [];
+let td = 1e9;
+for (let i = 0; i < 20; i++) {
+  dup.push({ vsync: td, completed: td + 33.6e6 });
+  dup.push({ vsync: td, completed: td + 34.6e6 }); // 同 vsync 第二帧
+  td += 16.67e6;
+}
+const dj = A.calcJankFramestats(dup);
+console.log('   重复 vsync =', JSON.stringify(dj));
+check('重复 vsync 去重后不产生 jank', dj.jank === 0, dj);
+check('重复 vsync 去重后不产生 tinyJank', dj.tinyJank === 0, dj);
+
+// 7.6 帧数不足时安全返回
+const few = A.calcJankFramestats(mkFrames([16.67, 16.67]));
+check('帧数不足时全部为 0', few.jank === 0 && few.tinyJank === 0 && few.evaluated === 0, few);
 
 console.log(`\n===== 结果: ${pass} PASS / ${fail} FAIL =====`);
 if (fails.length) console.log('失败项:\n  - ' + fails.join('\n  - '));

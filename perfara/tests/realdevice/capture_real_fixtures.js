@@ -24,7 +24,7 @@ const Collector = require('../../../_client_src/app/src/collector');
 const PC = require('../../../_client_src/app/src/pc-collector');
 
 const DEVICE = process.argv[2] || '';
-const PKG = process.argv[3] || 'com.example.game';
+const PKG = process.argv[3] || 'com.android.chrome';
 const SECONDS = parseInt(process.argv[4] || '16', 10);
 
 const OUT_DIR = __dirname;

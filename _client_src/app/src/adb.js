@@ -869,12 +869,59 @@ function analyseHistogram(hist, vsyncMs) {
   return { jank, bigJank, smallJank, tinyJank, totalFrames, avgMs, vsyncMs };
 }
 
+// 解析 `dumpsys gfxinfo <pkg> framestats` 的 ---PROFILEDATA--- 段 → [{ vsync, completed }]
+// 抽成纯函数：既方便单测，也让真机用例能直接拿原始 dump 验算算法口径。
+//
+// 列索引必须**按表头名**取，不能写死。
+// Android 10+ 在 Flags 之后插入了 FrameTimelineVsyncId / InputEventId /
+// FrameInterval 等列（18 列 → 22 列），写死 cols[1]=vsync、cols[13]=completed
+// 在 Android 13 上 cols[1] 是 FrameTimelineVsyncId（如 20368018），
+// 会被 `vsync > 1e9` 全部丢掉 → 解析出 0 帧，Method 2 静默失效（真机 / Android 13 实测复现）。
+function parseFramestats(out) {
+  const frames = [];
+  let inSection = false;
+  let iVsync = 2;        // 18 列（Android 6~9）的默认位置
+  let iCompleted = 15;
+  let sawHeader = false;
+
+  for (const line of String(out || '').split('\n')) {
+    if (line.includes('---PROFILEDATA---')) { inSection = !inSection; continue; }
+    if (!inSection) continue;
+    const t = line.trim();
+    if (/^Flags/i.test(t)) {
+      const h = t.split(',');
+      const vi = h.indexOf('Vsync');            // 精确匹配，避开 IntendedVsync
+      const ci = h.indexOf('FrameCompleted');
+      if (vi >= 0 && ci >= 0 && ci > vi) { iVsync = vi; iCompleted = ci; sawHeader = true; }
+      continue;
+    }
+    const cols = t.split(',');
+    if (cols.length <= iCompleted) continue;
+    const vsync     = parseInt(cols[iVsync],     10);
+    const completed = parseInt(cols[iCompleted], 10);
+    if (vsync > 1e9 && completed > vsync) frames.push({ vsync, completed });
+  }
+  return { frames, iVsync, iCompleted, sawHeader };
+}
+
 // Per-frame Jank / BigJank / SmallJank / TinyJank from gfxinfo framestats timestamps
 function calcJankFramestats(frames) {
   const SMALL_JANK_MS = 84;
-  let jank = 0, bigJank = 0, smallJank = 0, tinyJank = 0;
-  const ft = frames.map(f => (f.completed - f.vsync) / 1e6); // ns → ms
-  // 估算 vsync：帧间隔中位数吸附到常见刷新率（用于 TinyJank 阈值）
+  let jank = 0, bigJank = 0, smallJank = 0, tinyJank = 0, evaluated = 0;
+
+  // ── 帧间隔必须用相邻帧 Vsync 的差值 ────────────────────────────────────────
+  // ⚠️ 不能用 FrameCompleted − Vsync：那是「本帧从 vsync 到渲染完成」的**呈现延迟**，
+  //    跟帧节奏无关，且随缓冲深度/刷新率变化（真机实测：60Hz 三缓冲 ≈33.6ms，
+  //    120Hz 设置页 ≈7.6ms）。一旦该值 ≥ 1.5×vsync（TinyJank 阈值），
+  //    每一帧都会被判成微卡顿 → TinyJank ≈ 总帧数，指标彻底失去分辨力
+  //    （真机复现，见报告第八节）。
+  // 同一 vsync 内提交的多帧（Vsync 值相同）先去重，避免造出 0ms 的假间隔。
+  const vsyncs = Array.from(new Set(frames.map(f => f.vsync))).sort((a, b) => a - b);
+  const ft = [];
+  for (let i = 1; i < vsyncs.length; i++) ft.push((vsyncs[i] - vsyncs[i - 1]) / 1e6); // ns → ms
+  if (ft.length < 4) return { jank, bigJank, smallJank, tinyJank, evaluated };
+
+  // 估算 vsync：帧间隔中位数吸附到常见刷新率
   const sortedFt = ft.filter(v => v > 0).sort((a, b) => a - b);
   let vsyncMs = 16.67;
   if (sortedFt.length) {
@@ -883,10 +930,15 @@ function calcJankFramestats(frames) {
     else if (med <= 13) vsyncMs = 11.11;  // 90Hz
     else vsyncMs = 16.67;                 // 60Hz
   }
-  const TINY_JANK_MS = vsyncMs * 1.5;
+  // TinyJank 基准与 analyseHistogram 保持同一口径：
+  //   取「屏幕 vsync」与「段内实际平均帧间隔」的较大者 —— 锁 30fps 的应用每帧恒定 ≈33ms，
+  //   若仍以 16.67ms 为基准，整段帧都会被判成微卡顿。
+  const avgMs = ft.reduce((s, v) => s + v, 0) / ft.length;
+  const TINY_JANK_MS = Math.max(vsyncMs, avgMs) * 1.5;
 
   for (let i = 3; i < ft.length; i++) {
     const avg3 = (ft[i - 1] + ft[i - 2] + ft[i - 3]) / 3;
+    evaluated++;
     // Jank：PerfDog 双条件（> 2×前三帧均值 且 > 83.34ms）→ 取 max，与 histogram 路径同口径。
     //   ⚠️ 原实现为 ft > 16.67ms：60Hz 下任何正常帧都会被计成 Jank，指标失真。
     if (ft[i] > Math.max(2 * avg3, MOVIE_FRAME_X2_MS)) jank++;
@@ -896,7 +948,7 @@ function calcJankFramestats(frames) {
     // Exact BigJank definition: both conditions → max
     if (ft[i] > Math.max(2 * avg3, MOVIE_FRAME_X3_MS)) bigJank++;
   }
-  return { jank, bigJank, smallJank, tinyJank };
+  return { jank, bigJank, smallJank, tinyJank, evaluated };
 }
 
 // Main FPS entry point — returns { fps, jank, bigJank, jankRate, method }
@@ -1025,36 +1077,10 @@ async function getFps(deviceId, packageName, logFn) {
   // ── Method 2: gfxinfo framestats (View-based apps) ───────────────────────
   try {
     const out = await adbShell(deviceId, `dumpsys gfxinfo '${packageName}' framestats 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
-    const frames = [];
-    let inSection = false;
-
-    // 列索引必须**按表头名**取，不能写死。
-    // Android 10+ 在 Flags 之后插入了 FrameTimelineVsyncId / InputEventId /
-    // FrameInterval 等列（18 列 → 22 列），写死 cols[1]=vsync、cols[13]=completed
-    // 在 Android 13 上 cols[1] 是 FrameTimelineVsyncId（如 20368018），
-    // 会被 `vsync > 1e9` 全部丢掉 → 解析出 0 帧，Method 2 静默失效
-    // （真机 / Android 13 实测复现）。
-    let iVsync = 2;        // 18 列（Android 6~9）的默认位置
-    let iCompleted = 15;
-    let sawHeader = false;
-
-    for (const line of out.split('\n')) {
-      if (line.includes('---PROFILEDATA---')) { inSection = !inSection; continue; }
-      if (!inSection) continue;
-      const t = line.trim();
-      if (/^Flags/i.test(t)) {
-        const h = t.split(',');
-        const vi = h.indexOf('Vsync');            // 精确匹配，避开 IntendedVsync
-        const ci = h.indexOf('FrameCompleted');
-        if (vi >= 0 && ci >= 0 && ci > vi) { iVsync = vi; iCompleted = ci; sawHeader = true; }
-        continue;
-      }
-      const cols = t.split(',');
-      if (cols.length <= iCompleted) continue;
-      const vsync     = parseInt(cols[iVsync],     10);
-      const completed = parseInt(cols[iCompleted], 10);
-      if (vsync > 1e9 && completed > vsync) frames.push({ vsync, completed });
-    }
+    const parsed = parseFramestats(out);
+    const frames = parsed.frames;
+    const iCompleted = parsed.iCompleted;
+    const sawHeader = parsed.sawHeader;
 
     if (frames.length >= 4) {
       frames.sort((a, b) => a.vsync - b.vsync);
@@ -1073,8 +1099,9 @@ async function getFps(deviceId, packageName, logFn) {
           + `${frozen ? ' 帧缓冲未前进' : ''} → 改走 gfxinfo 增量`);
       } else {
         const fps = durSec > 0 ? Math.min(Math.round(frames.length / durSec), 120) : 0;
-        const { jank, bigJank, smallJank, tinyJank } = calcJankFramestats(frames);
-        const jankRate = frames.length > 0 ? Math.round((jank / frames.length) * 100) : 0;
+        const { jank, bigJank, smallJank, tinyJank, evaluated } = calcJankFramestats(frames);
+        // 分母用「实际参与判定的帧数」（帧间隔序列去掉前 3 帧），不是原始行数
+        const jankRate = evaluated > 0 ? Math.round((jank / evaluated) * 100) : 0;
         // 同样归一化到「次/秒」：frames 是窗口内的累计帧，窗口不一定是 1 秒
         const perSec = (n) => (durSec > 0 ? Math.max(0, Math.round(n / durSec)) : n);
         log(`[FPS] gfxinfo framestats ✓ frames=${frames.length} dur=${durSec.toFixed(2)}s fps=${fps} jank=${jank} bigJank=${bigJank} smallJank=${smallJank} tinyJank=${tinyJank} cols=${iCompleted + 1}${sawHeader ? '(按表头)' : '(默认索引)'}`);
@@ -1504,7 +1531,7 @@ module.exports = {
   // 纯算法导出：供离线回归测试锁定 FPS/Jank 判定口径（不影响运行时行为）
   __algo: {
     parseHistogram, histDelta, detectVsync, analyseHistogram,
-    calcJankFramestats, vsyncMsFromRefreshRate,
+    parseFramestats, calcJankFramestats, vsyncMsFromRefreshRate,
     MOVIE_FRAME_X2_MS, MOVIE_FRAME_X3_MS,
   },
 };

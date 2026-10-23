@@ -27,7 +27,10 @@ const exporter = require(path.join(APP, 'src/exporter.js'));
 const reportsData = require(path.join(APP, 'src/reports-data-js.js'));
 
 const DEVICE = process.argv[2] || '';
-const PKG = process.argv[3] || 'com.example.game';
+// 默认用 Chrome：任何 Android 设备都有，且能稳定出帧。
+// （脱敏时曾把真实游戏包名换成占位符 com.example.game，结果默认跑法必然失败 ——
+//  占位包名在设备上不存在，看起来像产品缺陷，其实是调用参数问题。）
+const PKG = process.argv[3] || 'com.android.chrome';
 
 let pass = 0, fail = 0;
 const fails = [];
