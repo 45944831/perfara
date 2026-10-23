@@ -496,14 +496,18 @@ let _zeroFpsStreak = 0;
 const FPS_WARN_THRESHOLD = 5;
 function updateFpsWarn(data) {
   if (!fpsWarnBar) return;
+  // null 与 0 在这里是同一件事：「这一秒没有帧数据」。
+  // 「假 0 修复」把无数据点改写成 null 之后，这里曾直接 return，
+  // 导致灭屏/应用退后台时告警条再也不亮——用户对着一片空白曲线毫无提示。
   const fps = data && typeof data.fps === 'number' ? data.fps : null;
-  if (fps === null) return;
-  _zeroFpsStreak = fps > 0 ? 0 : _zeroFpsStreak + 1;
+  const noFrame = fps === null || fps <= 0;
+  _zeroFpsStreak = noFrame ? _zeroFpsStreak + 1 : 0;
   if (isCollecting && _zeroFpsStreak >= FPS_WARN_THRESHOLD) {
     if (fpsWarnText) {
       fpsWarnText.textContent =
-        `已连续 ${_zeroFpsStreak} 秒未取到帧数据：被测应用可能不在前台或没有渲染层。` +
-        '此时 FPS / Jank 为 0，报告里的达帧率、均帧、低帧占比等帧率质量指标也无法计算，请把应用切到前台后重新采集。';
+        `已连续 ${_zeroFpsStreak} 秒未取到帧数据：被测应用可能不在前台、屏幕熄灭或没有渲染层。` +
+        '此时 FPS / Jank 曲线为空，报告里的达帧率、均帧、低帧占比等帧率质量指标也无法计算，' +
+        '请把应用切到前台并点亮屏幕后重新采集。';
     }
     fpsWarnBar.hidden = false;
   } else {
@@ -535,6 +539,12 @@ window.perfAPI.onPerfData((data) => {
 
 window.perfAPI.onCollectLog((msg) => {
   log(msg);
+  // 采集准备期间把最新进度透到提示条上：用户能看见「在等什么」，
+  // 而不是对着一句「采集准备中」猜是不是卡死了
+  if (_waitingFirstData && typeof msg === 'string' && /^\[(adb|健康检查)\]/.test(msg)) {
+    const brief = msg.replace(/\s+/g, ' ').trim();
+    if (brief.length > 4) showPrepHint(brief.length > 90 ? brief.slice(0, 90) + '…' : brief);
+  }
 });
 
 window.perfAPI.onCollectError((msg) => {
@@ -547,6 +557,12 @@ window.perfAPI.onCollectStopped((payload) => {
     const reason = payload && payload.reason;
     if (reason === 'process_gone') {
       log('检测到应用进程已退出，采集已自动停止', 'warn');
+    } else if (reason === 'device_stall') {
+      // 熔断：设备侧卡死。详细原因由 collect-error 给出，这里补一句人话 +
+      // 常驻提示（日志面板可能被配置隐藏，停止原因必须能在主界面看到）
+      const msg = '设备响应异常，采集已自动停止';
+      log(msg, 'error');
+      showStartHint(msg + '：请检查设备是否卡顿', 15000);
     } else {
       log('采集已停止', 'warn');
     }

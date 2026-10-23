@@ -487,6 +487,247 @@ async function getMemInfo(deviceId, packageName) {
   }
 }
 
+// ─── 采集前健康检查（preflight） ──────────────────────────────────────────────
+//
+// 要解决的事：设备卡住时，旧链路会把「卡」一路传导到 PC 界面 —— 点开始之后
+// ensureAppRunning 逐条尝试启动命令 + 轮询 PID，最坏要等 20 多秒才有反应，
+// 用户看到的就是「点了没反应」；即便最后启动了，采到的也可能是一段整段 0/null
+// 的废数据。这一层在**动应用之前**用 3 个有界检查把设备状态探清楚，任一项
+// 不健康都立刻给出可操作的失败原因，而不是让用户干等：
+//
+//   responsive —— adb 通道是否还通（设备离线 / 锁屏认证 / USB 抖动 / adb server 卡死）
+//   memory     —— 整机可用内存（见底时目标进程会被 LMK 杀，数据没有意义）
+//   gpu        —— GPU 负载（已满载说明有别的应用占着 GPU，测到的是别人的负载）
+//   screen     —— 屏幕是否点亮（灭屏时没有可见渲染层，三条取帧通道全废；
+//                真机实测熄屏时 ResumedActivity 仍是目标应用，不查这一项
+//                就会「采集中」跑满全程、曲线一片空白）
+//
+// 设计约束：
+//   * 三项并行执行、各自有硬超时，总耗时有界（最坏 ~3s）；
+//   * 读不到一律降级成「未知」，**不**因此判失败 —— 机型/权限差异太大，
+//     误判失败比漏判更糟（会把本来能测的用户挡在门外）；
+//   * 只读不写，不改变设备任何状态。
+
+const PREFLIGHT_RESPONSE_TIMEOUT_MS = 2500;
+const PREFLIGHT_MEM_TIMEOUT_MS     = 3000;
+const PREFLIGHT_GPU_TIMEOUT_MS     = 3000;
+const PREFLIGHT_SCREEN_TIMEOUT_MS  = 2500;
+/** 唤醒后等渲染层恢复的时间 */
+const SCREEN_WAKE_SETTLE_MS        = 600;
+/** 可用内存低于此值判失败（MB）—— LMK 随时会杀目标进程，测了也白测 */
+const MEM_CRITICAL_MB = 200;
+/** 可用内存低于此值给警告（MB） */
+const MEM_LOW_MB = 600;
+/** GPU 负载高于此值给警告（%） */
+const GPU_BUSY_PCT = 95;
+
+/** 读整机内存；读不到返回 null（降级为未知，不判失败） */
+async function probeDeviceMemory(deviceId, shell) {
+  try {
+    const out = await shell(deviceId, 'cat /proc/meminfo 2>/dev/null', PREFLIGHT_MEM_TIMEOUT_MS);
+    const mt = out.match(/^MemTotal:\s+(\d+)/m);
+    const ma = out.match(/^MemAvailable:\s+(\d+)/m);
+    if (!mt || !ma) return null;
+    const totalMB = Math.round(parseInt(mt[1], 10) / 1024);
+    const availMB = Math.round(parseInt(ma[1], 10) / 1024);
+    if (!(totalMB > 0) || !(availMB >= 0)) return null;
+    return { totalMB, availMB, availPct: Math.round((availMB / totalMB) * 100) };
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * 读 GPU 负载（%）；节点不开放返回 null。
+ * 不带 root 兜底（getGpuUsage 才有）：健康检查必须快，不能为一次 root 探测
+ * 再多等几秒——那正是要消灭的「点了没反应」。
+ */
+async function probeGpuLoad(deviceId, shell) {
+  try {
+    const out = await shell(deviceId, buildGpuProbeScript(), PREFLIGHT_GPU_TIMEOUT_MS);
+    const parts = splitProbeOutput(out);
+    for (const [tag] of GPU_NODE_PROBES) {
+      const v = interpretGpuProbe(tag, parts[tag]);
+      if (v != null) return v;
+    }
+  } catch (_) {}
+  return null;
+}
+
+/**
+ * 屏幕/锁屏状态探测。
+ *
+ * 真机实测的坑：熄屏时 `ResumedActivity` 仍然是目标应用，isAppForeground 返回
+ * true、ensureAppRunning 认为「已在前台」直接放行；但屏幕熄灭就没有可见渲染层，
+ * timestats/gfxinfo 都取不到帧 → 每个采样点都是 null。用户点开始后看到「采集中」，
+ * 曲线却全程空白——这就是「点了没反应」最隐蔽的一种形态。
+ *
+ * @returns {Promise<{known:boolean, awake:boolean, locked:boolean|null, woke:boolean, wake:string}>}
+ *   known=false 表示读不到（机型差异），调用方不得据此判失败
+ */
+async function probeScreenState(deviceId, shell) {
+  const readWake = async () => {
+    try {
+      const out = await shell(deviceId, 'dumpsys power 2>/dev/null | grep -m1 mWakefulness', PREFLIGHT_SCREEN_TIMEOUT_MS);
+      const m = String(out).match(/mWakefulness=(\w+)/);
+      return m ? m[1] : '';
+    } catch (_) {
+      return '';
+    }
+  };
+
+  let wake = await readWake();
+  if (!wake) return { known: false, awake: true, locked: null, woke: false, wake: '' };
+
+  let woke = false;
+  if (wake !== 'Awake') {
+    // 熄屏/休眠：用户刚在 PC 上点了「开始」，意图明确，直接替它点亮
+    // （KEYCODE_WAKEUP）。点不亮再报错，别让用户对着一屏空数据猜原因。
+    try { await shell(deviceId, 'input keyevent 224', PREFLIGHT_SCREEN_TIMEOUT_MS); } catch (_) {}
+    await new Promise((r) => setTimeout(r, SCREEN_WAKE_SETTLE_MS));
+    const after = await readWake();
+    if (after) { woke = after === 'Awake'; wake = after; }
+  }
+
+  // 锁屏：亮着但被 keyguard 挡住，应用同样不可见
+  let locked = null;
+  try {
+    const out = await shell(deviceId,
+      'dumpsys window 2>/dev/null | grep -m1 -E "mShowingLockscreen|mDreamingLockscreen"',
+      PREFLIGHT_SCREEN_TIMEOUT_MS);
+    if (/mShowingLockscreen=true/.test(out)) locked = true;
+    else if (/mShowingLockscreen=false/.test(out)) locked = false;
+  } catch (_) {}
+
+  return { known: true, awake: wake === 'Awake', locked, woke, wake };
+}
+
+/**
+ * 采集前健康检查。
+ * @param {string} deviceId
+ * @param {Function} [shellFn] 依赖注入：底层 shell 执行器，默认 adbShell。
+ *   离线测试用它喂假输出，验证阈值/降级/fail-fast 判定（不依赖真机）。
+ * @returns {Promise<{level:'ok'|'warn'|'fail', ok:boolean, reason:string|null,
+ *                    warnings:string[], notes:string[], summary:string, checks:Object}>}
+ */
+/**
+ * 轻量通道探活：adb 能否在 timeout 内正常返回。
+ *
+ * 用途：getPid 在「应用被杀」和「adb 连接断了」两种情况下**都返回 null**，
+ * 采集器据此直接报「应用进程已退出」会把 USB 掉线误诊成应用崩溃 ——
+ * 用户会去重启应用，而不是检查线缆。这里用一次 echo 把两者区分开。
+ *
+ * @returns {Promise<boolean>} true=通道可用；false=不可用（或超时）
+ */
+async function probeChannel(deviceId, timeoutMs = 1500) {
+  if (!deviceId) return false;
+  try {
+    const out = await adbShell(deviceId, 'echo __perfara_ok__', timeoutMs);
+    return String(out).includes('__perfara_ok__');
+  } catch (_) {
+    return false;
+  }
+}
+
+async function preflightCheck(deviceId, shellFn) {
+  const shell = typeof shellFn === 'function' ? shellFn : adbShell;
+  const result = {
+    level: 'ok',
+    ok: true,
+    reason: null,
+    warnings: [],
+    notes: [],
+    summary: '',
+    checks: {},
+  };
+  if (!deviceId) {
+    result.level = 'fail';
+    result.ok = false;
+    result.reason = '未选择设备，无法开始采集。';
+    return result;
+  }
+
+  // ① 设备响应：最便宜也最关键的一项，单独跑，失败就不再往下探
+  let responsive = false;
+  let responseErr = '';
+  try {
+    const out = await shell(deviceId, 'echo __perfara_ok__', PREFLIGHT_RESPONSE_TIMEOUT_MS);
+    responsive = String(out).includes('__perfara_ok__');
+  } catch (e) {
+    responsive = false;
+    responseErr = String((e && e.message) || '').trim();
+  }
+  result.checks.responsive = responsive;
+  if (!responsive) {
+    result.level = 'fail';
+    result.ok = false;
+    result.reason = `设备无响应（${PREFLIGHT_RESPONSE_TIMEOUT_MS / 1000}s 内 adb 命令未返回）。`
+      + '请检查：USB 线是否松动、屏幕是否已解锁并在弹窗中允许 USB 调试、'
+      + '是否误触了「仅充电」以外的 USB 模式；无线连接请确认手机与电脑在同一网段。'
+      // 带上设备端原文（如 "device not found" / "device offline"），排错时能少绕一圈
+      + (responseErr ? `\n（adb 返回：${responseErr.split('\n')[0].slice(0, 120)}）` : '');
+    return result;
+  }
+
+  // ②③④ 内存 / GPU / 屏幕 并行探（响应已确认，这里不会长时间挂起）
+  const [mem, gpu, screen] = await Promise.all([
+    probeDeviceMemory(deviceId, shell),
+    probeGpuLoad(deviceId, shell),
+    probeScreenState(deviceId, shell),
+  ]);
+  result.checks.memory = mem;
+  result.checks.gpu = gpu;
+  result.checks.screen = screen;
+
+  // ④ 屏幕：熄灭且唤不醒 → 失败（帧数据依赖可见渲染层，此时采集必然全 null）
+  if (screen.known && !screen.awake) {
+    result.level = 'fail';
+    result.ok = false;
+    result.reason = `设备屏幕处于熄灭/休眠状态（mWakefulness=${screen.wake}），已尝试自动唤醒但未成功。`
+      + '灭屏时没有可见渲染层，采不到任何帧数据。请手动点亮屏幕后重新开始。';
+    return result;
+  }
+  if (screen.woke) {
+    result.notes.push('检测到屏幕处于熄灭状态，已自动唤醒');
+  }
+  if (screen.locked === true) {
+    result.warnings.push('设备处于锁屏状态，应用可能不可见，建议先解锁再采集');
+  }
+
+  // ② 内存
+  if (mem) {
+    if (mem.availMB < MEM_CRITICAL_MB) {
+      result.level = 'fail';
+      result.ok = false;
+      result.reason = `设备可用内存仅剩 ${mem.availMB}MB（共 ${mem.totalMB}MB），`
+        + '系统随时会杀掉目标进程，此时采到的数据不可用。'
+        + '请先关闭后台应用或重启手机，再开始采集。';
+      return result;
+    }
+    if (mem.availMB < MEM_LOW_MB) {
+      result.warnings.push(`设备可用内存偏低（${mem.availMB}MB / 共 ${mem.totalMB}MB），建议先清理后台应用`);
+    }
+  } else {
+    result.notes.push('未读到整机内存信息（/proc/meminfo 不可用），已跳过内存检查');
+  }
+
+  // ③ GPU
+  if (gpu != null) {
+    if (gpu >= GPU_BUSY_PCT) {
+      result.warnings.push(`设备 GPU 负载 ${gpu}%，可能有其他应用正在占用 GPU，本次结果会偏高`);
+    }
+  } else {
+    result.notes.push('该机型未开放 GPU 负载节点，报告页 GPU 利用率将显示为无数据');
+  }
+
+  const memTxt = mem ? `可用内存 ${(mem.availMB / 1024).toFixed(1)}G/${(mem.totalMB / 1024).toFixed(0)}G` : '内存不可读';
+  const gpuTxt = gpu != null ? `GPU ${gpu}%` : 'GPU 负载不可读';
+  const scrTxt = !screen.known ? '屏幕状态不可读' : (screen.awake ? '屏幕已点亮' : '屏幕熄灭');
+  result.summary = `设备响应正常 · ${memTxt} · ${gpuTxt} · ${scrTxt}`;
+  result.level = result.warnings.length ? 'warn' : 'ok';
+  return result;
+}
+
 // ─── FPS + Jank + BigJank ─────────────────────────────────────────────────────
 //
 // Strategy (by priority):
@@ -517,7 +758,7 @@ const _timestatsEnabled = new Set();
  * framestats 最新一帧的 FrameCompleted（按 device_pkg 缓存）。
  * PROFILEDATA 是「最近 N 帧」的滚动窗口：N 用满后，窗口跨度会被拉到几分钟，
  * 此时 frames/dur 算出来的是「很久以前的平均帧率」，不是这一秒的帧率。
- * 真机 sailingera 实测：48 帧 / 190.56s → fps 恒为 0，整条曲线贴底且被当成真实掉帧。
+ * 真机实测（某 Unity 游戏）：48 帧 / 190.56s → fps 恒为 0，整条曲线贴底且被当成真实掉帧。
  */
 const _fsState = new Map();
 
@@ -1257,6 +1498,7 @@ module.exports = {
   getCpuStats, getMemInfo, getFps,
   getNetStats, getBatteryInfo, getThermalInfo, getGpuUsage,
   getCpuCoreStats,
+  preflightCheck, probeChannel,
   resetDeviceState, connectWifi, autoConnectWifi, disconnectWifi,
   cancelAllInflight,
   // 纯算法导出：供离线回归测试锁定 FPS/Jank 判定口径（不影响运行时行为）

@@ -87,9 +87,15 @@ function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
 
   // ---- 1.4 getPid ----
   console.log('[1.4] getPid');
+  // 真机初始状态可能是桌面、应用并未启动，此时 getPid 返回 null 才是**正确**行为。
+  // 旧用例直接断言「已安装应用能取到 PID」，结果取决于上一轮遗留的运行状态，
+  // 在干净设备上必然假失败。这里先确保应用在运行，再断言。
+  try {
+    await ADB.ensureAppRunning(DEVICE, 'com.android.chrome', () => {});
+  } catch (_) { /* 启动失败由 1.5 单独覆盖，这里只做前置准备 */ }
   try {
     const pid = await ADB.getPid(DEVICE, 'com.android.chrome');
-    check('已安装应用取到 PID', isNum(pid) && pid > 0, pid);
+    check('已安装且已运行的应用取到 PID', isNum(pid) && pid > 0, pid);
   } catch (e) {
     check('getPid 正常返回', false, e.message);
   }

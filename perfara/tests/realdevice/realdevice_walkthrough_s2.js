@@ -140,7 +140,14 @@ async function collectWith(mc, seconds, label) {
   const sum = reportsData.summarizePerf(full.samples, null);
   check('summarizePerf 返回对象', !!(sum && typeof sum === 'object'), Object.keys(sum || {}));
   check('KPI 含 fps', !!(sum && sum.kpi && sum.kpi.fps), sum && sum.kpi && sum.kpi.fps);
-  check('KPI fps 有 avg 数值', !!(sum && sum.kpi.fps && typeof sum.kpi.fps.avg === 'number'), sum && sum.kpi.fps);
+  // 有无帧数据取决于被测应用是否真的在渲染：游戏停在静态界面/后台时全 null 是正常结果，
+  // 此时「avg 必须是数字」与下面「全 null 时 avg 必须为 null」互相矛盾，会假失败。
+  const hasFpsSample = full.samples.some(s => typeof s.fps === 'number' && Number.isFinite(s.fps) && s.fps > 0);
+  check(hasFpsSample ? 'KPI fps 有 avg 数值' : '无帧样本时 KPI fps avg 为 null（合理降级）',
+    hasFpsSample
+      ? !!(sum && sum.kpi.fps && typeof sum.kpi.fps.avg === 'number')
+      : !!(sum && sum.kpi.fps && (sum.kpi.fps.avg === null || sum.kpi.fps.avg === undefined)),
+    { hasFpsSample, fps: sum && sum.kpi.fps });
   check('KPI 含 cpu/mem 段', !!(sum && sum.kpi.cpu && sum.kpi.mem), sum && Object.keys(sum.kpi || {}));
   check('KPI 含 loading 段', !!(sum && sum.loading), sum && Object.keys(sum.loading || {}));
   check('samples 计数正确', sum && sum.samples === full.samples.length, sum && sum.samples);

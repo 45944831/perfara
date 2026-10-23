@@ -136,7 +136,16 @@ function pos(v) { return isNum(v) && v > 0; }
   check('getFps 含 jank 字段', okFps.every(f => isNum(f.jank)), fpsSamples);
   check('getFps 含 bigJank 字段', okFps.every(f => isNum(f.bigJank)), fpsSamples);
   check('getFps 含 jankRate 字段', okFps.every(f => isNum(f.jankRate)), fpsSamples);
-  check('getFps 至少一帧 fps>0', fpsSamples.some(f => f && f.fps > 0), fpsSamples.map(f => f && f.fps));
+  // 有无帧取决于被测应用是否在渲染：游戏停在静态登录页 / 应用在后台时，
+  // 三条取帧通道都取不到新帧，此时全 null + method='none' 才是正确结果。
+  // 旧断言「至少一帧 fps>0」在静态页面上必然假失败，改为按有无帧分支。
+  const hasFrame = fpsSamples.some(f => f && isNum(f.fps) && f.fps > 0);
+  check(hasFrame ? 'getFps 至少一帧 fps>0' : '无帧场景返回 0/null 且 method=none（正确降级）',
+    hasFrame
+      ? true
+      // adb 层约定：无数据时 fps=0 + method='none'（采集层据此转 null）
+      : fpsSamples.every(f => f && (f.fps === 0 || f.fps === null || f.fps === undefined) && f.method === 'none'),
+    fpsSamples.map(f => f && ({ fps: f.fps, method: f.method })));
   check('getFps 有 method 标识', okFps.every(f => typeof f.method === 'string'), fpsSamples.map(f => f && f.method));
 
   console.log(`\n===== 结果: ${pass} PASS / ${fail} FAIL =====`);

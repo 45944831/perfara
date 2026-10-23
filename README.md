@@ -223,6 +223,53 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 
 ---
 
+## 本次新增（v2026.10.21 · 采集前健康检查 + 超时熔断）
+
+设备卡顿曾经会一路传导到 PC 界面：点「开始」之后 `ensureAppRunning` 逐条尝试启动命令、
+每种方式再轮询 5 秒 PID，最坏 20 多秒才给结论；采集中一旦 adb 通道卡死，
+门闩又被永不 resolve 的 promise 焊死，界面停在「采集中」再也不动。
+这一版把「设备不健康」和「设备卡死」都在有限时间内变成**可操作的结论**。
+
+### 采集前健康检查（`ADB.preflightCheck`，动应用之前执行）
+
+四项并行探测、各自有硬超时，总耗时有界（真机实测 0.7 s）：
+
+| 检查 | 通过 | 警告（放行） | 失败（直接拦下） |
+| --- | --- | --- | --- |
+| 设备响应 | `echo` 2.5 s 内返回 | — | 超时/报错，附 adb 原文（`device not found` / `offline`） |
+| 整机内存 | 可用 ≥ 600 MB | 可用 < 600 MB | 可用 < 200 MB（LMK 随时杀目标进程，数据不可用） |
+| GPU 负载 | < 95% | ≥ 95%（有别的应用占着 GPU，结果会偏高） | — |
+| 屏幕状态 | 已点亮 | 锁屏（应用被 keyguard 挡着） | 熄灭且唤不醒（**没有可见渲染层，三条取帧通道全废**） |
+
+读不到的一律降级成「未知」并记一条说明，**不**因此判失败——机型/权限差异太大，
+误判失败比漏判更糟。熄屏时会自动替用户点亮（`KEYCODE_WAKEUP`），点亮不了才报错。
+
+### 采集超时熔断（`Collector`，两级防线）
+
+| 防线 | 触发条件 | 动作 |
+| --- | --- | --- |
+| 单轮看门狗 | 某一轮采样超过 16 s 未完成 | 中止本轮、清掉 inflight adb 进程、把门闩交还下一轮（否则 `_tickBody` 里永不 resolve 的 promise 会把门闩焊死，后面再也采不动）；连续 2 轮即熔断 |
+| 无数据巡检 | 连续 20 s 没有任何采样点产出（含 `fps=null` 的无帧点） | 熔断：自动停止 + 说明原因 |
+
+另有 `start()` 全流程 30 s 硬超时（含拉起应用与稳定期等待）——健康检查、安装检查、
+无入口快速失败已把常见卡点砍掉，超过 30 s 只能说明设备迟迟不就绪。
+
+熔断时停止原因 `device_stall` 会直接显示在主界面（不只写进可能被隐藏的日志面板），
+采集准备期间提示条还会跟随日志实时更新（`[adb] …` / `[健康检查] …`），
+用户能看见「在等什么」而不是对着一句「准备中」猜。
+
+### 顺带修掉的一处回归
+
+「假 0 修复」把无帧数据点改写成 `null` 之后，`updateFpsWarn` 仍写着
+`if (fps === null) return`，导致灭屏/应用退后台时**告警条再也不亮**——
+用户对着一片空白曲线没有任何提示。现已把 `null` 与 `0` 一视同仁
+（都表示「这一秒没有帧数据」），并补上屏幕熄灭这一可能原因。
+
+真机实测：游戏登录页是静态界面时 FPS 全程 `null`，现在第 5 秒起主界面即提示
+「已连续 N 秒未取到帧数据：被测应用可能不在前台、屏幕熄灭或没有渲染层」。
+
+---
+
 ## 下载与运行
 
 前往 [**Releases**](https://github.com/45944831/perfara/releases) 下载最新便携版：
@@ -264,7 +311,7 @@ Perfara_Portable_20261021_r3.zip   （约 210MB，对应 v2026.10.21，数据安
 | `perfara/backend/` | 看板服务端 API（FastAPI + SQLite） |
 | `perfara/frontend/` | Web 看板前端（Vue + Vite） |
 | `perfara/collector/resources/reports/` | 报告模板（`perf.html` / `library.html`，入库，改完即时生效） |
-| `perfara/tests/` | 回归测试脚本（25 套，属代码资产，禁止清理） |
+| `perfara/tests/` | 回归测试脚本（27 套，属代码资产，禁止清理） |
 | `docs/screenshots/` | README 界面预览截图（取自本项目真实运行界面） |
 | `tools/` | 构建与维护脚本 |
 | `build/` | 启动器 PyInstaller 构建配置（`.spec`） |
@@ -305,6 +352,10 @@ python perfara/tests/test_api_full.py
 # 报告页 / 采集页 UI（playwright-core + 本机 Edge 无头）
 node perfara/tests/e2e_metric_config/run_perf_html_test.js
 node perfara/tests/e2e_metric_config/run_collector_pages_test.js
+node perfara/tests/e2e_metric_config/run_android_start_ux_test.js   # 点开始后的提示/告警/熔断
+
+# 采集前健康检查 + 超时熔断（假 adb / 假 shell 离线跑，不需要真机）
+node perfara/tests/realdevice/preflight_breaker_test.js
 
 # 算法与报告数据（jank / 去重 / 分组 / 对比 / 序列化 / 渲染）
 node perfara/tests/realdevice/jank_algo_test.js
@@ -338,6 +389,7 @@ A：不会离开本机。看板服务只监听 `127.0.0.1`，数据存在本地 
 
 | 版本 | 内容 |
 | --- | --- |
+| `20261021` | 采集前健康检查（设备响应/整机内存/GPU 负载/屏幕状态，并行有界探测 + 熄屏自动唤醒）+ 采集超时熔断（单轮看门狗 16s、无数据巡检 20s、start 全流程 30s 硬超时），熔断原因直达主界面；顺带修掉 fps=null 后告警条不再亮起的回归 |
 | `20261021` | 体积与性能专项：asar 剔 zrender（4.26→1.72MB）、移出 lowgpu.json（-27.7MB）、发布包裁剪内置 Python（93.4→67.8MB）、服务端 GZip（首屏 JS -66%）、SQLite WAL、tick 重入门闩 + adb 超时 4s + PID 每 5 tick、报告页抽稀与批量渲染、echarts 异步加载、日志面板 500 行上限、归档只留 `.js` |
 | `20261021` | 帧率统计自动排除加载阶段掉帧（假 0 改为 null + 加载段识别），报告页底纹标注并保留「FPS(全程)」对照 |
 | `20261021` | 真机完整走查 117 项：修复点「开始」干等 23.5s（未装包 23.5s→101ms）、复用已有进程误报为已启动、FPS 假 0（改为 `no-frames` 写 null）、单文件报告未内联 echarts（213KB→1218KB、canvas 0→12、零外部请求） |

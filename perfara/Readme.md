@@ -54,6 +54,19 @@
 3. **趋势统计与自动防劣化** — 为用例打上**场景标记**后，在「趋势统计」中按场景筛选；每次同场景测试在时间轴上形成趋势，便于发现性能回退与波动。  
 4. **开放数据路径** — 支持自建服务、自主上传与导出；详情页可复制 testid 用于分享与集成。
 
+### 采集健康检查与自动熔断
+
+点「开始采集」前，采集端会先用数秒完成四项**只读**检查——设备响应、整机可用内存、GPU 负载、屏幕/锁屏状态；任一项不健康都会**立即**给出可操作的原因，而不是让界面干等二十秒才报错：
+
+| 检查项 | 不通过时的含义 |
+|--------|----------------|
+| 设备响应 | adb 通道不通：设备离线、USB 松动、调试授权过期 |
+| 可用内存 | 低于 200MB 判失败（系统随时会杀掉目标进程，采了也白采）；低于 600MB 警告 |
+| GPU 负载 | 高于 95% 警告：可能有其他应用正占用 GPU，测到的不是目标应用的负载 |
+| 屏幕 / 锁屏 | 熄屏会自动替您点亮；点不亮或锁屏遮挡时会明确提示（灭屏时没有可见渲染层，帧数据全废） |
+
+采集中另有**超时熔断**：连续两轮采样超过 0.12 秒未完成即自动停止并说明原因，避免设备卡顿被传导成 PC 端「点了没反应、曲线一片空白」。
+
 ### 客户端下载与采集
 
 - **采集端 / 客户端工具说明（飞书文档）**  
@@ -186,6 +199,10 @@ All screenshots live in `docs/screenshots/` and come from this project's real UI
 2. **Competitor / A-B compare** — Enter **two `testid` values** on the compare page for side-by-side metrics.  
 3. **Trends & anti-degradation** — Tag scenarios on each run; filter by scenario in **Trends** to see evolution and catch performance drift early.  
 4. **Open data path** — Self-host, upload, and export; copy `testid` from detail pages for sharing and automation.
+
+### Pre-capture health check & auto circuit breaker
+
+Before capture starts, the client spends a few seconds on four **read-only** checks — device responsiveness, free memory, GPU load, and screen/lock state. Any unhealthy item fails fast with an actionable reason instead of leaving the UI hanging. During capture, a watchdog stops the run if two consecutive sampling rounds exceed 0.12s, so a stuttering device never turns into "no response, empty chart".
 
 ### Client download & capture
 

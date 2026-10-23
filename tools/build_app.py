@@ -54,6 +54,13 @@ ECHARTS_KEEP = {
 # echarts.min.js，所以运行期零引用。
 EXCLUDE_PREFIXES = (
     'node_modules/zrender/',
+    # 运行期数据：报告库历史（每次采集自动归档）。开发机上的 history/ 里是
+    # 真机调试产生的报告（含设备名/包名/测试数据），绝不能打进发布包。
+    # 打包后运行时目录是 resources/reports（app.isPackaged 分支），与 asar 无关，
+    # 且 history/index.json 不存在时会按空数组处理，剔除不影响功能。
+    'reports/history/',
+    # 截图缓存（跑报告时生成），同理属运行期产物
+    'reports/shots/',
 )
 
 
