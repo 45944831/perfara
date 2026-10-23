@@ -35,9 +35,11 @@ SKIP_DIR_ROOT = {'build', 'dist', 'client-patch'}
 # 均为「运行期零引用」项；本地源目录不做删除，只是不放进 zip。
 _PY = 'collector/resources/ios-tools/python'
 PRUNE_PREFIXES = (
-    # S0：data/ 下的临时调试脚本（_ 开头约定）与导出文本，开发期残留，
-    # 发布包里只有噪音。webperf.db 已由 SKIP_SUFFIX '.db' 排除。
-    'data/_',
+    # S0：data/ 下**全部**运行期产物，整目录剔除。
+    # 只挡 `.db` 不够：`webperf.db.bak-20261023-111846` 这种手工备份后缀不是 .db，
+    # 会连库里的测试记录（owner_uid、iOS UDID、采集数据）一起打进发布包。
+    # data/ 由 backend.paths.ensure_data_dir() 首次启动自建，无需预置任何文件。
+    'data/',
     # S1：27.7MB 的 GPU 采样样例 JSON。全仓无读取代码，ios_gpulow.exe 也不按名读它
     # （二进制内检索无 "lowgpu.json" 字面量，只有模块名 ios_lowgpucounters）。
     'collector/resources/ios-tools/bin/lowgpu.json',
