@@ -86,18 +86,21 @@ def ensure_sqlite_migrations():
             except Exception:
                 pass
         # backfill share_md5 for existing rows (md5(str(id)))
-        if "share_md5" in cols or True:
-            try:
-                import hashlib
-                cur.execute("SELECT id, share_md5 FROM test_runs")
-                rows = cur.fetchall()
-                for rid, sm in rows:
-                    if sm:
-                        continue
-                    token = hashlib.md5(str(rid).encode("utf-8")).hexdigest()
-                    cur.execute("UPDATE test_runs SET share_md5=? WHERE id=?", (token, rid))
-            except Exception:
-                pass
+        # 原写法是 `if "share_md5" in cols or True:` —— 条件恒真，导致每次启动都把
+        # 整张表读进内存再逐行跳过（`SELECT id, share_md5 FROM test_runs` 无 WHERE）。
+        # 本函数在模块导入时执行，库大了就是可感知的启动开销。
+        # 现在只在真有缺失行时才动手，且由 SQL 负责筛选。
+        try:
+            import hashlib
+            cur.execute(
+                "SELECT id FROM test_runs WHERE share_md5 IS NULL OR share_md5 = ''"
+            )
+            missing = cur.fetchall()
+            for (rid,) in missing:
+                token = hashlib.md5(str(rid).encode("utf-8")).hexdigest()
+                cur.execute("UPDATE test_runs SET share_md5=? WHERE id=?", (token, rid))
+        except Exception:
+            pass
         try:
             cur.execute("DROP INDEX IF EXISTS uq_project_content_hash")
         except Exception:

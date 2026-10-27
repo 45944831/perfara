@@ -59,11 +59,25 @@ _hidden += [
     "uvicorn.lifespan.off",
 ]
 
-# 只读资源：前端构建产物、图表配置、首次运行的种子数据库
+# 只读资源：前端构建产物、图表配置、种子数据库
+# ⚠️ 种子库必须是 _seed/webperf.db（脱敏后的演示数据），**不能**是 data/webperf.db。
+# data/webperf.db 是开发机的工作库，含真实设备序列号 / 机型 / 应用包名 / 用户 uid；
+# 一旦编进 exe，首次启动就会复制给用户，而 zip 层审计（剔 data/ + 扫文本条目）
+# 看不见它 —— 因为它被压在 PyInstaller 归档里。生成方式：
+#     python tools/make_seed_db.py
+import os as _os
+_SEED = _os.path.join(globals().get("SPECPATH", "."), "_seed", "webperf.db")
+if not _os.path.isfile(_SEED):
+    raise SystemExit(
+        "[spec] 缺少脱敏种子库: %s\n"
+        "请先运行: python tools/make_seed_db.py\n"
+        "（绝不要改回 data/webperf.db —— 那是开发机真实数据）" % _SEED
+    )
+
 _datas = [
     ("frontend/dist", "frontend/dist"),
     ("backend/chart-configs", "backend/chart-configs"),
-    ("data/webperf.db", "data"),
+    (_SEED, "data"),
 ]
 
 a = Analysis(

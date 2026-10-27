@@ -39,7 +39,18 @@ PRUNE_PREFIXES = (
     # 只挡 `.db` 不够：`webperf.db.bak-20261023-111846` 这种手工备份后缀不是 .db，
     # 会连库里的测试记录（owner_uid、iOS UDID、采集数据）一起打进发布包。
     # data/ 由 backend.paths.ensure_data_dir() 首次启动自建，无需预置任何文件。
+    #
+    # 注意：**种子库不在这里**。exe 首次启动用的种子库是编进 PerfaraServer.exe 的
+    # `_seed/webperf.db`（见 perfara_server.spec），与本目录的 data/ 无关。
     'data/',
+    # S0-②：测试套件不随包分发（58 条目，含 realdevice/_shots 下的界面截图）。
+    # 用户不需要，也没人会在解压后的便携包里跑测试。
+    'tests/',
+    # S0-③：iOS 开发者镜像（8.46MB）纯死重。
+    # 全仓检索 devimage / DeveloperDiskImage：源码、backend、app.asar、内置 Python 的
+    # site-packages 均 0 处引用；ios-collector.js 走的是 `ios image auto`（联网下载并挂载）。
+    # 且该 dmg 自身已压缩，zip 内几乎不缩（8,464,365 → 8,456,926），8.46MB 原样计入包体。
+    'collector/resources/ios-tools/devimages/',
     # S1：27.7MB 的 GPU 采样样例 JSON。全仓无读取代码，ios_gpulow.exe 也不按名读它
     # （二进制内检索无 "lowgpu.json" 字面量，只有模块名 ios_lowgpucounters）。
     'collector/resources/ios-tools/bin/lowgpu.json',

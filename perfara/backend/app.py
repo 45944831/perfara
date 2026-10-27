@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, load_only
 import json
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -443,7 +443,25 @@ def list_tests(
     page_size = max(1, min(page_size, 200))
     offset = (page - 1) * page_size
     items = (
-        query.options(joinedload(TestRun.project))
+        query.options(
+            joinedload(TestRun.project),
+            # 列表只渲染 summary（紧凑指标），raw_json 是完整上传载荷（单条可达数十 KB），
+            # 读了即丢。按需列裁剪，避免每页白读 50 份 raw_json。
+            load_only(
+                TestRun.id,
+                TestRun.project_id,
+                TestRun.category,
+                TestRun.started_at,
+                TestRun.ended_at,
+                TestRun.device,
+                TestRun.label,
+                TestRun.owner_uid,
+                TestRun.para1,
+                TestRun.para2,
+                TestRun.summary,
+                TestRun.share_md5,
+            ),
+        )
         .order_by(TestRun.started_at.desc(), TestRun.id.desc())
         .offset(offset)
         .limit(page_size)
