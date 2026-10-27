@@ -26,7 +26,7 @@ import urllib.request
 
 REPO = '45944831/perfara'
 API = 'https://api.github.com/repos/' + REPO
-NEW_TAG = 'v2026.10.23.1'
+NEW_TAG = 'v2026.10.27'
 CTX = ssl._create_unverified_context()
 
 REASONS = {
