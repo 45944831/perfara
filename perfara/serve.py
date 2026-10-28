@@ -33,7 +33,8 @@ if not _db:
 
 
 def main() -> None:
-    host = os.environ.get("WEBPERF_HOST", "0.0.0.0")
+    # 默认只监听本机：该服务无鉴权，uid 只是自称的身份；暴露到局域网等于把全部数据开放。
+    host = os.environ.get("WEBPERF_HOST", "127.0.0.1")
     port = int(os.environ.get("WEBPERF_PORT", "8000"))
 
     import uvicorn
@@ -41,6 +42,11 @@ def main() -> None:
     print(f"ROOT={ROOT}", flush=True)
     print(f"WEB_PERF_DB={os.environ['WEB_PERF_DB']}", flush=True)
     print(f"listen http://{host}:{port}/", flush=True)
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            "WARNING: 服务无鉴权，%s 以外的地址可被局域网任意访问；仅在可信网络中这样部署。" % host,
+            flush=True,
+        )
 
     uvicorn.run(
         "backend.app:app",

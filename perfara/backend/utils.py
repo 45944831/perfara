@@ -126,9 +126,25 @@ def ensure_project_for_payload(db: Session, payload: Dict[str, Any]) -> Project:
     return project
 
 
+def sanitize_non_finite(value: Any) -> Any:
+    """把 JSON 扩展字面量 Infinity / -Infinity / NaN 归一为 None。
+
+    Python 的 json.loads 默认接受这些字面量，json.dumps 也会原样写出，
+    但 ECMAScript 的 JSON.parse 会直接抛错。上传入口统一在入哈希/落库前清洗。
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: sanitize_non_finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_non_finite(v) for v in value]
+    return value
+
+
 def compute_content_hash(payload: Dict[str, Any]) -> str:
     # Stable canonical JSON for hashing
-    data = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    data = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 

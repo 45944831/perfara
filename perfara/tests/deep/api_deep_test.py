@@ -160,6 +160,15 @@ def start_server():
     raise SystemExit("服务启动超时")
 
 
+def rmtree_retry(path):
+    """Windows 上服务刚退出时文件句柄可能还挂着，一次性 rmtree 会留下半截目录。"""
+    for _ in range(6):
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return
+        time.sleep(0.3)
+
+
 def stop_server():
     if SERVER and SERVER.poll() is None:
         SERVER.terminate()
@@ -194,7 +203,7 @@ def main():
         print(f"  FAIL  {g} / {n}   {d}")
     print("=" * 62)
     if os.environ.get("KEEP_TMP") != "1":
-        shutil.rmtree(TMP, ignore_errors=True)
+        rmtree_retry(TMP)
     else:
         print(f"临时目录保留：{TMP}")
     return 1 if fails else 0
@@ -482,16 +491,28 @@ def run_tests():
     st, _, d = jcall("GET", f"/api/tests/{alice_id}", {"uid": "wonderxu"})
     check("超管取任意详情 200", st == 200, f"{st}")
 
+    _, _, d = jcall("GET", f"/api/tests/{alice_id}", {"uid": "alice"})
+    real_token = (d or {}).get("test", {}).get("md5")
+    check("详情返回随机分享令牌", isinstance(real_token, str) and real_token.startswith("t") and len(real_token) == 31,
+          str(real_token))
     md5_id = __import__("hashlib").md5(str(alice_id).encode()).hexdigest()
     st, _, d = jcall("GET", f"/api/tests/{alice_id}", {"testid": md5_id})
-    check("md5(id) 兜底令牌可匿名访问", st == 200, f"{st}")
+    check("md5(id) 兜底令牌已不可匿名访问", st == 404, f"{st}")
+    st, _, d = jcall("GET", f"/api/tests/{alice_id}", {"testid": real_token or "x"})
+    check("随机令牌可匿名访问详情", st == 200, f"{st}")
     st, _, d = jcall("GET", f"/api/tests/{alice_id}", {"testid": "deadbeef" * 4})
     check("错误令牌 404", st == 404, f"{st}")
+    st, _, d = jcall("GET", "/api/public/test", {"testid": real_token or "x"})
+    check("/api/public/test 用随机令牌命中", st == 200 and d and d.get("test", {}).get("id") == alice_id, f"{st}")
     st, _, d = jcall("GET", "/api/public/test", {"testid": md5_id})
-    check("/api/public/test 用 testid 命中", st == 200 and d and d.get("test", {}).get("id") == alice_id, f"{st}")
-    real_token = (d or {}).get("test", {}).get("md5") if d else None
+    check("/api/public/test 不再接受 md5(id)", st == 404, f"{st}")
     st, _, d = jcall("GET", "/api/public/test", {"testid": real_token or "x"})
     check("public 详情带 test_raw 全量数据", st == 200 and (d or {}).get("test_raw") is not None, f"{st}")
+    check("public 详情不回传身份字段",
+          (d or {}).get("test", {}).get("owner_uid") is None
+          and (d or {}).get("test", {}).get("para1") is None
+          and (d or {}).get("test", {}).get("para2") is None,
+          str((d or {}).get("test"))[:160])
     st, _, d = jcall("GET", "/api/public/test")
     check("public 缺 testid 被拒", st in (400, 422), f"{st}")
     st, _, d = jcall("GET", "/api/tests/notanint", {"uid": "alice"})

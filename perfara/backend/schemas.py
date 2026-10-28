@@ -80,7 +80,7 @@ class TestRunOut(BaseModel):
         except Exception:
             raw_summary = None
         proj = getattr(t, "project", None)
-        test_md5 = getattr(t, "share_md5", None) or hashlib.md5(str(getattr(t, "id")).encode("utf-8")).hexdigest()
+        test_md5 = getattr(t, "share_md5", None)
         base = {
             "id": t.id,
             "project_id": t.project_id,

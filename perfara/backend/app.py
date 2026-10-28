@@ -1,15 +1,15 @@
 import os
-import hashlib
 from fastapi import FastAPI, HTTPException, Depends, Request, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload, load_only
+from sqlalchemy.exc import IntegrityError
 import json
 from typing import List, Optional
 from datetime import datetime, timedelta
-from .database import Base, engine, get_db
+from .database import Base, engine, get_db, new_share_token
 from .models import Project, TestRun, MetricBlob, ProjectAlias, ParsedInfo, PerfaraDemoSnapshot
 from .schemas import (
     ProjectOut,
@@ -26,8 +26,8 @@ from .schemas import (
 )
 from .auth_deps import require_uid, resolve_uid, is_super_uid, is_demo_perfara_uid
 from .paths import APP_ROOT, resource
-from .parsers import parse_uploaded_json
-from .utils import ensure_project_for_payload
+from .parsers import parse_uploaded_json, canonical_content_hash
+from .utils import ensure_project_for_payload, sanitize_non_finite
 from .version import __version__
 from .trend_metrics import peaks_from_blob_content, parse_summary_dict
 from .logging_setup import setup_logging
@@ -61,6 +61,33 @@ app = FastAPI(title="Web Performance Dashboard API", version=__version__)
 # 一律用 le=_MAX_SQLITE_INT 约束；此全局处理器作为兜底，任何漏网的超大整数
 # 也返回 400 而不是 500。
 _MAX_SQLITE_INT = 2**63 - 1
+
+# 上传体上限：默认 16 MiB，可用 PERFARA_MAX_UPLOAD_BYTES 覆盖。
+# 6.8 MB / 2 万点的真实样本仍可通过；再大的请求在入口直接 413。
+MAX_UPLOAD_BYTES = max(1024, int(os.environ.get("PERFARA_MAX_UPLOAD_BYTES", str(16 * 1024 * 1024))))
+MAX_UID_LEN = 128
+
+
+def _payload_too_large():
+    return HTTPException(
+        status_code=413,
+        detail={
+            "code": "payload_too_large",
+            "message": f"payload exceeds {MAX_UPLOAD_BYTES} bytes",
+        },
+    )
+
+
+async def _read_body_limited(request: Request) -> bytes:
+    """流式读取 JSON body，超过上限立即中断，避免无 Content-Length 的 chunked 请求撑爆内存。"""
+    total = 0
+    chunks = []
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise _payload_too_large()
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @app.exception_handler(OverflowError)
@@ -152,6 +179,13 @@ async def upload_json(
     db: Session = Depends(get_db),
 ):
     """无需鉴权。multipart：须含 file、uid；para2 可选；para1 仅备用存储。JSON body：查询参数 uid；para1/para2 同上。"""
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            if int(declared) > MAX_UPLOAD_BYTES:
+                raise _payload_too_large()
+        except ValueError:
+            pass
     content_type = request.headers.get("content-type") or ""
     payload = None
     p_uid: Optional[str] = None
@@ -174,8 +208,12 @@ async def upload_json(
             raise HTTPException(status_code=400, detail="Only .json files are supported")
         try:
             raw = await up.read()
+            if len(raw) > MAX_UPLOAD_BYTES:
+                raise _payload_too_large()
             text = raw.decode("utf-8")
             payload = json.loads(text)
+        except HTTPException:
+            raise
         except UnicodeDecodeError as e:
             raise HTTPException(
                 status_code=400,
@@ -197,9 +235,11 @@ async def upload_json(
         p_para1 = _first_nonempty_str(qp.get("para1"))
         p2 = (qp.get("para2") or "").strip() or None
         try:
-            body = await request.body()
+            body = await _read_body_limited(request)
             text = body.decode("utf-8")
             payload = json.loads(text)
+        except HTTPException:
+            raise
         except UnicodeDecodeError as e:
             raise HTTPException(
                 status_code=400,
@@ -224,6 +264,11 @@ async def upload_json(
                 "message": "uid is required (multipart: form field uid; JSON body: query uid). para2 optional; para1 optional spare only (no access logic)",
             },
         )
+    if len(p_uid) > MAX_UID_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_params", "message": f"uid too long (max {MAX_UID_LEN} chars)"},
+        )
 
     if is_demo_perfara_uid(p_uid):
         raise HTTPException(
@@ -234,11 +279,10 @@ async def upload_json(
             },
         )
 
+    payload = sanitize_non_finite(payload)
+    # 校验 + 规范化只做一次：查重与落库必须使用同一份 content_hash。
+    content_hash = canonical_content_hash(payload)
     project = ensure_project_for_payload(db, payload)
-    # de-dup check by content hash
-    # compute hash via parser (to keep single point of truth)
-    from .utils import compute_content_hash
-    content_hash = compute_content_hash(payload)
     existing = (
         db.query(TestRun)
         .filter(
@@ -255,7 +299,8 @@ async def upload_json(
 
     try:
         test_run, metrics = parse_uploaded_json(
-            db, project, payload, owner_uid=p_uid, para1=p_para1, para2=p2
+            db, project, payload, owner_uid=p_uid, para1=p_para1, para2=p2,
+            content_hash=content_hash,
         )
     except HTTPException:
         raise
@@ -271,17 +316,29 @@ async def upload_json(
     db.add(test_run)
     for m in metrics:
         db.add(m)
-    # share_md5 依赖自增 id，只能在 flush 之后补。
-    # 此前完全靠启动时迁移回填，导致「本次启动后新上传」的记录 share_md5 为空，
-    # 公开链接只能走兜底扫描（见 /api/public/test 的 legacy fallback）。
-    try:
-        db.flush()
-        if not getattr(test_run, "share_md5", None):
-            test_run.share_md5 = hashlib.md5(str(test_run.id).encode("utf-8")).hexdigest()
-    except Exception:
-        pass
+    if not getattr(test_run, "share_md5", None):
+        test_run.share_md5 = new_share_token()
     try:
         db.commit()
+    except IntegrityError:
+        # 并发下另一请求已插入同一 (project, owner, hash, para2)，回滚后返回既有记录。
+        db.rollback()
+        existing = (
+            db.query(TestRun)
+            .filter(
+                TestRun.project_id == project.id,
+                TestRun.content_hash == content_hash,
+                _match_uid_to_testrun_sql(p_uid),
+                TestRun.para2 == p2,
+            )
+            .first()
+        )
+        if existing:
+            return TestRunOut.from_model(existing)
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "duplicate", "message": "同一份数据已存在"},
+        )
     except Exception as e:
         db.rollback()
         logging.getLogger("api").exception("db commit failed: %s", e)
@@ -638,8 +695,8 @@ def get_test_detail(
     if not test:
         raise HTTPException(status_code=404, detail="Test not found")
 
-    expected_md5 = getattr(test, "share_md5", None) or hashlib.md5(str(test.id).encode("utf-8")).hexdigest()
-    token_ok = bool(testid) and str(testid) == expected_md5
+    expected_token = getattr(test, "share_md5", None)
+    token_ok = bool(testid) and bool(expected_token) and str(testid) == expected_token
 
     if uid is None:
         if not token_ok:
@@ -671,21 +728,11 @@ def get_test_detail_public(
     testid: str,
     db: Session = Depends(get_db),
 ):
-    """Public read-only access by share token (md5). No auth."""
+    """Public read-only access by share token (random). No auth."""
     token = (testid or "").strip()
     if not token:
         raise HTTPException(status_code=404, detail="Test not found")
     test = db.query(TestRun).filter(TestRun.share_md5 == token).first()
-    if not test:
-        # legacy fallback: token might be md5(str(id)) but share_md5 not backfilled yet
-        # (should be rare; best-effort scan recent ids)
-        # 只取 id 列并限制 200 条：旧实现拉 5000 条全字段（含 raw_json），
-        # 任何打错的 token 都会触发一次全表读盘 + 70MB 级内存尖峰。
-        recent = db.query(TestRun.id).order_by(TestRun.id.desc()).limit(200).all()
-        for (tid,) in recent:
-            if hashlib.md5(str(tid).encode("utf-8")).hexdigest() == token:
-                test = db.query(TestRun).filter(TestRun.id == tid).first()
-                break
     if not test:
         raise HTTPException(status_code=404, detail="Test not found")
     blobs = (
@@ -694,7 +741,12 @@ def get_test_detail_public(
         .order_by(MetricBlob.id.asc())
         .all()
     )
-    return TestRunDetailOut.from_orm_and_blobs(test, blobs)
+    out = TestRunDetailOut.from_orm_and_blobs(test, blobs)
+    # 公开链接不该带出身份信息；历史字段一律置空（test_raw 是分享报告所需的数据本体）。
+    out.test.owner_uid = None
+    out.test.para1 = None
+    out.test.para2 = None
+    return out
 
 
 @app.patch("/api/tests/{test_id}/label", response_model=TestRunOut)
@@ -744,10 +796,15 @@ def delete_test(
 @app.get(
     "/api/project-aliases",
     response_model=List[ProjectAliasOut],
-    dependencies=[Depends(require_uid)],
 )
-def list_aliases(db: Session = Depends(get_db)):
-    aliases = db.query(ProjectAlias).order_by(ProjectAlias.id.asc()).all()
+def list_aliases(
+    db: Session = Depends(get_db),
+    uid: str = Depends(require_uid),
+):
+    q = db.query(ProjectAlias)
+    if not is_super_uid(uid):
+        q = q.filter(func.lower(ProjectAlias.owner_uid) == (uid or "").strip().lower())
+    aliases = q.order_by(ProjectAlias.id.asc()).all()
     return [ProjectAliasOut.from_model(a) for a in aliases]
 
 
@@ -762,19 +819,19 @@ def upsert_aliases(
 ):
     if is_demo_perfara_uid(uid):
         raise HTTPException(status_code=403, detail="演示账号不可修改别名")
+    uname = (uid or "").strip()
     updated: List[ProjectAliasOut] = []
     for item in items:
         pkg = _norm_alias_field(item.package_name)
         appn = _norm_alias_field(item.app_name)
         disp = (item.display_name or "").strip()
-        alias = (
-            db.query(ProjectAlias)
-            .filter(
-                _column_eq_optional(ProjectAlias.package_name, pkg),
-                _column_eq_optional(ProjectAlias.app_name, appn),
-            )
-            .first()
+        q = db.query(ProjectAlias).filter(
+            _column_eq_optional(ProjectAlias.package_name, pkg),
+            _column_eq_optional(ProjectAlias.app_name, appn),
         )
+        if not is_super_uid(uid):
+            q = q.filter(func.lower(ProjectAlias.owner_uid) == uname.lower())
+        alias = q.first()
         if alias:
             alias.display_name = disp if disp else None
         else:
@@ -782,6 +839,7 @@ def upsert_aliases(
                 package_name=pkg,
                 app_name=appn,
                 display_name=disp if disp else None,
+                owner_uid=uname,
             )
             db.add(alias)
             db.flush()
@@ -955,15 +1013,24 @@ def projects_with_latest_info(
         if not pids:
             return []
         projects = db.query(Project).filter(Project.id.in_(pids)).all()
-    # for each project, find latest parsed_info
+    # for each project, find latest parsed_info（同样按 uid 过滤，避免拿到他人的最新记录）
     out = []
     for p in projects:
-        latest = (
+        latest_q = (
             db.query(ParsedInfo)
+            .join(TestRun, ParsedInfo.test_run_id == TestRun.id)
             .filter(ParsedInfo.project_id == p.id)
-            .order_by(ParsedInfo.created_at.desc(), ParsedInfo.id.desc())
-            .first()
         )
+        if not is_super_uid(uid):
+            if is_demo_perfara_uid(uid):
+                latest_q = latest_q.filter(
+                    TestRun.id.in_(db.query(PerfaraDemoSnapshot.test_run_id))
+                )
+            else:
+                latest_q = latest_q.filter(_match_uid_to_testrun_sql(uid))
+        latest = latest_q.order_by(
+            ParsedInfo.created_at.desc(), ParsedInfo.id.desc()
+        ).first()
         out.append(
             ProjectWithInfoOut(
                 project=ProjectOut.from_model(p),

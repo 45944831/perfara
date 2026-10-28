@@ -83,8 +83,8 @@
 3. **启动（二选一）**
 
 ```bash
-# 默认 0.0.0.0:8000
-uvicorn backend.app:app --host 0.0.0.0 --port 8000
+# 默认 127.0.0.1:8000（仅本机）
+uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
 或使用项目根目录 **`serve.py`**（适合 Linux 一键启动，路径与数据库按项目根解析）：
@@ -98,13 +98,14 @@ python serve.py
 ```bash
 # Linux / macOS
 export WEBPERF_PORT=8099
-export WEBPERF_HOST=0.0.0.0
+# 服务无鉴权，默认只听本机；确需局域网访问再显式打开下一行
+# export WEBPERF_HOST=0.0.0.0
 python3 serve.py
 ```
 
 | 环境变量 | 说明 |
 |----------|------|
-| `WEBPERF_HOST` | 监听地址，默认 `0.0.0.0` |
+| `WEBPERF_HOST` | 监听地址，默认 `127.0.0.1`（服务无鉴权，仅本机；局域网需显式设为 `0.0.0.0`） |
 | `WEBPERF_PORT` | 监听端口，默认 `8000` |
 | `WEB_PERF_DB` | SQLite 数据库文件绝对路径；未设置时默认为 `<项目根>/data/webperf.db` |
 
@@ -220,7 +221,8 @@ Point the client at your own **Data / Web** endpoint after deployment. Browse, m
 2. **Run (pick one)**
 
 ```bash
-uvicorn backend.app:app --host 0.0.0.0 --port 8000
+# local only by default
+uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
 Or use **`serve.py`** at the repo root:
@@ -232,13 +234,14 @@ python serve.py
 
 ```bash
 export WEBPERF_PORT=8099
-export WEBPERF_HOST=0.0.0.0
+# 服务无鉴权，默认只听本机；确需局域网访问再显式打开下一行
+# export WEBPERF_HOST=0.0.0.0
 python3 serve.py
 ```
 
 | Variable | Purpose |
 |----------|---------|
-| `WEBPERF_HOST` | Bind address (default `0.0.0.0`) |
+| `WEBPERF_HOST` | Bind address (default `127.0.0.1`; the server has no auth, use `0.0.0.0` only for trusted LANs) |
 | `WEBPERF_PORT` | Port (default `8000`) |
 | `WEB_PERF_DB` | Absolute path to SQLite file; default `<repo>/data/webperf.db` |
 

@@ -12,7 +12,9 @@
   W10      补丁后的 SPA 资源可被静态服务（含注入标记）
 """
 import json
+import logging
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -229,4 +231,25 @@ print(f"RESULT: {PASS} passed, {FAIL} failed")
 if FAILED:
     print("FAILED:", ", ".join(FAILED))
 server.should_exit = True
+th.join(timeout=8)
+logging.shutdown()
+# 应用启动时给 root logger 挂了 RotatingFileHandler；显式 close + 摘除，
+# 否则 Windows 上 logs/app.log 仍被占用，临时目录会残留。
+for _h in list(logging.getLogger().handlers):
+    try:
+        _h.flush()
+        _h.close()
+    except Exception:
+        pass
+    logging.getLogger().removeHandler(_h)
+try:
+    from backend import database as _db
+    _db.engine.dispose()
+except Exception:
+    pass
+for _ in range(6):
+    shutil.rmtree(TMP, ignore_errors=True)
+    if not os.path.exists(TMP):
+        break
+    time.sleep(0.3)
 sys.exit(1 if FAIL else 0)

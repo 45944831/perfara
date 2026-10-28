@@ -17,6 +17,9 @@ const path = require('path');
 
 // reports-data-js 顶层 require('electron')，这里注入最小 stub 以便离线调用其纯函数。
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'perfara-e2e-'));
+function cleanupTmp() {
+  try { fs.rmSync(TMP_DIR, { recursive: true, force: true }); } catch (_) {}
+}
 const _origLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === 'electron') {
@@ -282,5 +285,6 @@ function stopStress(pids) {
 
   console.log(`\n===== 结果: ${pass} PASS / ${fail} FAIL =====`);
   if (fails.length) console.log('失败项:\n  - ' + fails.join('\n  - '));
+  cleanupTmp();
   process.exit(fail ? 1 : 0);
-})().catch(e => { console.error('致命错误:', e); process.exit(2); });
+})().catch(e => { console.error('致命错误:', e); cleanupTmp(); process.exit(2); });

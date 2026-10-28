@@ -45,7 +45,7 @@ class TestRun(Base):
 
     raw_json = Column(Text, nullable=True)  # store the original payload
     summary = Column(Text, nullable=True)  # compact metrics for list view
-    share_md5 = Column(String(32), index=True, nullable=True)  # public link token (md5)
+    share_md5 = Column(String(32), index=True, nullable=True)  # public link token (random, legacy name)
 
     project = relationship("Project", back_populates="test_runs")
     metric_blobs = relationship("MetricBlob", back_populates="test_run")
@@ -65,6 +65,8 @@ class MetricBlob(Base):
 class ProjectAlias(Base):
     __tablename__ = "project_aliases"
     id = Column(Integer, primary_key=True, index=True)
+    # 别名按 UID 隔离：为空的历史行由迁移按同包名测试的 owner 回填，回填不到则不再展示。
+    owner_uid = Column(String(128), index=True, nullable=True)
     package_name = Column(String, index=True, nullable=True)
     app_name = Column(String, index=True, nullable=True)
     display_name = Column(String, index=True, nullable=True)

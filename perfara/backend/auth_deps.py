@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from fastapi import HTTPException, Request
 
 # 万能查看（仅此 UID，大小写不敏感）：可列出/查看/管理任意用户的数据；上传仍以请求中的 uid 为 owner。
-_SUPER_UID_CANONICAL = "wonderxu"
+# 可用 PERFARA_SUPER_UID 覆盖；留空表示禁用万能 UID（此时所有请求都按普通用户处理）。
+_SUPER_UID_CANONICAL = (os.environ.get("PERFARA_SUPER_UID", "wonderxu") or "").strip().lower()
 
 
 def is_super_uid(uid: Optional[str]) -> bool:
-    return bool(uid and str(uid).strip().lower() == _SUPER_UID_CANONICAL)
+    if not _SUPER_UID_CANONICAL or not uid:
+        return False
+    return str(uid).strip().lower() == _SUPER_UID_CANONICAL
 
 
 # 演示账号（非万能、非全库）：仅可读 perfara_demo_snapshot 中登记的 test_run；禁止上传/改删；快照表不随业务自动追加新行。

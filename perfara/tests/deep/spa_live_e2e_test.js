@@ -196,7 +196,7 @@ async function main() {
         } else {
           const dd = await api.json();
           const md5 = dd && dd.test && dd.test.md5;
-          check('详情接口回传 md5 令牌', !!md5 && String(md5).length === 32, md5);
+          check('详情接口回传随机分享令牌', !!md5 && String(md5).startsWith('t') && String(md5).length === 31, md5);
           if (md5) {
             const pub = await ctx.request.get(`${BASE}/api/public/test?testid=${md5}`);
             check('匿名 public 链接可取详情', pub.status() === 200, pub.status());

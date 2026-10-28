@@ -5,7 +5,12 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from .models import TestRun, MetricBlob, Project
-from .utils import as_text, compute_content_hash, fps_stats_excluding_loading
+from .utils import (
+    as_text,
+    compute_content_hash,
+    fps_stats_excluding_loading,
+    sanitize_non_finite,
+)
 
 
 # ─── 采集参数配置（metricConfig）─────────────────────────────────────────────
@@ -17,6 +22,9 @@ from .utils import as_text, compute_content_hash, fps_stats_excluding_loading
 # 旧数据无 metricConfig：不过滤，全部展示（向后兼容）。
 
 METRIC_GROUPS = ("fps", "cpu", "mem", "net", "gpu", "temp", "battery", "disk", "events", "proc")
+
+# 单字段上限：请求体总量由 app.py 的上传入口控制，这里只挡「一个字段撑爆一行」。
+MAX_LABEL_LEN = 1024
 
 # category → 组 → series 键匹配规则（"xxx." 结尾表示前缀匹配）
 METRIC_SERIES_MAP = {
@@ -236,6 +244,33 @@ def _validate_tag(perf_len: int, tag: Any) -> None:
         _ensure(s <= e, f"tag[{i}]", "start must be <= end")
 
 
+def canonical_payload_for_hash(
+    payload: Dict[str, Any],
+    category: str,
+    mc: Optional[Dict[str, bool]],
+) -> Dict[str, Any]:
+    """哈希与落库共用的规范化载荷：只按 metricConfig 过滤一次。
+
+    上传入口和解析器必须用同一份结果算 content_hash，否则「查重用的 A」
+    与「入库的 B」永远对不上（同一份数据会被反复写入）。
+    """
+    if not mc:
+        return payload
+    raw = json.loads(json.dumps(payload, ensure_ascii=False, allow_nan=False))
+    items = raw.get("perf")
+    if isinstance(items, list):
+        raw["perf"] = filter_perf_items_for_raw(items, category, mc)
+    raw["metricConfig"] = mc
+    return raw
+
+
+def canonical_content_hash(payload: Dict[str, Any]) -> str:
+    """校验 schema 后，按最终落库形态计算去重哈希。"""
+    category = validate_schema_and_get_category(payload)
+    mc = normalize_metric_config(payload)
+    return compute_content_hash(canonical_payload_for_hash(payload, category, mc))
+
+
 def parse_uploaded_json(
     db: Session,
     project: Project,
@@ -244,32 +279,33 @@ def parse_uploaded_json(
     owner_uid: str,
     para1: Optional[str] = None,
     para2: Optional[str] = None,
+    content_hash: Optional[str] = None,
 ) -> Tuple[TestRun, List[MetricBlob]]:
     """入库一条测试；owner_uid 为上传方 UID；para1 为可选备用字段；para2 来自上传接口，可为 None。"""
+    payload = sanitize_non_finite(payload)
     category = validate_schema_and_get_category(payload)
     perf: List[Dict[str, Any]] = payload["perf"]
     _validate_tag(len(perf), payload.get("tag"))
     started_at = parse_timestamp(perf[0].get("timestamp"))
     ended_at = parse_timestamp(perf[-1].get("timestamp"))
     label = as_text(payload.get("label")) or as_text(payload.get("scenario")) or ""
+    if len(label) > MAX_LABEL_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_schema", "field": "label",
+                    "message": f"label too long (max {MAX_LABEL_LEN} chars)"},
+        )
     device = normalize_device(payload)
 
     # 采集参数配置（旧数据无配置 → 全部展示）
     mc = normalize_metric_config(payload)
     # 落库快照：按配置剔除被移除参数的字段，使详情页/对比页的 test_raw 视图同步隐藏
-    raw_payload: Dict[str, Any] = payload
-    if mc:
-        raw_payload = json.loads(json.dumps(payload))
-        items = raw_payload.get("perf")
-        if isinstance(items, list):
-            items = filter_perf_items_for_raw(items, category, mc)
-            raw_payload["perf"] = items
-        raw_payload["metricConfig"] = mc
+    raw_payload = canonical_payload_for_hash(payload, category, mc)
 
     test_run = TestRun(
         project_id=project.id,
         category=category,
-        content_hash=compute_content_hash(raw_payload),
+        content_hash=content_hash or compute_content_hash(raw_payload),
         owner_uid=owner_uid,
         para1=para1,
         para2=para2,
@@ -277,7 +313,7 @@ def parse_uploaded_json(
         ended_at=ended_at,
         device=device,
         label=label or as_text(payload.get("file")) or "",
-        raw_json=json.dumps(raw_payload, ensure_ascii=False),
+        raw_json=json.dumps(raw_payload, ensure_ascii=False, allow_nan=False),
     )
 
     timestamps: List[Any] = []
@@ -482,8 +518,8 @@ def parse_uploaded_json(
                 summary[k] = None
 
     content = {"timestamp": timestamps, "series": series, "meta": {"category": category, "metricConfig": mc}}
-    blob = MetricBlob(test_run=test_run, content=json.dumps(content, ensure_ascii=False))
+    blob = MetricBlob(test_run=test_run, content=json.dumps(content, ensure_ascii=False, allow_nan=False))
     # 保留 null，列表页可稳定读到 fpsAvg / cpuProcAvg / memFootprintAvg 等键
-    test_run.summary = json.dumps(summary, ensure_ascii=False)
+    test_run.summary = json.dumps(summary, ensure_ascii=False, allow_nan=False)
     return test_run, [blob]
 

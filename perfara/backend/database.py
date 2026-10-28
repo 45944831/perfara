@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 import os
+import secrets
 import sqlite3
 
 from .paths import ensure_data_dir
@@ -17,6 +18,14 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+def new_share_token() -> str:
+    """公开分享令牌：120 bit 随机数，前缀 t 用于区分历史 md5(id) 令牌。
+
+    share_md5 列宽 32，因此用 token_hex(15)（30 字符）+ 't' = 31 字符。
+    """
+    return "t" + secrets.token_hex(15)
 
 
 @event.listens_for(engine, "connect")
@@ -85,24 +94,70 @@ def ensure_sqlite_migrations():
                 )
             except Exception:
                 pass
-        # backfill share_md5 for existing rows (md5(str(id)))
-        # 原写法是 `if "share_md5" in cols or True:` —— 条件恒真，导致每次启动都把
-        # 整张表读进内存再逐行跳过（`SELECT id, share_md5 FROM test_runs` 无 WHERE）。
-        # 本函数在模块导入时执行，库大了就是可感知的启动开销。
-        # 现在只在真有缺失行时才动手，且由 SQL 负责筛选。
+        # 分享令牌迁移：历史值是 md5(str(id))，任何人可离线穷举。
+        # 新令牌统一为 t + 30 位随机十六进制；只扫描没有 t 前缀的行，避免每次启动全表比对。
         try:
-            import hashlib
             cur.execute(
-                "SELECT id FROM test_runs WHERE share_md5 IS NULL OR share_md5 = ''"
+                "SELECT id FROM test_runs WHERE share_md5 IS NULL OR share_md5 = '' OR share_md5 NOT LIKE 't%'"
             )
-            missing = cur.fetchall()
-            for (rid,) in missing:
-                token = hashlib.md5(str(rid).encode("utf-8")).hexdigest()
-                cur.execute("UPDATE test_runs SET share_md5=? WHERE id=?", (token, rid))
+            legacy_tokens = cur.fetchall()
+            for (rid,) in legacy_tokens:
+                cur.execute(
+                    "UPDATE test_runs SET share_md5=? WHERE id=?",
+                    (new_share_token(), rid),
+                )
         except Exception:
             pass
         try:
             cur.execute("DROP INDEX IF EXISTS uq_project_content_hash")
+        except Exception:
+            pass
+        # 去重唯一约束按「项目 + 用户 + para2」隔离；先确认没有历史重复，
+        # 有重复时降级为应用层去重，避免 ALTER 失败导致启动中断。
+        try:
+            dup = cur.execute(
+                "SELECT 1 FROM test_runs WHERE content_hash IS NOT NULL "
+                "GROUP BY project_id, ifnull(owner_uid,''), content_hash, ifnull(para2,'') "
+                "HAVING count(*) > 1 LIMIT 1"
+            ).fetchone()
+            if not dup:
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_project_owner_content_hash "
+                    "ON test_runs (project_id, ifnull(owner_uid,''), content_hash, ifnull(para2,''))"
+                )
+        except Exception:
+            pass
+        # 项目别名加 owner_uid：历史行按同包名最早一条测试的 owner 回填。
+        try:
+            cur.execute("PRAGMA table_info(project_aliases)")
+            alias_cols = [row[1] for row in cur.fetchall()]
+            if alias_cols and "owner_uid" not in alias_cols:
+                cur.execute("ALTER TABLE project_aliases ADD COLUMN owner_uid TEXT")
+                cur.execute(
+                    """
+                    UPDATE project_aliases
+                       SET owner_uid = (
+                           SELECT tr.owner_uid
+                             FROM test_runs tr
+                             JOIN projects p ON p.id = tr.project_id
+                            WHERE tr.owner_uid IS NOT NULL AND trim(tr.owner_uid) != ''
+                              AND (
+                                  (project_aliases.package_name IS NOT NULL
+                                   AND p.package_name = project_aliases.package_name)
+                               OR (project_aliases.package_name IS NULL
+                                   AND project_aliases.app_name IS NOT NULL
+                                   AND p.app_name = project_aliases.app_name)
+                              )
+                            ORDER BY tr.id ASC
+                            LIMIT 1
+                       )
+                     WHERE owner_uid IS NULL
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS ix_project_aliases_owner_uid "
+                    "ON project_aliases (owner_uid)"
+                )
         except Exception:
             pass
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='web_users'")

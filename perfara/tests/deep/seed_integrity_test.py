@@ -54,6 +54,18 @@ def free_port():
     return p
 
 
+def kill_tree(pid: int) -> None:
+    """onefile exe 的 bootloader 与实际服务是两层，terminate() 只收掉前者。
+
+    用 taskkill /T 连子进程一起收，避免测试结束后留下监听端口的孤儿。
+    """
+    try:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 def wait_health(port, deadline):
     while time.time() < deadline:
         try:
@@ -134,7 +146,7 @@ def main():
         )
         if not wait_health(port, time.time() + 60):
             check("打包版服务启动", False, "60s 内未就绪")
-            proc.kill()
+            kill_tree(proc.pid)
             return 1
         db = os.path.join(home, "data", "webperf.db")
         label = f"{os.path.basename(exe)} 首次启动生成的库"
@@ -271,11 +283,21 @@ def main():
             except Exception as e:
                 check("离线复现详情序列化", False, f"{type(e).__name__}: {e}")
             finally:
-                shutil.rmtree(tmp, ignore_errors=True)
+                # SQLAlchemy 的连接池会一直持有 t.db 的句柄，不 dispose 则 Windows 删不掉。
+                try:
+                    from backend.database import engine as _engine
+                    _engine.dispose()
+                except Exception:
+                    pass
+                for _ in range(6):
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    if not os.path.exists(tmp):
+                        break
+                    time.sleep(0.3)
     finally:
         if proc is not None:
+            kill_tree(proc.pid)
             try:
-                proc.terminate()
                 proc.wait(timeout=10)
             except Exception:
                 proc.kill()

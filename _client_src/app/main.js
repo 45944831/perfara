@@ -1308,7 +1308,7 @@ function openLibraryWindow() {
       preload: path.join(__dirname, 'preload-library.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
   try { libraryWin.setMenuBarVisibility(false); } catch (_) {}

@@ -1252,8 +1252,9 @@ function renderGrid() {
     card.className = 'card' + (state.selected.has(rep.id) ? ' is-selected' : '');
     card.dataset.id = rep.id;
 
-    const plat = (rep.platform || '').toLowerCase();
-    const platLabel = plat === 'android' ? 'Android' : plat === 'ios' ? 'iOS' : plat === 'pc' ? 'PC' : (rep.platform || '—');
+    const rawPlat = (rep.platform || '').toLowerCase();
+    const plat = (rawPlat === 'android' || rawPlat === 'ios' || rawPlat === 'pc') ? rawPlat : '';
+    const platLabel = plat === 'android' ? 'Android' : plat === 'ios' ? 'iOS' : plat === 'pc' ? 'PC' : escapeHtml(rep.platform || '—');
 
     // 本次采集被移除的参数组（旧报告无此字段）
     const offGroups = (rep.metricConfig && typeof rep.metricConfig === 'object')
@@ -1267,7 +1268,7 @@ function renderGrid() {
       '<div class="card-head">',
       '  <input type="checkbox" class="card-check"' + (state.selected.has(rep.id) ? ' checked' : '') + ' />',
       '  <div class="card-title">',
-      '    <div class="card-time">' + (rep.createdAtLocal || rep.createdAt || '') + '</div>',
+      '    <div class="card-time">' + escapeHtml(rep.createdAtLocal || rep.createdAt || '') + '</div>',
       '    <div class="card-sub">',
       '      <span class="tag tag--' + plat + '">' + platLabel + '</span>',
       '      ' + escapeHtml(rep.deviceName || '未知设备') + ' · ' + escapeHtml(shortApp(rep.app)),

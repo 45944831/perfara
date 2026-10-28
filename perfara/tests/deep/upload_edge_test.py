@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -255,4 +256,29 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    try:
+        server.should_exit = True
+        th.join(timeout=8)
+    except Exception:
+        pass
+    try:
+        database.engine.dispose()
+    except Exception:
+        pass
+    # 应用启动时给 root logger 挂了 RotatingFileHandler；不显式关掉，
+    # Windows 上 logs/app.log 的句柄会让临时目录删不干净。
+    import logging as _logging
+    for _h in list(_logging.getLogger().handlers):
+        try:
+            _h.flush()
+            _h.close()
+        except Exception:
+            pass
+        _logging.getLogger().removeHandler(_h)
+    for _ in range(6):
+        shutil.rmtree(TMP, ignore_errors=True)
+        if not os.path.exists(TMP):
+            break
+        time.sleep(0.3)
+    sys.exit(code)

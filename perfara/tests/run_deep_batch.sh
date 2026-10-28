@@ -57,6 +57,8 @@ run_node "pc_launch_injection"  ../deep/pc_launch_injection_test.js
 # 种子库体检：默认模式会真跑 exe（慢），批量里只查仓库内的种子库；
 # exe 内嵌种子库由 tools/scan_seed_db.py 作为发布门禁单独把关。
 run_py   "seed_integrity"       perfara/tests/deep/seed_integrity_test.py --src
+# XSS 探测：上传恶意字段 → 看板/单文件报告渲染，网络可达路径必须安全（本地报告库只记 RISK）
+run_node "xss_deep"             ../deep/xss_deep_test.js
 # 接口深度用例与看板实时端到端：需要起临时服务，放最后避免相互占端口
 run_py   "api_deep"             perfara/tests/deep/api_deep_test.py
 run_node "spa_live_e2e"         ../deep/spa_live_e2e_test.js
