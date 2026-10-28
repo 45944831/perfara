@@ -270,6 +270,49 @@ CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存
 
 ---
 
+## 本次新增（v2026.10.28）· 深度测试暴露的 12 项缺陷修复（复核时追加 D17 / D18）
+
+一轮全面深度测试（报告：`docs/深度测试报告-20261028.md`）新增 5 套测试资产 + 1 个取证脚本，
+共 336+ 项断言。下面是已修项与修法，每项都由新增用例回归到 0 FAIL。
+
+| 编号 | 症状 | 修在哪 | 修法 |
+| --- | --- | --- | --- |
+| **D2 严重** | 便携包首启后「点详情 500 + 列表均值整列为空」（种子库 44 处 JSON 被脱敏改坏） | `tools/make_seed_db.py:157,169` | JSON 列改为**按叶子节点脱敏**（解析→只替换字符串→重新序列化）；序列号正则补「必须同时含大写与数字」的前瞻 |
+| **D1 高** | 未鉴权上传畸形 payload → 500，并把 SQL 语句、绑定参数、他人 uid 原样回显 | `perfara/backend/parsers.py:169`、`app.py:269,291` | `normalize_device` 走 `as_text` 兜底；parse_error / db_error 分支只回 `code + 人话`，堆栈改为写日志 |
+| **D3 中** | 看板首屏向 `fonts.googleapis.com` 发请求，与「100% 本地」矛盾 | `perfara/frontend/dist/index.html` | 删掉 3 个外链 `<link>`；CSS 里 `--font-sans` 本就带完整系统字体栈，直接降级，不留白 |
+| **D10 中** | 种子库与其数据源被 `.gitignore` 排除，发布不可复现 | `.gitignore:82` | 为 `perfara/_seed/*.db` 开负向规则，脱敏种子库随源码入库（已由两道门禁验 0 命中） |
+| **D13 中** | `run_deep_batch.sh` 打印的退出码全是假的（取的是 `tail` 的状态），deep 套件「全绿」不可信 | `perfara/tests/run_deep_batch.sh` | 开 `pipefail`、用 `rc` 变量接真实退出码，末尾汇总表 + 非零收尾；顺带把新增 5 套并入批量（现为 10 套） |
+| **D9 中低** | 响应头回显 `Server: uvicorn` | `perfara/launcher.py:169` | `Config(server_header=False)`；`api_deep_test.py` / `run_api_full.sh` 的临时服务同步关掉，测的才是真实启动形态 |
+| **D5 中低** | SPA 兜底的前缀守卫可用同层目录名绕过（`dist_evil/`） | `perfara/backend/app.py:1057-1061` | 先 `abspath`，再按 `== dist_root` 或 `startswith(dist_root + os.sep)` 判定 |
+| **D6 / D7** | `project_id=0` / `test_id=0` 被当「未传」，前者返回全量、后者触发全库重解析 | `perfara/backend/app.py:437,831` | 判据从真值判断改为 `is not None` |
+| **D8** | `q=%` 被当 LIKE 通配符，一次请求把全部项目捞走 | `perfara/backend/app.py:346-352` | 转义 `\ % _` 三字符，`ilike(..., escape="\\")` |
+| **D4 低** | 设备侧命令拼接：包名/组件名里的单引号能断掉引号（仅设备侧，PC 侧走 `execFile` 不过 shell） | `_client_src/app/src/adb.js:77`、`main.js:79-90` | 新增 `shellArg()`，所有 `adb shell` 拼接点统一走 POSIX 单引号转义（组件名此前完全没转义）；主进程 IPC 入口加设备序列号 / 包名白名单 |
+| **D16 低中** | PC 采集「启动目标程序」经 `cmd /c start`，文件名含 `^&` 能在本机多执行一条命令 | `_client_src/app/src/pc-collector.js:143` | 不再绕 cmd，直接 `spawn(exePath, [], {detached:true})`；Node 自己转义只处理空格，`& | ^` 都退回字面字符 |
+| 附加 | 种子库损坏无人拦截 | `tools/scan_seed_db.py:92,120` | 发布门禁补两个判据：5 个 JSON 列必须解析得动 + 逐条详情接口不得 500 |
+| **D17 高** | 脱敏「全绿」的种子库二进制里仍能 grep 出真机机型、品牌与真实包名 | `tools/make_seed_db.py:292,360` | 根因是 SQLite 的 free page：删过/改过的页只被标记为空闲，内容原地留着，`SELECT` 查不到但文件里还在。构建末尾加 `VACUUM` 重建成干净文件，并给 `make_seed_db` / `scan_seed_db` / `seed_integrity_test` 各加一道**整文件字节扫描**，让这类残留变成发布阻断项 |
+| **D18 高** | 「脱敏种子库已入库」其实只入库了一个 131 B 的 Git LFS 指针：克隆下来是指针文本，打包会把它当数据库塞进 exe；真库反会被推上 LFS 存储 | `perfara/.gitattributes` | 该文件由 UGit 自动生成，`*.db` / `*.pyc` 一律 `filter=lfs`（仓库根 `.gitattributes` 2026-10-21 已声明移除了 LFS 规则，漏了这个子目录里的）。改为 `*.db binary`：种子库不到 400 KB，普通 blob 克隆即得、也才谈得上被门禁审计 |
+
+**回归结果**：`bash perfara/tests/run_deep_batch.sh` 10 套全绿（退出码已可信），共 352 项断言
+0 FAIL，其中 `api_deep` 148/148、看板 SPA 端到端 35/35（修复前 25 PASS / 9 FAIL）、
+`seed_integrity`（仓库内种子库）7/7。
+重打后的两个 exe 各过一遍发布门禁：`SQL 0 命中 / 字节层 0 命中 / 52 个 JSON 全合法 /
+13 条详情 × 2 个 uid 无 500`，退出码均 0；`seed_integrity` 真跑 exe 产物 9/9（修复前 5/3）。
+既有离线批量 16 套同样全绿，未引入回归。
+
+**本轮未改的 4 项**：
+D11 —— 那款真机测试游戏的名字仍留在 git 历史的 4 个 blob 里（HEAD 工作树已干净，
+`release/` 与 `.workbuddy-ai/` 都不入库），要不要重写历史属产品决策；
+D12 —— 「无激活码」的文案为真，但 `activation.js` 里 `activated:true` / `para2:'perefara'`
+两个死垫片仍被 `main.js` 引用约 9 处，删除要与激活链路一起复核；
+D14 —— 绕过启动器直接用 `Popen.terminate()` 收 `PerfaraServer.exe` 会留孤儿监听
+（onefile 的 bootloader 与被拉起的子进程是两层），现有 `launcher_port_test.py` 只覆盖走启动器的路径；
+D15 —— 项目自带的 e2e 脚本不清理 `%TEMP%` 下的 `perfara-e2e-*`，长跑 CI 会堆磁盘。
+
+另外：重打后的 `Perfara.exe` / `PerfaraServer.exe` 因体积不入库，
+需按下面的构建命令重出发布 zip，改动才会带到用户机器上。
+
+---
+
 ## 下载与运行
 
 前往 [**Releases**](https://github.com/45944831/perfara/releases) 下载最新便携版：
@@ -297,6 +340,24 @@ Perfara_Portable_20261027.zip   （约 201MB，对应 v2026.10.27）
 >
 > 两道都退出码 0 才可发。第二道是 2026-10-27 补的——它专门覆盖「运行期产物被当只读资源
 > 编进二进制」这一类泄漏，`scan_package.py` 扫不到。
+>
+> **第二道在 2026-10-28 扩充为四个判据**，因为它当初只回答「有没有泄漏」，而 v2026.10.27
+> 的种子库虽然 0 命中，却有 44 处 JSON 被脱敏正则改坏（新用户第一次点看板详情就是 500、
+> 列表均值整列为空）：
+>
+> | 判据 | 查什么 | 不过则 |
+> | --- | --- | --- |
+> | 敏感串 | 逐列扫 6 条真机规则 | 退出码 1 |
+> | **敏感串（字节层）** | 把库文件当**二进制**整体扫一遍：SQLite 删过/改过的页只是被标成 free page，内容原地还在，`SELECT` 查不到但 `grep` 查得到 | 退出码 1 |
+> | JSON 完整性 | `metric_blobs.content` / `test_runs.summary` / `test_runs.raw_json` / `parsed_info.summary_json` / `metric_configs.config_json` 必须 `json.loads` 得动 | 退出码 1 |
+> | 详情可用性 | 逐条 `GET /api/tests/{id}`（演示账号 + 超管各一遍）不得 500 | 退出码 1 |
+>
+> 根因与修法见 `docs/深度测试报告-20261028.md` 的 D2：脱敏脚本里一条「14 位以上大写+数字」
+> 的序列号正则会把 JSON 里的浮点数当序列号替换，把 `"fpsAvg": 24.218…` 改成 `"fpsAvg": DEMO-SERIAL`。
+> 现在 `make_seed_db.py` **对 JSON 列按叶子节点脱敏**（解析→逐字符串替换→重新序列化），
+> 数字 / 布尔 / 结构一律原样保留；序列号规则也补上了「必须含数字且全大写」的前瞻。
+> 字节层判据（D17）加进来当天就抓到了一次：SQL 三查全绿的种子库里，free page 还留着
+> 真机机型、品牌与真实包名——`make_seed_db.py` 末尾补 `VACUUM` 把库重建成干净文件后归零。
 
 1. 解压到任意目录（路径不要含特殊字符）
 2. 双击 **`Perfara.exe`**
@@ -344,10 +405,13 @@ Perfara_Portable_20261027.zip   （约 201MB，对应 v2026.10.27）
 | `tools/optimize_report_readability.py` | 报告可读性样式优化 |
 | `tools/launcher_portable.py` | 便携版启动器源码：起看板服务 → 起采集客户端 → 客户端退出后**连根**收掉服务（含遗留进程清理、Job Object 强杀兜底、端口释放确认） |
 | `perfara/perfara_server.spec` | 打包便携包里的 `server/PerfaraServer.exe`（后台服务，无控制台） |
+| `perfara/frontend/patch-spa-metric-config.js` | 后处理 SPA 产物：注入指标配置（`dist/` 不入库，仓库里没有 Vue 源码，只能这样调） |
+| `perfara/frontend/patch-spa-offline-fonts.js` | 后处理 SPA 产物：剥掉 `index.html` 的外链字体，让首屏真的不联网；`--check` 可当发布前检查 |
 
 改了采集器源码后**必须**重跑 `tools/build_app.py` 再打包，否则发布包里的 `app.asar` 会落后于源码。
 
 改了 `backend/` 或 `frontend/dist` 后**必须**重打 `perfara/perfara_server.spec`，否则便携包里的服务会落后于源码（历史上曾因此出现 `.js` 被当 `text/plain` 返回、看板整页空白）。
+`dist/` 是构建产物、不入库，所以对它的任何修复都得落成脚本（见上表两个 patch-*），否则前端一重建就回去了。
 
 ```bash
 # 重打便携版启动器（约 20s，产物 build/portable-dist/Perfara.exe）
@@ -376,6 +440,10 @@ node perfara/tests/realdevice/preflight_breaker_test.js
 # 算法与报告数据（jank / 去重 / 分组 / 对比 / 序列化 / 渲染）
 node perfara/tests/realdevice/jank_algo_test.js
 node perfara/tests/realdevice/lazy_module_test.js
+
+# 深度套件（10 套：启动器进程/端口、加载算法、报告边界、畸形上传、对比泳道、
+# PC 启动注入、种子库完整性、接口深度、看板 SPA 端到端）
+bash perfara/tests/run_deep_batch.sh      # 末尾按真实退出码汇总，任一套红即 exit 1
 ```
 
 ## 常见问题
@@ -405,6 +473,7 @@ A：不会离开本机。看板服务只监听 `127.0.0.1`，数据存在本地 
 
 | 版本 | 内容 |
 | --- | --- |
+| `20261028` | **深度测试后的修复轮**：种子库脱敏改坏 44 处 JSON 导致「点详情 500 + 列表无均值」（`make_seed_db.py` 改为按 JSON 叶子节点脱敏，正则补前瞻）；未鉴权上传触发 500 并回显 SQL/绑定参数/他人 uid（`normalize_device` 兜底 + 错误分支只回人话）；看板首屏不再请求 Google Fonts；`.gitignore` 放行 `_seed/*.db`，发布链可复现；`run_deep_batch.sh` 退出码取的是 `tail` 的假状态，改为真实退出码汇总；`Server: uvicorn` 响应头关闭；SPA 兜底前缀守卫改 `abspath`+`os.sep`（同层 `dist_evil/` 不再可绕）；`project_id=0` / `test_id=0` 被当未传、`q=%` 被当 LIKE 通配符，三处一并修；采集侧 adb 设备命令统一 `shellArg()` 转义并在 IPC 入口加白名单；PC 采集「启动目标程序」不再经 `cmd start`（文件名含 `^&` 曾在本机多执行一条命令）；`scan_seed_db.py` 增补「JSON 可解析 + 详情不打 500」两个发布判据。新增 5 套测试资产 + 1 个取证脚本，deep 批量扩为 10 套全绿。**复核时追加两项**：D17——脱敏三条自检全绿的种子库，把文件当二进制仍能 grep 出真机机型 / 品牌 / 真实包名（SQLite 的 free page 只标记不清零），构建末尾补 `VACUUM`（552,960→389,120 B），并给 `make_seed_db.py` / `scan_seed_db.py` / `seed_integrity_test.py` 各加一道整文件字节扫描，发布门禁由三判据扩为四判据；D18——`perfara/.gitattributes`（UGit 生成）把 `*.db` / `*.pyc` 全交给 Git LFS，所以「已入库的种子库」其实是个 131 B 指针：克隆拿不到数据、打包会把指针当库塞进 exe，而 `git push` 的 pre-push 钩子会把真库上传到 LFS 存储（叠加 D17 等于把带残留的库发到公网）；仓库根 2026-10-21 已声明停用 LFS，漏了这个子目录。改为 `*.db binary`，`git lfs ls-files` 现为 0 条 |
 | `20261027` | **修复种子数据库泄漏（严重）**：`perfara_server.spec` / `perfara.spec` 原先把 `data/webperf.db`（开发机真实数据）当种子库编进 exe，首次启动复制给用户 —— 含真实设备序列号、真机机型与品牌、真实应用包名与真实用户 uid；zip 层审计（剔 `data/` + 扫文本条目）看不见，因为它在 PyInstaller 归档里。改为打包脱敏后的 `_seed/webperf.db`（`tools/make_seed_db.py` 生成，spec 缺文件直接中止），并新增 `tools/scan_seed_db.py`——真跑 exe 取首次生成的库再扫，补上审计盲区。**体积**：剔除 `devimages/DeveloperDiskImage.dmg`（8.46MB，全仓 0 引用、`ios image auto` 联网下载）与 `tests/`（0.93MB），210.5→201.6MB。**启动**：修 `database.py` 里 `if "share_md5" in cols or True` 恒真死条件导致每次启动全表扫描；列表接口按需列裁剪，不再白读 `raw_json`。顺带清理演示快照指向已删除记录的 5 条 |
 | `20261023` | **修复采集通道断开时「假活」**：所有采集调用全失败时旧逻辑用 0 兜底照常产样本，`_lastDataTs` 被刷新导致无数据熔断永不触发（界面「采集中」、曲线一条零线）；改为全失败不产样本 + 连续 3 轮立即熔断（实测 2.2s）。新增 `probeChannel()` 探活，区分「应用被杀」与「连接断开」，不再把 USB 掉线误诊为应用崩溃。打包卫生：asar 剔除 `reports/history`、`reports/shots`；示例数据/用例/文档中的机型·ROM·应用标识全量脱敏 |
 | `20261023` | **修复卡顿分级口径**：framestats 路径把 `FrameCompleted−Vsync`（呈现延迟，60Hz 三缓冲 ≈33.6ms、120Hz ≈7.6ms）当帧间隔，TinyJank 阈值被每一帧越过 → TinyJank ≈ 总帧数；改为按相邻 `Vsync` 差值计算，基准与 timestats 路径统一为 `max(vsync, 平均帧间隔)×1.5`。**修复 iOS / PC 假 0**：无帧数据时写 `null` 而非 `0`（iOS 旧逻辑还会丢掉整条样本，连 CPU/内存一起丢）；PC 侧 `fpsSource` 保留供提权提示。测试基建：批量脚本退出码改为取被测进程真实状态（原来取的是 `tail` 的，恒为 0）；用例默认包名从占位符改为 `com.android.chrome` |
