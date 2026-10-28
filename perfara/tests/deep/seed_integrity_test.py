@@ -197,6 +197,15 @@ def main():
             con.close()
             check("敏感规则 0 命中", not hits,
                   f"{len(hits)} 处" + (f" 例:{hits[0]}" if hits else ""))
+
+            # ---- 2c. 字节层：删/改过的 free page 里也可能留着旧值 ----
+            #      SQL 全绿但二进制能 grep 出来，就是 2026-10-28 那次的情形。
+            raw = open(db, "rb").read().decode("utf-8", errors="replace")
+            bhits = [(label, rx.search(raw).group(0)[:40])
+                     for label, rx in pats if rx.search(raw)]
+            check("敏感规则字节层 0 命中（含 free page）", not bhits,
+                  f"{len(bhits)} 处" + (f" 例:{bhits[0]}" if bhits else "")
+                  + f"｜文件 {len(raw)} B")
         except Exception as e:
             check("敏感规则复扫", False, f"{type(e).__name__}: {e}")
 
