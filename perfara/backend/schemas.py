@@ -103,13 +103,26 @@ class TestRunOut(BaseModel):
         return cls(**base)
 
 
+def _loads_dict_or_none(raw: Any) -> Optional[dict]:
+    """容错解析：脏数据 / 被截断的 JSON 只降级为空，不把整个请求打成 500。"""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        val = json.loads(raw)
+    except Exception:
+        return None
+    return val if isinstance(val, dict) else None
+
+
 class MetricBlobOut(BaseModel):
     id: int
     content: Dict[str, Any]
 
     @classmethod
     def from_orm_with_json(cls, blob: MetricBlob):
-        return cls(id=blob.id, content=json.loads(blob.content))
+        # content 是自由文本列，历史脏数据或打包脱敏改坏的 JSON 都可能落在这里；
+        # 此前直接 json.loads，一条坏 blob 就让详情页整页 500。
+        return cls(id=blob.id, content=_loads_dict_or_none(blob.content) or {})
 
 
 class TestRunDetailOut(BaseModel):
@@ -126,7 +139,7 @@ class TestRunDetailOut(BaseModel):
             "project": ProjectOut.from_model(test.project),
             "test": TestRunOut.from_model(test),
             "blobs": [MetricBlobOut.from_orm_with_json(b) for b in blobs],
-            "test_raw": json.loads(test.raw_json) if test.raw_json else None,
+            "test_raw": _loads_dict_or_none(test.raw_json),
         }
         if HAS_V2:
             return cls.model_validate(base)

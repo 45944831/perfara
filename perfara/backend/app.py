@@ -260,9 +260,13 @@ async def upload_json(
     except HTTPException:
         raise
     except Exception as e:
+        # /api/upload 无鉴权，响应体会落到任意调用方手里：只回字段级结论，
+        # 异常类型与信息进日志（此前会把 "AttributeError: 'int' object has no attribute 'get'"
+        # 这类内部细节原样返回）。
+        logging.getLogger("api").warning("upload parse failed: %s: %s", type(e).__name__, e)
         raise HTTPException(
             status_code=400,
-            detail={"code": "parse_error", "message": f"{type(e).__name__}: {e}"},
+            detail={"code": "parse_error", "message": "payload 结构不符合约定，请检查 device / perf 字段"},
         )
     db.add(test_run)
     for m in metrics:
@@ -281,9 +285,10 @@ async def upload_json(
     except Exception as e:
         db.rollback()
         logging.getLogger("api").exception("db commit failed: %s", e)
+        # 异常里带着 INSERT 语句、列序与绑定值（含他人 owner_uid），只进日志。
         raise HTTPException(
             status_code=500,
-            detail={"code": "db_error", "message": f"{type(e).__name__}: {e}"},
+            detail={"code": "db_error", "message": "服务写入失败，请稍后重试"},
         )
     # snapshot parsed info
     try:
@@ -338,11 +343,13 @@ def list_projects(
             return []
         query = db.query(Project).filter(Project.id.in_(pids))
     if q:
-        like = f"%{q}%"
+        # q 里的 % / _ 是 LIKE 通配符，不转义的话 q="%" 会命中全部项目。
+        escaped = str(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
         query = query.filter(
-            (Project.display_name.ilike(like))
-            | (Project.package_name.ilike(like))
-            | (Project.app_name.ilike(like))
+            (Project.display_name.ilike(like, escape="\\"))
+            | (Project.package_name.ilike(like, escape="\\"))
+            | (Project.app_name.ilike(like, escape="\\"))
         )
     projects = query.order_by(Project.updated_at.desc()).all()
     items = [ProjectOut.from_model(p) for p in projects]
@@ -427,7 +434,7 @@ def list_tests(
     uid: str = Depends(require_uid),
 ):
     query = _filter_test_runs_by_uid(db.query(TestRun), db, uid)
-    if project_id:
+    if project_id is not None:
         query = query.filter(TestRun.project_id == project_id)
     # 仅在前端传入日期时才筛选；不传则列出该 UID 下全部记录（避免默认「近一年」把更早数据筛没）
     df = _parse_query_date_day(date_from)
@@ -821,7 +828,9 @@ def admin_reparse(
     if is_demo_perfara_uid(uid):
         raise HTTPException(status_code=403, detail="演示账号不可使用管理重解析")
     targets = []
-    if test_id:
+    if test_id is not None:
+        # 用 `is not None`：`if test_id:` 会把 0 当成「未传」，
+        # 于是 reparse?test_id=0 悄悄变成一次全量重解析。
         q = db.query(TestRun).filter(TestRun.id == test_id)
         if not is_super_uid(uid):
             q = q.filter(_match_uid_to_testrun_sql(uid))
@@ -1045,8 +1054,12 @@ def spa_fallback(full_path: str):
         raise HTTPException(status_code=404, detail="Not Found")
     # Serve real file if exists (e.g. favicon.ico)
     try:
-        cand = os.path.abspath(os.path.join(FRONTEND_DIST, full_path))
-        if cand.startswith(FRONTEND_DIST) and os.path.isfile(cand):
+        dist_root = os.path.abspath(FRONTEND_DIST)
+        cand = os.path.abspath(os.path.join(dist_root, full_path))
+        # 必须落在 dist 目录**内**：startswith(dist) 会把同层的 dist_backup/、dist-old/
+        # 也算进来，那些非发布目录里的文件会被当静态资源发出去。
+        in_dist = cand == dist_root or cand.startswith(dist_root + os.sep)
+        if in_dist and os.path.isfile(cand):
             return FileResponse(cand)
     except Exception:
         pass

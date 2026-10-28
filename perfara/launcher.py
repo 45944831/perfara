@@ -165,6 +165,8 @@ def main() -> int:
         lifespan="off",
         log_config=None,  # 沿用 backend 里已配置好的文件 + 控制台日志
         access_log=False,
+        # 不回显 `server: uvicorn`：服务只监听回环，但版本号属于无谓的指纹信息。
+        server_header=False,
         workers=1,
     )
     server = uvicorn.Server(config)

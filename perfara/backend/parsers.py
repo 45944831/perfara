@@ -169,7 +169,9 @@ def parse_timestamp(value: Any) -> datetime:
 def normalize_device(payload: Dict[str, Any]) -> str:
     device = payload.get("device") or {}
     if isinstance(device, dict):
-        return device.get("name") or ""
+        # device.name 同样来自开放入口，可能是 dict/list；直接入库会撞上
+        # "Error binding parameter: type 'list' is not supported"，让上传以 500 收场。
+        return as_text(device.get("name")) or ""
     if isinstance(device, str):
         return device
     return ""
