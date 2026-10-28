@@ -59,6 +59,16 @@ function adbNoDevice(args) {
     execFile(ADB_BIN, args, { timeout: 20000 }, (e, so) => resolve({ ok: !e, out: String(so || '').trim() }));
   });
 }
+/** 等设备回到在线态：无线 adb 在熄屏/休眠后可能短暂 offline */
+async function waitOnline(timeoutMs = 20000) {
+  const t = Date.now();
+  while (Date.now() - t < timeoutMs) {
+    const r = await adb(['echo', '1']);
+    if (r.ok && r.out === '1') return true;
+    await sleep(1000);
+  }
+  return false;
+}
 async function wakefulness() {
   const r = await adb(['dumpsys power | grep -m1 mWakefulness']);
   const m = r.out.match(/mWakefulness=(\w+)/);
@@ -148,6 +158,9 @@ async function wakeAndUnlock() {
   //   采集用到的方法整体替换成「立即 reject」，等价于设备端每条命令都失败
   //   （USB 松动 / adb 无响应 / 设备离线时的真实表现）。
   console.log('[D] 采集通道失效 → 熔断（故障注入）');
+  // C 段熄屏后无线 adb 可能短暂 offline，先等设备回到在线态再起采集
+  await wakeAndUnlock();
+  if (!(await waitOnline())) console.log('  警告：设备 20s 内未恢复在线');
   const CHANNEL_FNS = ['getPid', 'probeChannel', 'getCpuStats', 'getCpuCoreStats', 'getMemInfo', 'getFps',
     'getNetStats', 'getBatteryInfo', 'getThermalInfo', 'getGpuUsage'];
   const orig = {};
@@ -158,7 +171,11 @@ async function wakeAndUnlock() {
   c2.on('data', (d) => s2.push(d));
   c2.on('stopped', (info) => { if (!stopped) stopped = info; });
   c2.on('error', (e) => { if (!errMsg) errMsg = e.message; });
-  try { await c2.start(); } catch (e) { console.log('  start 失败:', e.message); }
+  try { await c2.start(); } catch (e) {
+    console.log('  start 失败（等在线后重试一次）:', e.message);
+    await waitOnline();
+    try { await c2.start(); } catch (e2) { console.log('  start 再次失败:', e2.message); }
+  }
   await sleep(4000);
   const beforeKill = s2.length;
   console.log(`  正常采集 ${beforeKill} 条后注入通道故障…`);

@@ -142,6 +142,18 @@ function parseFs(line) {
   const parsed = A.parseFramestats(dump);
   const realFrames = parsed.frames;
   console.log(`   解析到 ${realFrames.length} 帧（按表头取列=${parsed.sawHeader}，列数=${parsed.iCompleted + 1}）`);
+
+  // SurfaceView/Unity 类游戏的渲染不经过 HWUI：滑动后 gfxinfo 仍是 0 帧，
+  // framestats 通道根本不存在（FPS 由 timestats 提供），本用例不适用而非失败
+  const afterSwipe = await shell(`dumpsys gfxinfo '${PKG}'`);
+  const swipedTotal = (afterSwipe.match(/Total frames rendered:\s*(\d+)/) || [])[1];
+  if (realFrames.length === 0 && (swipedTotal === undefined || +swipedTotal === 0)) {
+    console.log('\n  SKIP 目标应用不产生 HWUI 帧（Total frames=0，常见于 Unity/SurfaceView 游戏），'
+      + 'framestats 口径不适用；该口径已由系统设置页用例覆盖');
+    console.log(`\n===== 结果: ${pass} PASS / ${fail} FAIL / 1 SKIP =====`);
+    process.exit(0);
+  }
+
   check('framestats 解析到足够帧数（≥20）', realFrames.length >= 20, realFrames.length);
   check('按表头名取列（非写死索引）', parsed.sawHeader === true, parsed.sawHeader);
 

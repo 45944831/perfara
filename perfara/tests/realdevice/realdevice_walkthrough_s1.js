@@ -50,7 +50,10 @@ function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
     check('getDevices 识别到目标设备', devices.some(d => d.id === DEVICE), devices.map(d => d.id));
     const dev = devices.find(d => d.id === DEVICE);
     check('设备条目含 model', !!(dev && dev.model), dev && dev.model);
-    check('USB 设备 wifi 标记为 false', !!(dev && dev.wifi === false), dev && dev.wifi);
+    // 设备可能是 USB（序列号）或无线（IP:PORT），按实际传输方式断言
+    const expectWifi = DEVICE.includes(':');
+    check(`wifi 标记与实际传输方式一致（${expectWifi ? '无线' : 'USB'}）`,
+      !!(dev && dev.wifi === expectWifi), dev && dev.wifi);
   } catch (e) {
     check('getDevices 正常返回', false, e.message);
   }
