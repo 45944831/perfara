@@ -80,6 +80,11 @@ _datas = [
     (_SEED, "data"),
 ]
 
+_ICON = _os.path.abspath(_os.path.join(
+    globals().get("SPECPATH", "."), "..", "_client_src", "app", "icon", "perfara.ico"))
+if not _os.path.isfile(_ICON):
+    raise SystemExit("[spec] 缺少应用图标: %s" % _ICON)
+
 a = Analysis(
     ["launcher.py"],
     pathex=["."],
@@ -114,6 +119,7 @@ exe = EXE(
     a.datas,
     [],
     name="PerfaraServer",
+    icon=_ICON,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

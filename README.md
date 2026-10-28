@@ -407,15 +407,17 @@ Perfara_Portable_20261027.zip   （约 201MB，对应 v2026.10.27）
 | `perfara/perfara_server.spec` | 打包便携包里的 `server/PerfaraServer.exe`（后台服务，无控制台） |
 | `perfara/frontend/patch-spa-metric-config.js` | 后处理 SPA 产物：注入指标配置（`dist/` 不入库，仓库里没有 Vue 源码，只能这样调） |
 | `perfara/frontend/patch-spa-offline-fonts.js` | 后处理 SPA 产物：剥掉 `index.html` 的外链字体，让首屏真的不联网；`--check` 可当发布前检查 |
+| `perfara/frontend/patch-spa-favicon.js` | 后处理 SPA 产物：把 `frontend/favicon/` 复制进 `dist/` 并注入 favicon `<link>`（幂等）；图标设计源在 `docs/icon/` |
 
 改了采集器源码后**必须**重跑 `tools/build_app.py` 再打包，否则发布包里的 `app.asar` 会落后于源码。
 
 改了 `backend/` 或 `frontend/dist` 后**必须**重打 `perfara/perfara_server.spec`，否则便携包里的服务会落后于源码（历史上曾因此出现 `.js` 被当 `text/plain` 返回、看板整页空白）。
-`dist/` 是构建产物、不入库，所以对它的任何修复都得落成脚本（见上表两个 patch-*），否则前端一重建就回去了。
+`dist/` 是构建产物、不入库，所以对它的任何修复都得落成脚本（见上表三个 patch-*），否则前端一重建就回去了。
 
 ```bash
 # 重打便携版启动器（约 20s，产物 build/portable-dist/Perfara.exe）
 python -m PyInstaller --onefile --noconsole --name Perfara \
+  --icon "$PWD/_client_src/app/icon/perfara.ico" \
   --distpath build/portable-dist --workpath build/portable-work \
   --specpath build/portable-spec --noconfirm tools/launcher_portable.py
 

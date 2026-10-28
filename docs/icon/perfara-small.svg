@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#17223D"/>
+      <stop offset="1" stop-color="#06080F"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="300" y1="800" x2="740" y2="250" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2BE0F2"/>
+      <stop offset="0.5" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#B45CF8"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="420" y1="700" x2="660" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8DFBFF"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <clipPath id="tileClip">
+      <rect x="0" y="0" width="1024" height="1024" rx="232"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#tileClip)">
+    <rect width="1024" height="1024" fill="url(#tile)"/>
+    <circle cx="512" cy="500" r="360" fill="#22D3EE" opacity="0.10"/>
+  </g>
+
+  <path d="M323 782 A330 330 0 1 1 701 782" fill="none" stroke="url(#ring)"
+        stroke-width="112" stroke-linecap="round"/>
+
+  <polygon points="594,262 410,544 500,544 455,752 648,466 548,466" fill="url(#bolt)"/>
+</svg>
