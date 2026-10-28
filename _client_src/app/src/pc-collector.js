@@ -135,22 +135,32 @@ class PcCollector extends EventEmitter {
   }
 
   /**
-   * Windows：用 `cmd /c start "" "<exe>"` 拉起目标进程，路径含空格时由 argv 单参数传递，不依赖手工引号。
-   * 随后再由 Python 按绝对路径 attach；spawn(py, [..., exe]) 同样以单参数传递 exe，兼容空格。
+   * 拉起目标进程：直接 CreateProcess(exePath)，不再经 `cmd /c start`。
+   * 旧写法把路径交给 cmd 再解析一次，而 cmd 会先把 `^&` 还原成 `&` ——
+   * 于是 `Game.exe^&calc.exe` 这类文件名能在用户机器上多执行一条命令。
+   * Node 不带 shell 的 spawn 只做「引号包空格」，& | ^ 都是路径里的字面字符，注入面就此消失。
    */
-  async _winCmdStartExe(exePath) {
+  async _spawnTargetExe(exePath) {
     return new Promise((resolve) => {
-      const cmd = process.env.ComSpec || 'cmd.exe';
-      const child = spawn(cmd, ['/d', '/c', 'start', '', exePath], {
-        windowsHide: true,
-        stdio: 'ignore',
-        detached: true,
-      });
+      let child;
+      try {
+        child = spawn(exePath, [], {
+          windowsHide: true,
+          stdio: 'ignore',
+          detached: true,
+          cwd: path.dirname(exePath),
+        });
+      } catch (e) {
+        this._log(`[PC] 启动目标失败（将仍尝试采样）: ${e.message}`);
+        resolve();
+        return;
+      }
       child.on('error', (err) => {
-        this._log(`[PC] start 启动目标失败（将仍尝试采样）: ${err.message}`);
+        this._log(`[PC] 启动目标失败（将仍尝试采样）: ${err.message}`);
         resolve();
       });
       child.on('close', () => resolve());
+      try { child.unref(); } catch (_) {}
     });
   }
 
@@ -178,8 +188,8 @@ class PcCollector extends EventEmitter {
     this._log(`目标进程: ${exe}`);
 
     if (process.platform === 'win32') {
-      this._log('[PC] cmd start 拉起目标 exe…');
-      await this._winCmdStartExe(exe);
+      this._log('[PC] 直接拉起目标 exe…');
+      await this._spawnTargetExe(exe);
       await sleep(1200);
     }
 

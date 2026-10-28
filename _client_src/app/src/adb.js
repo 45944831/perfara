@@ -68,6 +68,16 @@ function adbShell(deviceId, cmd, timeout = SHELL_TIMEOUT_MS) {
   return adb(['-s', deviceId, 'shell', cmd], timeout);
 }
 
+/**
+ * 设备侧 shell 的单引号安全包裹。
+ * adb shell 的参数在 PC 端走 execFile（不过本地 shell），但到了设备端会被
+ * /system/bin/sh 重新解析一次 —— 包名/组件名里混进单引号就能改写设备上的命令。
+ * 包名来自渲染进程的 IPC，组件名来自设备输出，两者都不能当可信字符串。
+ */
+function shellArg(value) {
+  return "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'";
+}
+
 function cancelAllInflight() {
   for (const child of Array.from(_inflight)) {
     try {
@@ -206,7 +216,7 @@ async function getThirdPartyPackages(deviceId) {
 async function isPackageInstalled(deviceId, packageName) {
   if (!packageName) return false;
   try {
-    const out = await adbShell(deviceId, `pm path '${packageName}' 2>/dev/null`, 6000);
+    const out = await adbShell(deviceId, `pm path ${shellArg(packageName)} 2>/dev/null`, 6000);
     return /package:/.test(out);
   } catch (_) {
     return false;
@@ -215,12 +225,12 @@ async function isPackageInstalled(deviceId, packageName) {
 
 async function getPid(deviceId, packageName) {
   try {
-    const out = await adbShell(deviceId, `pidof -s '${packageName}' 2>/dev/null`);
+    const out = await adbShell(deviceId, `pidof -s ${shellArg(packageName)} 2>/dev/null`);
     const pid = parseInt(out.trim(), 10);
     if (!isNaN(pid) && pid > 0) return pid;
   } catch (_) {}
   try {
-    const out = await adbShell(deviceId, `ps -A 2>/dev/null | grep '${packageName}' | head -1`);
+    const out = await adbShell(deviceId, `ps -A 2>/dev/null | grep ${shellArg(packageName)} | head -1`);
     for (const line of out.split('\n')) {
       const cols = line.trim().split(/\s+/);
       const pid = parseInt(cols[1], 10);
@@ -245,18 +255,18 @@ async function getPid(deviceId, packageName) {
  * 普遍是这个表现 —— 不解析组件就等于「所有游戏都无法从界面启动」。
  */
 async function resolveLauncherComponent(deviceId, packageName) {
-  const pkg = packageName.replace(/'/g, "'\\''");
+  const pkg = shellArg(packageName);
   // 1) Android 8+：cmd package resolve-activity（输出最后一行就是 pkg/cls）
   try {
     const out = await adbShell(deviceId,
-      `cmd package resolve-activity --brief -c android.intent.category.LAUNCHER '${pkg}' 2>/dev/null`, 6000);
+      `cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${pkg} 2>/dev/null`, 6000);
     const hit = out.split('\n').map((s) => s.trim()).filter(Boolean)
       .find((s) => s.startsWith(packageName + '/'));
     if (hit) return hit;
   } catch (_) {}
   // 2) 老机型兜底：dumpsys package 里 LAUNCHER 分类附近的 activity 名
   try {
-    const out = await adbShell(deviceId, `dumpsys package '${pkg}' 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
+    const out = await adbShell(deviceId, `dumpsys package ${pkg} 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
     const lines = out.split('\n');
     for (let i = 0; i < lines.length; i++) {
       if (!/android\.intent\.category\.LAUNCHER/.test(lines[i])) continue;
@@ -317,7 +327,7 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
   } else {
     log(`[adb] 未检测到进程，尝试启动应用: ${packageName}`);
   }
-  const pkg = packageName.replace(/'/g, "'\\''");
+  const pkg = shellArg(packageName);
 
   // 启动方式按可靠性从高到低排：
   //   ① am start -n <组件>   —— 先解析出 Launcher 组件再精确启动，最可靠
@@ -326,10 +336,10 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
   const comp = await resolveLauncherComponent(deviceId, packageName);
   if (comp) log(`[adb] Launcher 组件: ${comp}`);
   const attempts = [];
-  if (comp) attempts.push(['am start -n', `am start -n '${comp}' 2>&1`]);
+  if (comp) attempts.push(['am start -n', `am start -n ${shellArg(comp)} 2>&1`]);
   attempts.push(
-    ['am start -p', `am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p '${pkg}' 2>&1`],
-    ['monkey', `monkey -p '${pkg}' -c android.intent.category.LAUNCHER 1 2>&1`],
+    ['am start -p', `am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p ${pkg} 2>&1`],
+    ['monkey', `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`],
   );
 
   /** 本次尝试是否明确报「解析不到入口」 */
@@ -399,7 +409,7 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
 
 async function getUid(deviceId, packageName) {
   try {
-    const out = await adbShell(deviceId, `dumpsys package '${packageName}' 2>/dev/null | grep -m1 userId=`, DUMPSYS_TIMEOUT_MS);
+    const out = await adbShell(deviceId, `dumpsys package ${shellArg(packageName)} 2>/dev/null | grep -m1 userId=`, DUMPSYS_TIMEOUT_MS);
     const m = out.match(/userId=(\d+)/);
     if (m) return parseInt(m[1], 10);
   } catch (_) {}
@@ -452,7 +462,7 @@ async function getCpuStats(deviceId, pid) {
 
 async function getMemInfo(deviceId, packageName) {
   try {
-    const out = await adbShell(deviceId, `dumpsys meminfo '${packageName}' 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
+    const out = await adbShell(deviceId, `dumpsys meminfo ${shellArg(packageName)} 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
     const totalMatch = out.match(/^\s*TOTAL\s+(\d+)/m);
     // label may appear as "Foo Bar:" or "Foo Bar" followed by whitespace and a number
     const getLine = (label) => {
@@ -1076,7 +1086,7 @@ async function getFps(deviceId, packageName, logFn) {
 
   // ── Method 2: gfxinfo framestats (View-based apps) ───────────────────────
   try {
-    const out = await adbShell(deviceId, `dumpsys gfxinfo '${packageName}' framestats 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
+    const out = await adbShell(deviceId, `dumpsys gfxinfo ${shellArg(packageName)} framestats 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
     const parsed = parseFramestats(out);
     const frames = parsed.frames;
     const iCompleted = parsed.iCompleted;
@@ -1119,7 +1129,7 @@ async function getFps(deviceId, packageName, logFn) {
 
   // ── Method 3: gfxinfo "Total frames" delta (broad fallback) ───────────────
   try {
-    const out = await adbShell(deviceId, `dumpsys gfxinfo '${packageName}' 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
+    const out = await adbShell(deviceId, `dumpsys gfxinfo ${shellArg(packageName)} 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
     const m = out.match(/Total frames rendered:\s*(\d+)/);
     if (m) {
       const total = parseInt(m[1], 10);

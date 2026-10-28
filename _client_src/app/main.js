@@ -69,6 +69,25 @@ function snapshotArr(arr) {
   return Array.isArray(arr) ? arr.slice() : [];
 }
 
+/**
+ * adb 参数白名单校验。
+ * deviceId / packageName 从渲染进程经 IPC 到达主进程，途中会被拼进 `adb -s <serial> shell …`：
+ * serial 落在 adb 自己的参数位（以 - 开头会被当成选项），包名落在设备端 sh 的命令串里。
+ * 设备侧命令已统一走 shellArg 转义，这里再把住主进程入口这一道，越界的输入直接拒掉。
+ */
+const SAFE_DEVICE_SERIAL = /^[\w][\w.:-]{0,127}$/;
+const SAFE_PACKAGE_NAME = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,255}$/u;
+
+function invalidAdbArgs(deviceId, packageName) {
+  if (deviceId != null && !SAFE_DEVICE_SERIAL.test(String(deviceId))) {
+    return `设备序列号不合法: ${String(deviceId).slice(0, 40)}`;
+  }
+  if (packageName != null && !SAFE_PACKAGE_NAME.test(String(packageName))) {
+    return `包名不合法: ${String(packageName).slice(0, 60)}`;
+  }
+  return null;
+}
+
 /** PC 上报 JSON：根级 category；device 包名/应用名为 exe 文件名；deviceId 用本机 UID 作上传 uid */
 function buildPcReportDataJsPayload(pcSession, perfArr, tagArr, machineUid, metricConfig) {
   const raw = pcSession && pcSession.exePath ? String(pcSession.exePath) : '';
@@ -220,6 +239,8 @@ ipcMain.handle('get-devices', async () => {
 });
 
 ipcMain.handle('get-android-device-info', async (_e, deviceId) => {
+  const bad = invalidAdbArgs(deviceId, null);
+  if (bad) { _logStartup(`[adb] 拒绝 get-android-device-info：${bad}`); return null; }
   try {
     const ADB = require('./src/adb');
     return await ADB.getDeviceInfo(deviceId);
@@ -252,6 +273,8 @@ ipcMain.handle('disconnect-wifi', async (_event, ipPort) => {
 });
 
 ipcMain.handle('get-packages', async (_event, deviceId) => {
+  const bad = invalidAdbArgs(deviceId, null);
+  if (bad) { _logStartup(`[adb] 拒绝 get-packages：${bad}`); return []; }
   const ADB = require('./src/adb');
   return await ADB.getThirdPartyPackages(deviceId);
 });
@@ -261,12 +284,16 @@ ipcMain.handle('get-packages', async (_event, deviceId) => {
 // 应用列表统一由 get-packages（pm list packages -3）提供，不再向手机安装任何 APK。
 
 ipcMain.handle('get-pid', async (_event, deviceId, packageName) => {
+  const bad = invalidAdbArgs(deviceId, packageName);
+  if (bad) { _logStartup(`[adb] 拒绝 get-pid：${bad}`); return null; }
   const ADB = require('./src/adb');
   return await ADB.getPid(deviceId, packageName);
 });
 
 // 未换设备/包名时不清空 perfHistory，多次开始数据拼接到内存；清空见 android-clear-history
 ipcMain.handle('start-collect', async (_event, deviceId, packageName, deviceLabel, appLabel, metricConfig) => {
+  const badArgs = invalidAdbArgs(deviceId, packageName);
+  if (badArgs) return { ok: false, reason: badArgs };
   const trial = trialSession.canStartCollect(app, getMachineUid, activationStore, readConfigOut);
   if (!trial.ok) return { ok: false, reason: trial.reason };
   if (trial.remainingSec != null && mainWindow && !mainWindow.isDestroyed()) {
