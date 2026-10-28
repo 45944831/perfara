@@ -15,10 +15,11 @@ export WEB_PERF_DB="$TMPDB"
 export PERFARA_HOME="$(dirname "$TMPDB")"
 
 # 后台起服务（必须在 perfara/ 目录下才能 import backend）
+# server_header=False 与 launcher.py 保持一致，否则这里测出来的响应头和真实启动不一样
 ( cd perfara && "$PY" -c "
 import uvicorn, sys
 from backend.app import app
-uvicorn.run(app, host='127.0.0.1', port=8019, log_level='warning')
+uvicorn.run(app, host='127.0.0.1', port=8019, log_level='warning', server_header=False)
 " ) > perfara/tests/_run_out/svc_8019.log 2>&1 &
 SVC=$!
 echo "[服务] pid=$SVC"

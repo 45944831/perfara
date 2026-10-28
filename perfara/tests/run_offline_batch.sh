@@ -2,6 +2,7 @@
 # 批量运行离线测试套件（不含真机、不含需外部服务的）
 cd /e/WorkBuddy1/2026-10-19-13-59-27
 export NODE_PATH="C:/Users/user/.workbuddy/binaries/node/workspace/node_modules"
+export PYTHONIOENCODING=utf-8
 NODE="C:/Users/user/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
 PY="C:/Users/user/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 OUT=perfara/tests/_run_out

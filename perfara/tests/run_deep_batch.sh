@@ -1,20 +1,37 @@
 #!/bin/bash
-# 批量运行深度测试套件（perfara/tests/deep/）：启动器 / 算法一致性 / 报告边界 / 上传畸形 / 对比泳道
-cd /e/WorkBuddy1/2026-10-19-13-59-27
+# 批量运行深度测试套件（perfara/tests/deep/）。
+#
+# 退出码是这个脚本过去最大的坑：`"$PY" … | tail -25` 之后 `echo "[exit=$?]"` 读到的
+# 是 tail 的状态，tail 永远成功，于是所有套件都打印 exit=0，「deep 全绿」并不成立。
+# 现在统一开 pipefail、用 rc 变量接住真实退出码，末尾汇总并以非零码收尾。
+cd /e/WorkBuddy1/2026-10-19-13-59-27 || exit 2
+set -o pipefail
 export NODE_PATH="C:/Users/user/.workbuddy/binaries/node/workspace/node_modules"
 export no_proxy="127.0.0.1,localhost" NO_PROXY="127.0.0.1,localhost"
+export PYTHONIOENCODING=utf-8
 NODE="C:/Users/user/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
 PY="E:/WorkBuddy1/2026-10-19-13-59-27/tools/.venv/Scripts/python.exe"   # 带 sqlalchemy/uvicorn
 OUT=perfara/tests/_run_out
 mkdir -p "$OUT"
+
+SUMMARY=()
+FAIL_NAMES=()
+
+report() {
+  local name="$1" rc="$2"
+  SUMMARY+=("$(printf '%-24s exit=%s' "$name" "$rc")")
+  if [ "$rc" -ne 0 ]; then FAIL_NAMES+=("$name"); fi
+}
 
 run_node() {
   local name="$1"; shift
   echo "============================================================"
   echo ">>> [$name]"
   echo "============================================================"
-  ( cd perfara/tests/deep && "$NODE" "$@" 2>&1 | tail -25 )
-  echo "    [exit=$?]"
+  local rc=0
+  ( cd perfara/tests/deep && "$NODE" "$@" 2>&1 | tail -30 ) || rc=$?
+  echo "    [exit=$rc]"
+  report "$name" "$rc"
   sleep 1
 }
 
@@ -23,15 +40,36 @@ run_py() {
   echo "============================================================"
   echo ">>> [$name]"
   echo "============================================================"
-  "$PY" "$@" 2>&1 | tail -25
-  echo "    [exit=$?]"
+  local rc=0
+  "$PY" "$@" 2>&1 | tail -30 || rc=$?
+  echo "    [exit=$rc]"
+  report "$name" "$rc"
   sleep 1
 }
 
 run_py   "launcher_process"     perfara/tests/deep/launcher_process_test.py
+run_py   "launcher_port"        perfara/tests/deep/launcher_port_test.py
 run_py   "loading_algo"         perfara/tests/deep/loading_algo_consistency.py
 run_node "report_edge"          ../deep/report_edge_test.js
 run_py   "upload_edge"          perfara/tests/deep/upload_edge_test.py
 run_node "compare_lanes"        ../deep/compare_lanes_test.js
+run_node "pc_launch_injection"  ../deep/pc_launch_injection_test.js
+# 种子库体检：默认模式会真跑 exe（慢），批量里只查仓库内的种子库；
+# exe 内嵌种子库由 tools/scan_seed_db.py 作为发布门禁单独把关。
+run_py   "seed_integrity"       perfara/tests/deep/seed_integrity_test.py --src
+# 接口深度用例与看板实时端到端：需要起临时服务，放最后避免相互占端口
+run_py   "api_deep"             perfara/tests/deep/api_deep_test.py
+run_node "spa_live_e2e"         ../deep/spa_live_e2e_test.js
 
+echo
+echo "==================== 汇总 ===================="
+for line in "${SUMMARY[@]}"; do echo "  $line"; done
+if [ ${#FAIL_NAMES[@]} -gt 0 ]; then
+  echo "--------------------------------------------"
+  echo "失败 ${#FAIL_NAMES[@]}/${#SUMMARY[@]}: ${FAIL_NAMES[*]}"
+  echo "DEEP_BATCH_FAILED"
+  exit 1
+fi
+echo "全部 ${#SUMMARY[@]} 套通过"
 echo "ALL_DEEP_DONE"
+exit 0
