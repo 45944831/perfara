@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -57,8 +58,12 @@ DEVICE_BY_CATEGORY = {
 
 # ── 通用正则：与具体值无关的兜底 ────────────────────────────────────────────
 REGEX_RULES = [
-    # 设备序列号形态（14 位以上大写字母数字）
-    (re.compile(r"\b[A-Z0-9]{14,}\b"), "DEMO-SERIAL"),
+    # 设备序列号形态（14 位以上大写字母数字）。
+    # ⚠️ 必须要求「同时含字母与数字」：只写 \b[A-Z0-9]{14,}\b 会把 JSON 里的浮点尾数
+    # 当成序列号 —— `24.218338859221145` 的 `.218338859221145` 正好满足「. 后是 \b +
+    # 15 位数字」，替换成 `24.DEMO-SERIAL` 后整段不再是合法 JSON。
+    # 后果实测过：种子库里 44 处 JSON 损坏，便携包首启即「详情 500 + 列表无均值」。
+    (re.compile(r"\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{14,}\b"), "DEMO-SERIAL"),
     # iOS UDID：8-16-8 十六进制
     (re.compile(r"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}\b"), "DEMO-UDID"),
     # 非示例包名（保留 com.example.* / com.android.*）
@@ -147,6 +152,35 @@ def scrub_text(s, tokens):
             return new
         s = rx.sub(_sub, s)
     return s
+
+
+def _scrub_json_node(node, tokens):
+    """只碰 JSON 里的字符串叶子；数字、布尔、null 与结构一律原样保留。"""
+    if isinstance(node, dict):
+        return {scrub_text(k, tokens) if isinstance(k, str) else k:
+                _scrub_json_node(v, tokens) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_scrub_json_node(v, tokens) for v in node]
+    if isinstance(node, str):
+        return scrub_text(node, tokens)
+    return node
+
+
+def scrub_value(val, tokens):
+    """脱敏一个列值。
+
+    JSON 文本（metric_blobs.content / test_runs.summary / raw_json / summary_json 等）
+    先解析、只改字符串叶子、再回写 —— 对整段 JSON 文本做正则是危险的：
+    任何「数字形态」的兜底规则都会撞上浮点尾数或时间戳，把数据改成非法 JSON。
+    """
+    if isinstance(val, str) and val[:1] in ("{", "["):
+        try:
+            obj = json.loads(val)
+        except Exception:
+            obj = None
+        if obj is not None:
+            return json.dumps(_scrub_json_node(obj, tokens), ensure_ascii=False)
+    return scrub_text(val, tokens)
 
 
 def build_uid_map(cur) -> dict:
@@ -250,12 +284,16 @@ def build():
             except sqlite3.Error:
                 continue
             for rid, val in rows:
-                new = scrub_text(val, tokens)
+                new = scrub_value(val, tokens)
                 if new != val:
                     cur.execute("UPDATE %s SET %s=? WHERE rowid=?" % (t, col), (new, rid))
                     touched += 1
 
     con.commit()
+    # 删过/改过的页不会归还内容，只是被标成 free page：SQL 查不到，但直接 grep 二进制
+    # 能把旧值捞出来。种子库是要进 git 的，所以必须 VACUUM 重建成一个干净文件。
+    con.isolation_level = None
+    con.execute("VACUUM")
     con.close()
     print("种子库已生成: %s" % OUT)
     print("  来源: %s" % SRC)
@@ -315,7 +353,22 @@ def check():
     alive = {r[0] for r in cur.fetchall()}
     cur.execute("SELECT test_run_id FROM perfara_demo_snapshot")
     stale = [r[0] for r in cur.fetchall() if r[0] not in alive]
+    schema_sql = " ".join(r[0] for r in cur.execute(
+        "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL").fetchall())
     con.close()
+
+    # 自检四：整文件字节扫描。前三条都只走 SQL，看不到 free page / 旧版本页里
+    # 残留的字节 —— 2026-10-28 就是这样在干净种子库里捞出真机机型与真实包名的。
+    # 建表语句本身会带上 `test_runs` 这类词，源库恰好也有 `test` 这种取值，
+    # 那是表名不是残留，所以跳过出现在 DDL 里的词元。
+    raw = open(OUT, "rb").read().decode("utf-8", errors="replace")
+    byte_hits = []
+    for label, rx in pats:
+        for m in rx.finditer(raw):
+            byte_hits.append(("(bytes)", "<rule>", label, m.group(0)))
+    for tok in src_tokens:
+        if tok in raw and tok not in schema_sql:
+            byte_hits.append(("(bytes)", "<token>", "源库词元", tok))
 
     ok = True
     print("自检 %s" % OUT)
@@ -341,6 +394,15 @@ def check():
         print("      [FAIL] 仍指向不存在的记录：%s" % stale)
     else:
         print("      [OK] 一致")
+    print("  [4] 整文件字节扫描（%d B，含 free page 残留）" % len(raw))
+    if byte_hits:
+        ok = False
+        print("      [FAIL] 命中 %d 处（SQL 查不到但二进制里还在，跑 make_seed_db.py 重建）："
+              % len(byte_hits))
+        for t, c, label, val in byte_hits[:20]:
+            print("         <%s> %r" % (label, val[:50]))
+    else:
+        print("      [OK] 0 命中")
     return 0 if ok else 1
 
 

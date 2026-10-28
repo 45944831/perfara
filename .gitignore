@@ -75,6 +75,11 @@ logs/
 # ── 本地数据（含采集数据、数据库）──────────────────────────────────
 perfara/data/
 *.db
+# 例外：脱敏后的种子库**必须入库**。它是 perfara_server.spec 唯一的种子来源，
+# 而它的生成输入 perfara/data/webperf.db 是开发机工作库、不进 git；
+# 不把产物入库就等于「发布包无法从干净 clone 重建」。
+# 改动前先跑 tools/make_seed_db.py 重新生成，再跑 perfara/tests/deep/seed_integrity_test.py --src。
+!perfara/_seed/*.db
 *.sqlite3
 
 # ── 工作区元数据 ────────────────────────────────────────────────────
