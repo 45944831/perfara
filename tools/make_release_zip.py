@@ -43,6 +43,19 @@ PRUNE_PREFIXES = (
     # 注意：**种子库不在这里**。exe 首次启动用的种子库是编进 PerfaraServer.exe 的
     # `_seed/webperf.db`（见 perfara_server.spec），与本目录的 data/ 无关。
     'data/',
+    # _seed/ 是构建期输入（build_exe.bat 把它编进 PerfaraServer.exe），运行期不读；
+    # 随包再放一份等于同一个库发两遍。
+    '_seed/',
+    # S0-④：报告目录里的运行期产物（最近一次 data.js、本地报告库、低谷截图）。
+    # 这些文件带着打包机上的绝对路径（截图 url=file:///E:/...）和自测数据；
+    # 用户端由「停止采集」自己生成，首次打开时缺失是正常状态。
+    'collector/resources/reports/data.js',
+    'collector/resources/reports/data.json',
+    'collector/resources/reports/shots/',
+    'collector/resources/reports/history/',
+    # 启动器为子进程准备的运行期临时目录（PyInstaller onefile 的 _MEI 解包产物）。
+    # 每次启动都会重建，绝不能打进发布包。
+    '.run/',
     # S0-②：测试套件不随包分发（58 条目，含 realdevice/_shots 下的界面截图）。
     # 用户不需要，也没人会在解压后的便携包里跑测试。
     'tests/',

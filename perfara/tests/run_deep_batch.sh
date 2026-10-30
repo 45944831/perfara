@@ -53,6 +53,22 @@ run_py   "loading_algo"         perfara/tests/deep/loading_algo_consistency.py
 run_node "report_edge"          ../deep/report_edge_test.js
 run_py   "upload_edge"          perfara/tests/deep/upload_edge_test.py
 run_node "compare_lanes"        ../deep/compare_lanes_test.js
+run_node "trough_shots"         ../deep/trough_shots_test.js
+run_node "trough_shots_ui"      ../deep/trough_shots_ui_test.js
+# 弱网总结分析：段状态机 + 接线静态检查；再用合成 data.weaknet 渲染报告页核对数值
+run_node "weaknet_report"       ../deep/weaknet_report_test.js
+run_node "weaknet_report_ui"    ../deep/weaknet_report_ui_test.js
+# 弱网二级界面：host 用真引擎（需 PERFARA_WEAKNET_SRC 指向 WeakNet 源码，未设则只跑接线检查）；
+# 页面用 Playwright + 假 perfAPI，不依赖 Electron
+run_node "weaknet_host"         ../deep/weaknet_host_test.js
+run_node "weaknet_page_ui"      ../deep/weaknet_page_ui_test.js
+# 手机 USB 接管：adb reverse + 写手机系统代理，用假 runner 跑成功/被拒/回滚各分支
+run_node "phone_proxy"          ../deep/phone_proxy_test.js
+# 系统代理残留：开启前快照、崩溃后还原（内存注册表替身，不碰本机设置）
+run_node "sysproxy_residue"     ../deep/sysproxy_residue_test.js
+# 应用桌面名：合成 AXML/ARSC 验证解析与缓存重试；界面用假 perfAPI 验证渐进更新与排序
+run_node "app_labels"           ../deep/app_labels_test.js
+run_node "app_labels_ui"        ../deep/app_labels_ui_test.js
 run_node "pc_launch_injection"  ../deep/pc_launch_injection_test.js
 # 种子库体检：默认模式会真跑 exe（慢），批量里只查仓库内的种子库；
 # exe 内嵌种子库由 tools/scan_seed_db.py 作为发布门禁单独把关。

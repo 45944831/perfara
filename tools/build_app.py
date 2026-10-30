@@ -26,6 +26,8 @@ EXCLUDE_DIRS = {
     'devimages',    # iOS DeveloperDiskImage.dmg（8.1MB）。iOS 采集走 `ios image auto` 联网挂载，不读本地镜像
     '推广web',       # 推广页素材，含 3.4MB ads.mp4
     'ios脚本',       # iOS 采集脚本源码副本；运行期实际用的是包外 resources/ios-tools/**/Scripts/*.pyc
+    'weaknet',      # 弱网工具二进制（10.8MB）。必须在 asar 外，Electron 无法 spawn asar 内文件；
+                    # 运行期从 resources/weaknet/WeakNet.exe 拉起
 }
 # 2) 后缀
 EXCLUDE_SUFFIXES = {

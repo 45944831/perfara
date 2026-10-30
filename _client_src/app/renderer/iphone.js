@@ -401,6 +401,7 @@ selBundle.onchange = () => {
   if (selBundle.value && selBundle.value !== _activeBundle) {
     // 切换应用：清空 reports/shots，避免截图串包
     void window.perfAPI.clearReportShots().catch(() => {});
+    if (window.troughShots) window.troughShots.clear();
     _activeBundle = '';
     _clearData();
   }
@@ -409,6 +410,7 @@ selBundle.onchange = () => {
 
 async function _clearData() {
   try { await window.perfAPI.iosClearHistory(); } catch (_) {}
+  if (window.troughShots) window.troughShots.clear();
   chartMgr.reset();
   _resetIosTags();
   _prevDisk = null; _prevEvents = null; _prevMsg = null;

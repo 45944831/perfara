@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Perfara 便携版启动器：先起看板服务，再起采集客户端，客户端退出后**连根**收掉服务。
+"""Perfara 便携版启动器：同时拉起看板服务与采集客户端，客户端退出后**连根**收掉服务。
 
 目录结构（便携包根目录）：
     Perfara.exe                      ← 本启动器
@@ -14,14 +14,20 @@
        这样即使启动器被任务管理器强杀，服务进程树也会随之退出；
     3. 客户端退出后，先 taskkill /T /F 杀进程树，再关闭 Job 句柄兜底，
        并轮询确认端口已释放，才写「看板服务已停止」。
+
+启动顺序：两个子进程**同时**拉起。onefile 服务要解包约 1.5 s，采集客户端启动时
+并不访问服务端（只读启动器提前写好的 configout），串行等待只会让用户白等这一段；
+健康检查放在后台线程，失败只影响上传/看板，采集与本地报告照常可用。
 """
 from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -31,6 +37,7 @@ from pathlib import Path
 APP_NAME = "Perfara"
 DEFAULT_PORT = 8000
 PORT_SCAN = 20
+RUN_DIR_NAME = ".run"
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -295,6 +302,23 @@ def wait_health(port: int, timeout: float = 30.0) -> bool:
     return False
 
 
+def watch_health(port: int, gui: subprocess.Popen, log_path: Path, srv_started: float,
+                 timeout: float = 30.0) -> None:
+    """后台确认看板是否就绪（采集窗口不等它）。
+
+    采集窗口先开，服务端 onefile 解包这段时间不该拦着用户。这里只负责记日志，
+    以及没就绪时提示一次：采集与本地报告都不依赖服务端，只有上传与看板页会失效。
+    """
+    if wait_health(port, timeout):
+        log(f"看板服务已就绪（服务端启动后 {time.time() - srv_started:.1f}s）", log_path)
+        return
+    if gui.poll() is not None:
+        return
+    log("[error] 看板服务 30s 内未就绪，请查看 logs\\app.log", log_path)
+    fatal("看板服务未能启动，上传到看板与看板页面会不可用。\n"
+          "采集与本地报告不受影响；详情见 logs\\launcher.log 与 logs\\app.log。")
+
+
 def write_client_config(base: Path, port: int, log_path: Path) -> None:
     cfg = base / "collector" / "resources" / "configout" / "config.js"
     body = (
@@ -304,9 +328,9 @@ def write_client_config(base: Path, port: int, log_path: Path) -> None:
     try:
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text(body, encoding="utf-8")
-        log(f"已写入采集端上传配置 → {cfg}", log_path)
+        log(f"已写入采集端配置 → {cfg}", log_path)
     except Exception as e:
-        log(f"[warn] 写上传配置失败：{e}", log_path)
+        log(f"[warn] 写采集端配置失败：{e}", log_path)
 
 
 def find_collector(base: Path) -> Path | None:
@@ -315,6 +339,62 @@ def find_collector(base: Path) -> Path | None:
         if p.is_file():
             return p
     return None
+
+
+# ------------------------------------------------------ 运行期临时目录（_MEI）
+
+# PyInstaller onefile 运行时会把自己解包到 %TEMP%\_MEI*。启动器收服务用的是
+# TerminateProcess，bootloader 来不及自清理，每次运行会在系统 TEMP 里留下
+# 一个约 32 MB 的目录。这里把两个子进程的 TEMP/TMP 指到包内 .run\，
+# 由启动器负责整体删除；即使启动器被强杀，下次启动也会先清空 .run\。
+
+
+def remove_tree(path: Path, attempts: int = 15) -> bool:
+    """删目录，带重试：TerminateProcess 之后句柄可能短暂未释放。"""
+    for _ in range(attempts):
+        if not path.exists():
+            return True
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return True
+        time.sleep(0.2)
+    return not path.exists()
+
+
+def prepare_run_dirs(base: Path, log_path: Path) -> dict[str, Path] | None:
+    run_root = base / RUN_DIR_NAME
+    if run_root.is_dir():
+        for child in run_root.iterdir():
+            if child.is_dir():
+                remove_tree(child)
+            else:
+                try:
+                    child.unlink()
+                except OSError:
+                    pass
+    dirs = {"server": run_root / "server", "collector": run_root / "collector"}
+    try:
+        for d in dirs.values():
+            d.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log(f"[warn] 无法创建运行临时目录，子进程将使用系统 TEMP：{e}", log_path)
+        return None
+    return dirs
+
+
+def isolate_temp(env: dict[str, str], path: Path) -> dict[str, str]:
+    env["TEMP"] = str(path)
+    env["TMP"] = str(path)
+    env.pop("TMPDIR", None)
+    return env
+
+
+def cleanup_run_dirs(dirs: dict[str, Path] | None, log_path: Path) -> None:
+    if not dirs:
+        return
+    leaked = [str(d) for d in dirs.values() if not remove_tree(d)]
+    if leaked:
+        log(f"[warn] 临时目录未能删除（下次启动会重试）：{leaked}", log_path)
 
 
 def main() -> int:
@@ -347,9 +427,15 @@ def main() -> int:
         log(f"[warn] 端口 {DEFAULT_PORT} 被其他程序占用，改用 {port}", log_path)
     log(f"看板端口 {port}", log_path)
 
+    # 3) 准备本次运行的临时目录（清空上次遗留）
+    run_dirs = prepare_run_dirs(base, log_path)
+    if run_dirs:
+        log(f"运行临时目录 {base / RUN_DIR_NAME}", log_path)
+
     job = make_kill_on_close_job()
     server = None
     try:
+        srv_env = isolate_temp(os.environ.copy(), run_dirs["server"]) if run_dirs else None
         server = subprocess.Popen(
             [
                 str(server_exe),
@@ -359,26 +445,26 @@ def main() -> int:
                 "--data-dir", str(base),
             ],
             cwd=str(base),
+            env=srv_env,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
         if job:
             assign_to_job(job, server)
+        srv_started = time.time()
         log(f"看板服务已启动 pid={server.pid}", log_path)
 
-        if not wait_health(port):
-            log("[error] 看板服务 30s 内未就绪，请查看 logs\\app.log", log_path)
-            fatal("看板服务启动失败。\n请查看 logs\\launcher.log 与 logs\\app.log。")
-            return 1
-
+        # 4) 配置先落地（端口此时已确定），随后与采集端**同时**开跑：
+        #    服务端 onefile 解包要 1.5s 左右，串行等它只是让采集窗口白等这一段。
         write_client_config(base, port, log_path)
 
-        # 3) 起采集客户端并等待退出
         #    清掉 ELECTRON_RUN_AS_NODE：若父进程（如某些 Node 工具）带着这个变量，
         #    Electron 会退化成纯 Node 进程、窗口一闪就退出，看起来像「点了没反应」。
         log("启动采集客户端 ...", log_path)
         child_env = os.environ.copy()
         for k in ("ELECTRON_RUN_AS_NODE", "ELECTRON_NO_ATTACH_CONSOLE"):
             child_env.pop(k, None)
+        if run_dirs:
+            isolate_temp(child_env, run_dirs["collector"])
         try:
             gui = subprocess.Popen(
                 [str(collector_exe)], cwd=str(collector_exe.parent), env=child_env
@@ -388,6 +474,11 @@ def main() -> int:
             fatal(f"采集客户端启动失败：\n{e}\n\n可尝试右键以管理员身份运行，"
                   f"或直接双击 collector\\{collector_exe.name}。")
             return 1
+
+        threading.Thread(
+            target=watch_health, args=(port, gui, log_path, srv_started), daemon=True
+        ).start()
+
         gui.wait()
         log(f"采集客户端已退出 code={gui.returncode}", log_path)
     finally:
@@ -408,6 +499,7 @@ def main() -> int:
                 kill_server_processes(server_exe)
             wait_port_free("127.0.0.1", port, timeout=3)
         log("看板服务已停止", log_path)
+        cleanup_run_dirs(run_dirs, log_path)
     return 0
 
 

@@ -887,7 +887,10 @@ body { overflow-x: hidden; }
       dot.setAttribute('tabindex', '0');
       dot.title = '查看参数说明';
       dot.textContent = '!';
-      el.appendChild(dot);
+      // 副标注（.metric-sub）是 block，若把「!」追加到末尾会独占一行，行高多一行。
+      // 统计表的指标名单元格改为插在副标注之前，让「!」跟在名字后面。
+      var sub = el.querySelector('.metric-sub');
+      if (sub) el.insertBefore(dot, sub); else el.appendChild(dot);
     }
   }
 
@@ -2191,6 +2194,14 @@ body { overflow-x: hidden; }
       for (let k = 0; k < out.length; k += 1) if (mask[k]) out[k] = null;
       return out;
     }
+
+    /* 页面尾部的追加区块（弱网总结分析）跑在独立 IIFE 里，拿不到这里的闭包。
+       把「加载段剔除」的口径桥出去，免得在别处再抄一份规则、两边慢慢走偏。 */
+    window.PerfStats = {
+      analyseLoading: analyseLoading,
+      fpsTargetOfSeries: fpsTargetOfSeries,
+      maskToNull: maskToNull,
+    };
 
     /** 生成一份「FPS 家族已剔除加载段」的采样点副本，供卡片 / 解读使用（其他指标不动） */
     function fpsStatPts(pts) {
@@ -4034,5 +4045,723 @@ body { overflow-x: hidden; }
   render();
   if (window.MetricInfo) MetricInfo.decorate(document);
   </script>
+
+<script>
+/* __TROUGH_SHOTS_V1__ 性能低谷截图：读取 data.shots 渲染缩略图 + 全屏预览（自包含，不改动主体逻辑） */
+(function () {
+  'use strict';
+  var STYLE = ''
+    + '#trough-gallery{margin-top:8px}'
+    + '.trough-gal-hint{color:var(--text2);font-size:11px;margin:2px 0 8px}'
+    + '.trough-gal-grid{display:flex;flex-wrap:wrap;gap:10px}'
+    + '.trough-gal-card{flex:none;display:flex;flex-direction:column;gap:4px;padding:0;background:none;'
+    + 'border:1px solid var(--border);border-radius:4px;overflow:hidden;cursor:zoom-in}'
+    + '.trough-gal-card img{height:150px;width:auto;display:block;background:var(--bg3)}'
+    + '.trough-gal-card span{font-size:11px;color:var(--text2);padding:2px 6px;text-align:center}'
+    + '.trough-gal-overlay{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.86);display:flex;'
+    + 'flex-direction:column;align-items:center;justify-content:center;cursor:zoom-out}'
+    + '.trough-gal-overlay img{max-width:92vw;max-height:86vh;box-shadow:0 8px 30px rgba(0,0,0,.6)}'
+    + '.trough-gal-overlay div{color:#ddd;font-size:12px;margin-top:8px}';
+
+  var overlay = null;
+
+  function injectStyle() {
+    if (document.getElementById('trough-gal-style')) return;
+    var st = document.createElement('style');
+    st.id = 'trough-gal-style';
+    st.textContent = STYLE;
+    document.head.appendChild(st);
+  }
+
+  function closeOverlay() {
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    overlay = null;
+  }
+
+  function openShot(s) {
+    closeOverlay();
+    overlay = document.createElement('div');
+    overlay.className = 'trough-gal-overlay';
+    var img = document.createElement('img');
+    img.alt = s.time || '';
+    img.src = s.url || s.file || '';
+    var cap = document.createElement('div');
+    cap.textContent = (s.time || '') + '  FPS ' + s.fps + ' / 目标 ' + s.target;
+    overlay.appendChild(img);
+    overlay.appendChild(cap);
+    overlay.addEventListener('click', closeOverlay);
+    document.body.appendChild(overlay);
+  }
+
+  // ─── 把缩略图钉到 FPS 曲线上 ───────────────────────────────────────────────
+  // 长报告会抽稀（>2000 点），原始时间可能已不在类目里，因此投影到最近保留点。
+  var CURVE_MARK_SIZE = [36, 80];
+  var CURVE_MARK_OFFSET = [0, -46];
+  var CURVE_MARK_MAX_DRIFT_SEC = 20;
+
+  function hmsToSec(s) {
+    var m = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(String(s == null ? '' : s).trim());
+    return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : null;
+  }
+
+  function currentShots() {
+    return (typeof data !== 'undefined' && data && Array.isArray(data.shots)) ? data.shots : [];
+  }
+
+  function applyCurveMarks() {
+    if (typeof echarts === 'undefined') return false;
+    var el = document.getElementById('chart-fps');
+    var chart = el && echarts.getInstanceByDom(el);
+    if (!chart) return false;
+    var opt = chart.getOption();
+    var times = (opt && opt.xAxis && opt.xAxis[0] && opt.xAxis[0].data) || [];
+    if (!times.length) return false;
+
+    var shots = currentShots();
+    if (!shots.length) return true;
+    var secs = times.map(hmsToSec);
+    var marks = [];
+    shots.forEach(function (s, i) {
+      var target = hmsToSec(s.time);
+      if (target == null || !(s.url || s.file || s.thumb || s.thumbUrl)) return;
+      var best = -1, bestDrift = Infinity;
+      for (var k = 0; k < secs.length; k++) {
+        if (secs[k] == null) continue;
+        var drift = Math.abs(secs[k] - target);
+        if (drift < bestDrift) { bestDrift = drift; best = k; }
+      }
+      if (best < 0 || bestDrift > CURVE_MARK_MAX_DRIFT_SEC) return;
+      marks.push({
+        name: 'trough' + i,
+        shotIdx: i,
+        coord: [times[best], s.fps],
+        value: s.fps,
+        symbol: 'image://' + (s.thumbUrl || s.thumb || s.url || s.file),
+        symbolSize: CURVE_MARK_SIZE,
+        symbolOffset: CURVE_MARK_OFFSET,
+        itemStyle: { shadowBlur: 10, shadowColor: 'rgba(77,163,255,.85)' },
+      });
+    });
+    if (!marks.length) return true;
+
+    chart.setOption({
+      series: [{
+        name: 'FPS',
+        markPoint: { silent: false, animation: false, label: { show: false }, data: marks },
+      }],
+    });
+    if (!chart.__troughClickBound) {
+      chart.__troughClickBound = true;
+      chart.on('click', function (p) {
+        if (!p || p.componentType !== 'markPoint' || !p.data) return;
+        var s = currentShots()[p.data.shotIdx];
+        if (s) openShot(s);
+      });
+    }
+    return true;
+  }
+
+  function pollCurveMarks() {
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries += 1;
+      if (applyCurveMarks() || tries >= 60) clearInterval(timer);
+    }, 250);
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeOverlay();
+  });
+
+  /** 返回 true 表示无需再重试 */
+  function build() {
+    if (typeof data === 'undefined' || !data) return false;
+    var shots = Array.isArray(data.shots) ? data.shots : [];
+    var root = document.getElementById('root');
+    if (!root) return false;
+    if (!shots.length) return true;
+    if (document.getElementById('trough-gallery')) return true;
+    // 等报告主体渲染完再追加，否则会被 root.innerHTML 覆盖
+    if (!root.querySelector('.chart-wrap') && !root.querySelector('.charts-grid')) return false;
+
+    injectStyle();
+    var sec = document.createElement('div');
+    sec.className = 'chart-wrap';
+    sec.id = 'trough-gallery';
+
+    var title = document.createElement('div');
+    title.className = 'chart-title';
+    title.textContent = '性能低谷截图（' + shots.length + '）';
+
+    var hint = document.createElement('div');
+    hint.className = 'trough-gal-hint';
+    hint.textContent = 'FPS 低于本轮目标 80% 时自动截取；点击曲线上的标记或下方图片查看大图';
+
+    var grid = document.createElement('div');
+    grid.className = 'trough-gal-grid';
+    shots.forEach(function (s) {
+      if (!s || !(s.url || s.file)) return;
+      var card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'trough-gal-card';
+      var img = document.createElement('img');
+      // 不用 lazy：画廊在报告底部，视口外永远不会发起加载，坏图也就不会被剔除
+      img.alt = s.time || '';
+      var fullSrc = s.url || s.file || '';
+      img.src = s.thumbUrl || s.thumb || fullSrc;
+      img.onerror = function () {
+        // 小图缺失/损坏时回退原图，再失败才剔除
+        if (fullSrc && img.getAttribute('src') !== fullSrc) {
+          img.src = fullSrc;
+          return;
+        }
+        if (card.parentNode) card.parentNode.removeChild(card);
+        var left = grid.querySelectorAll('.trough-gal-card').length;
+        title.textContent = '性能低谷截图（' + left + '）';
+        if (!left) { sec.parentNode && sec.parentNode.removeChild(sec); }
+      };
+      var cap = document.createElement('span');
+      cap.textContent = (s.time || '') + ' · ' + s.fps + ' fps';
+      card.appendChild(img);
+      card.appendChild(cap);
+      card.addEventListener('click', function () { openShot(s); });
+      grid.appendChild(card);
+    });
+
+    sec.appendChild(title);
+    sec.appendChild(hint);
+    sec.appendChild(grid);
+    root.appendChild(sec);
+    pollCurveMarks();
+    return true;
+  }
+
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    if (build() || tries >= 60) clearInterval(timer);
+  }, 250);
+})();
+</script>
+<script>
+/* __WEAKNET_REPORT_V1__ 弱网总结分析：读取 data.weaknet，按「弱网段 / 直连段」分桶做对比 */
+(function () {
+  'use strict';
+
+  var STYLE = ''
+    // 解读总结的 meta 是短句、可以多列铺开；弱网的场景/时段/范围是长文本，铺成多列会被挤成
+    // 三四行，所以这一块固定单列
+    + '#weaknet-box .insight-list{grid-template-columns:1fr}'
+    + '.wn-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}'
+    + '.wn-table th,.wn-table td{border-bottom:1px solid var(--border);padding:5px 8px;text-align:left}'
+    + '.wn-table th{color:var(--text2);font-weight:600}'
+    + '.wn-table td:first-child{white-space:nowrap}'
+    + '.wn-table td:nth-child(n+2),.wn-table th:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}'
+    + '.wn-table td.wn-dim{color:var(--text2)}'
+    + '.wn-table .wn-dim{font-weight:400}'
+    + '.wn-good{color:var(--green)}.wn-bad{color:var(--red)}.wn-flat{color:var(--text2)}'
+    + '.wn-hint{color:var(--text2);font-size:11px;line-height:1.7;margin-top:9px}';
+
+  var SOURCE_LABEL = { pc: 'Windows WeakNet', android: '手机（USB 接管）' };
+
+  /** 只列真正生效的参数：全 0 的项不写，否则每行都拖着一串「0」 */
+  var PARAM_TEXT = [
+    ['latency_down_ms', '下行延迟', 'ms'],
+    ['latency_up_ms', '上行延迟', 'ms'],
+    ['jitter_ms', '抖动', 'ms'],
+    ['down_kbps', '下行', 'kbps'],
+    ['up_kbps', '上行', 'kbps'],
+    ['loss_pct', '丢包', '%'],
+    ['disconnect_pct', '断连', '%'],
+    ['timeout_pct', '超时', '%'],
+    ['dns_fail_pct', 'DNS 失败', '%'],
+    ['reject_pct', '拒绝', '%']
+  ];
+
+  function numOf(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
+
+  function tsOf(row) {
+    if (!row) return null;
+    var t = row.timestamp;
+    if (typeof t === 'number' && isFinite(t)) return t;
+    var p = Date.parse(String(t == null ? '' : t));
+    return isNaN(p) ? null : p;
+  }
+
+  function fmt(v, d) { return numOf(v) == null ? '--' : v.toFixed(d == null ? 1 : d); }
+
+  function fmtSigned(pct, d) {
+    if (numOf(pct) == null) return '--';
+    return (pct > 0 ? '+' : '') + pct.toFixed(d == null ? 1 : d) + '%';
+  }
+
+  function fmtDur(ms) {
+    if (!(ms > 0)) return '0 秒';
+    var s = Math.round(ms / 1000);
+    if (s < 60) return s + ' 秒';
+    var m = Math.floor(s / 60), r = s % 60;
+    return r ? (m + ' 分 ' + r + ' 秒') : (m + ' 分钟');
+  }
+
+  function fmtClock(ms) {
+    var d = new Date(ms);
+    var p = function (v) { return (v < 10 ? '0' : '') + v; };
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function fmtBytes(v) {
+    if (numOf(v) == null || v <= 0) return null;
+    if (v >= 1024 * 1024 * 1024) return (v / 1024 / 1024 / 1024).toFixed(1) + ' GB';
+    if (v >= 1024 * 1024) return (v / 1024 / 1024).toFixed(1) + ' MB';
+    return (v / 1024).toFixed(0) + ' KB';
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function paramsText(prof) {
+    if (!prof || typeof prof !== 'object') return '';
+    var bits = [];
+    for (var i = 0; i < PARAM_TEXT.length; i++) {
+      var v = numOf(prof[PARAM_TEXT[i][0]]);
+      if (v == null || v === 0) continue;
+      bits.push(PARAM_TEXT[i][1] + ' ' + v + ' ' + PARAM_TEXT[i][2]);
+    }
+    if (numOf(prof.flap_sec) > 0) {
+      bits.push('每 ' + prof.flap_sec + ' s 断一次 ' + (numOf(prof.flap_blackout_sec) || 0) + ' s');
+    }
+    return bits.join(' / ');
+  }
+
+  /** 场景归并键：同名同参数的多段（中途关一下再开）算同一个场景 */
+  function sigOf(seg) {
+    var p = seg.profile || {};
+    var keys = Object.keys(p).sort();
+    var parts = [];
+    for (var i = 0; i < keys.length; i += 1) {
+      if (keys[i] === 'name') continue;
+      parts.push(keys[i] + ':' + p[keys[i]]);
+    }
+    return seg.name + '|' + seg.key + '|' + parts.join(',');
+  }
+
+  function mean(arr) {
+    if (!arr || !arr.length) return null;
+    var s = 0;
+    for (var i = 0; i < arr.length; i += 1) s += arr[i];
+    return s / arr.length;
+  }
+
+  /** 1% Low：帧耗时最长 1% 的均值折算成帧率（与报告卡片同口径） */
+  function oneLow(fpsList) {
+    if (!fpsList || !fpsList.length) return null;
+    var ft = [];
+    for (var i = 0; i < fpsList.length; i += 1) {
+      if (fpsList[i] > 0) ft.push(1000 / fpsList[i]);
+    }
+    if (!ft.length) return null;
+    ft.sort(function (a, b) { return b - a; });
+    var k = Math.max(1, Math.round(ft.length * 0.01));
+    var sum = 0;
+    for (var j = 0; j < k; j += 1) sum += ft[j];
+    return 1000 / (sum / k);
+  }
+
+  function newBucket() {
+    return { n: 0, durMs: 0, fps: [], jank: 0, jankSeen: false, rx: [], cpu: [] };
+  }
+
+  /**
+   * 把原始采样点按「落在弱网段内 / 外」分两桶，算出可比的指标。
+   * 用 data.perf 原始数组而不是图上的抽稀点：长报告会抽稀到 2000 点，比例会失真。
+   */
+  function buildModel() {
+    if (typeof data === 'undefined' || !data) return null;
+    var wn = data.weaknet;
+    if (!wn || !Array.isArray(wn.segments) || !wn.segments.length) return null;
+    var rows = Array.isArray(data.perf) ? data.perf : [];
+    if (!rows.length) return null;
+
+    var n = rows.length, ts = new Array(n), fps = new Array(n);
+    var tMin = Infinity, tMax = -Infinity;
+    for (var i = 0; i < n; i += 1) {
+      var t = tsOf(rows[i]);
+      ts[i] = t;
+      fps[i] = rows[i] ? numOf(rows[i].fps) : null;
+      if (t != null) { if (t < tMin) tMin = t; if (t > tMax) tMax = t; }
+    }
+    if (!(tMax > tMin)) return null;
+
+    // 加载段剔除走报告主体的同一套判定，否则这里的 FPS 均值会和上方「解读总结」对不上
+    var mask = null, target = null;
+    if (window.PerfStats) {
+      var linfo = window.PerfStats.analyseLoading(fps);
+      mask = linfo.mask;
+      target = numOf(linfo.target);
+    }
+
+    var segs = [];
+    for (var s = 0; s < wn.segments.length; s += 1) {
+      var raw = wn.segments[s];
+      var st = numOf(raw && raw.start), en = numOf(raw && raw.end);
+      if (st == null || en == null || en <= st) continue;
+      var a = Math.max(st, tMin), b = Math.min(en, tMax);
+      if (b <= a) continue;
+      segs.push({
+        start: st, end: en, a: a, b: b,
+        name: String((raw && raw.name) || '弱网'),
+        key: String((raw && raw.key) || ''),
+        source: String((raw && raw.source) || 'pc'),
+        profile: (raw && raw.profile) || null,
+        scope: String((raw && raw.scope) || ''),
+        scopeCount: numOf(raw && raw.scopeCount) || 0,
+        downBytes: numOf(raw && raw.downBytes),
+        upBytes: numOf(raw && raw.upBytes)
+      });
+    }
+    if (!segs.length) return null;
+    segs.sort(function (x, y) { return x.a - y.a; });
+
+    var groups = [], bySig = {}, weakMs = 0, downBytes = null, upBytes = null;
+    for (var g = 0; g < segs.length; g += 1) {
+      var sg = segs[g];
+      weakMs += (sg.b - sg.a);
+      if (sg.downBytes != null) downBytes = (downBytes || 0) + sg.downBytes;
+      if (sg.upBytes != null) upBytes = (upBytes || 0) + sg.upBytes;
+      var sig = sigOf(sg);
+      var grp = bySig[sig];
+      if (!grp) {
+        grp = {
+          name: sg.name, source: sg.source, profile: sg.profile,
+          scope: sg.scope, scopeCount: sg.scopeCount,
+          count: 0, durMs: 0, first: sg.start, last: sg.end
+        };
+        bySig[sig] = grp;
+        groups.push(grp);
+      }
+      grp.count += 1;
+      grp.durMs += (sg.b - sg.a);
+      if (sg.start < grp.first) grp.first = sg.start;
+      if (sg.end > grp.last) grp.last = sg.end;
+    }
+
+    var totalMs = tMax - tMin;
+    var weak = newBucket(), clean = newBucket();
+    weak.durMs = weakMs;
+    clean.durMs = Math.max(0, totalMs - weakMs);
+
+    var si = 0;
+    for (var k = 0; k < n; k += 1) {
+      var tk = ts[k];
+      if (tk == null) continue;
+      while (si < segs.length && segs[si].b <= tk) si += 1;
+      var inWeak = si < segs.length && segs[si].a <= tk;
+      var bucket = inWeak ? weak : clean;
+      bucket.n += 1;
+      var f = fps[k];
+      if (f != null && !(mask && mask[k])) bucket.fps.push(f);
+      var row = rows[k] || {};
+      var jk = numOf(row.jank);
+      if (jk != null) { bucket.jank += jk; bucket.jankSeen = true; }
+      var rx = numOf(row.net && row.net.rxKBps);
+      if (rx != null) bucket.rx.push(rx);
+      var cu = numOf(row.cpu && row.cpu.procCpu);
+      if (cu != null) bucket.cpu.push(cu);
+    }
+
+    function agg(b) {
+      var fpsMean = mean(b.fps);
+      return {
+        n: b.n,
+        durMs: b.durMs,
+        fpsMean: fpsMean,
+        reach: (fpsMean != null && target > 0) ? (fpsMean / target * 100) : null,
+        fps1Low: oneLow(b.fps),
+        jank10: (b.jankSeen && b.durMs > 0) ? (b.jank / (b.durMs / 60000)) : null,
+        rx: mean(b.rx),
+        cpu: mean(b.cpu)
+      };
+    }
+
+    return {
+      totalMs: totalMs,
+      weakMs: weakMs,
+      segs: segs,
+      groups: groups,
+      downBytes: downBytes,
+      upBytes: upBytes,
+      target: target,
+      weak: agg(weak),
+      clean: agg(clean),
+      pollMs: numOf(wn.pollMs),
+      ctrlPort: numOf(wn.ctrlPort)
+    };
+  }
+
+  /**
+   * 对比表：只有两边至少一侧有数才出行，免得整张表都是「--」。
+   * p 是方向极性：1 越大越好，-1 越大越糟，0 无所谓好坏（流量随限速下降是必然结果，不该标红）。
+   */
+  function tableRows(m) {
+    var w = m.weak, c = m.clean;
+    var defs = [
+      { label: '平均帧率', unit: 'fps', w: w.fpsMean, c: c.fpsMean, d: 1, p: 1 },
+      { label: '达帧率', unit: '%', w: w.reach, c: c.reach, d: 1, p: 1 },
+      { label: '1% Low', unit: 'fps', w: w.fps1Low, c: c.fps1Low, d: 1, p: 1 },
+      { label: '卡顿', unit: '次/10min', w: w.jank10, c: c.jank10, d: 1, p: -1 },
+      { label: '下行流量', unit: 'KB/s', w: w.rx, c: c.rx, d: 0, p: 0 },
+      { label: '进程 CPU', unit: '%', w: w.cpu, c: c.cpu, d: 1, p: -1 }
+    ];
+    var out = [];
+    for (var i = 0; i < defs.length; i += 1) {
+      var r = defs[i];
+      if (r.w == null && r.c == null) continue;
+      r.delta = (r.w != null && r.c != null && r.c > 0) ? ((r.w - r.c) / r.c * 100) : null;
+      out.push(r);
+    }
+    return out;
+  }
+
+  function buildRisks(m) {
+    var w = m.weak, c = m.clean;
+    var risks = [];
+    var dropPct = (w.fpsMean != null && c.fpsMean > 0)
+      ? (w.fpsMean - c.fpsMean) / c.fpsMean * 100 : null;
+    var coverage = m.totalMs > 0 ? (m.weakMs / m.totalMs * 100) : 0;
+
+    if (c.n === 0 || c.durMs <= 0) {
+      risks.push({
+        tone: 'info',
+        text: '全程都处在弱网中，没有直连段做基线，只能看绝对值；下次建议留一段直连对照，结论才有可比性。'
+      });
+    } else if (dropPct != null && dropPct <= -15) {
+      risks.push({
+        tone: 'high',
+        text: '弱网段平均帧率比直连段低 ' + Math.abs(dropPct).toFixed(1) +
+          '%，衰减明显。先确认两段是否为同一场景、同一关卡；若一致，说明该表现对网络依赖较重，' +
+          '重点排查资源加载与失败重试（预加载、退避、降级贴图/码率）。'
+      });
+    } else if (dropPct != null && dropPct <= -7) {
+      risks.push({
+        tone: 'mid',
+        text: '弱网段平均帧率比直连段低 ' + Math.abs(dropPct).toFixed(1) +
+          '%，有可感知的下滑。建议结合下方卡顿与流量数据，判断是否由资源请求超时重试引起。'
+      });
+    } else if (dropPct != null) {
+      risks.push({
+        tone: 'info',
+        text: '弱网段帧率与直连段基本持平（差异 ' + fmtSigned(dropPct) +
+          '），说明当前场景的渲染对网络不敏感；弱网影响更多体现在流量与加载耗时上。'
+      });
+    }
+
+    // 直连段零卡顿时没有倍数可比，此时只要弱网段每分钟多出 1 次以上就算异常
+    if (w.jank10 != null && c.jank10 != null && w.jank10 - c.jank10 >= 1 &&
+        (c.jank10 <= 0 || w.jank10 / c.jank10 >= 2)) {
+      risks.push({
+        tone: 'mid',
+        text: '弱网段卡顿 ' + fmt(w.jank10, 1) + ' 次/10min，' +
+          (c.jank10 > 0
+            ? ('约为直连段（' + fmt(c.jank10, 1) + '）的 ' + (w.jank10 / c.jank10).toFixed(1) + ' 倍')
+            : ('直连段为 ' + fmt(c.jank10, 1))) +
+          '：网络回调/超时重试占用了主线程。'
+      });
+    }
+
+    if (w.reach != null && w.reach < 80 && c.reach != null && c.reach >= 90) {
+      risks.push({
+        tone: 'mid',
+        text: '弱网段达帧率只有 ' + fmt(w.reach, 1) + '%，直连段为 ' + fmt(c.reach, 1) +
+          '%，帧率稳定性在弱网下明显变差。'
+      });
+    }
+
+    if (coverage < 5) {
+      risks.push({
+        tone: 'info',
+        text: '弱网段只占全程 ' + fmt(coverage, 1) + '%，样本偏少，结论仅供参考；' +
+          '要评估弱网表现，建议弱网段至少覆盖半分钟以上。'
+      });
+    }
+
+    return risks;
+  }
+
+  function injectStyle() {
+    if (document.getElementById('weaknet-style')) return;
+    var st = document.createElement('style');
+    st.id = 'weaknet-style';
+    st.textContent = STYLE;
+    document.head.appendChild(st);
+  }
+
+  function render(m) {
+    injectStyle();
+    var coverage = m.totalMs > 0 ? (m.weakMs / m.totalMs * 100) : 0;
+    var risks = buildRisks(m);
+    var dropPct = (m.weak.fpsMean != null && m.clean.fpsMean > 0)
+      ? (m.weak.fpsMean - m.clean.fpsMean) / m.clean.fpsMean * 100 : null;
+    var badgeTone = (dropPct != null && dropPct <= -15) ? 'warn' : 'good';
+
+    var sources = {};
+    for (var gi = 0; gi < m.groups.length; gi += 1) sources[m.groups[gi].source] = true;
+    var srcText = [];
+    for (var sk in sources) if (SOURCE_LABEL[sk]) srcText.push(SOURCE_LABEL[sk]);
+
+    var sec = document.createElement('section');
+    sec.className = 'insight';
+    sec.id = 'weaknet-box';
+
+    var html = ''
+      + '<div class="insight-head">'
+      +   '<span class="insight-title">弱网总结分析</span>'
+      +   '<span class="insight-badge insight-badge--' + badgeTone + '">弱网 ' + fmt(coverage, 0) + '% 时长</span>'
+      +   '<span class="insight-sub">' + m.segs.length + ' 段 · 累计 ' + fmtDur(m.weakMs) +
+            (srcText.length ? ' · ' + esc(srcText.join(' / ')) : '') + '</span>'
+      + '</div>';
+
+    // 一句话结论
+    var lead = '本次采集 ' + fmtDur(m.totalMs) + ' 里有 <b>' + fmtDur(m.weakMs) + '</b>（' +
+      fmt(coverage, 0) + '%）处在弱网';
+    if (m.weak.fpsMean != null) {
+      lead += '，弱网段平均 <b>' + fmt(m.weak.fpsMean, 1) + ' fps</b>';
+      if (m.clean.fpsMean != null) {
+        lead += '，直连段 ' + fmt(m.clean.fpsMean, 1) + ' fps';
+        if (dropPct != null) {
+          lead += '（<b>' + fmtSigned(dropPct) + '</b>）';
+        }
+      }
+    }
+    lead += '。';
+    html += '<div class="insight-lead">' + lead + '</div>';
+
+    // 场景 / 参数 / 时段 / 范围
+    var items = [];
+    for (var g = 0; g < m.groups.length; g += 1) {
+      var grp = m.groups[g];
+      var ptxt = paramsText(grp.profile);
+      items.push({
+        k: '场景',
+        v: esc(grp.name) + (ptxt ? '<span class="wn-dim">（' + esc(ptxt) + '）</span>' : '')
+      });
+    }
+    var spans = [];
+    var showN = Math.min(3, m.segs.length);
+    for (var si2 = 0; si2 < showN; si2 += 1) {
+      var sg2 = m.segs[si2];
+      spans.push(fmtClock(sg2.start) + '–' + fmtClock(sg2.end) + '（' + fmtDur(sg2.end - sg2.start) + '）');
+    }
+    if (m.segs.length > showN) spans.push('等 ' + m.segs.length + ' 段');
+    items.push({ k: '时段', v: spans.join('、') });
+
+    var scopeText = [];
+    for (var g2 = 0; g2 < m.groups.length; g2 += 1) {
+      var gr = m.groups[g2];
+      if (gr.scope === 'list') {
+        scopeText.push('指定 ' + gr.scopeCount + ' 个程序');
+      } else if (gr.scope === 'all' || gr.scope === '') {
+        scopeText.push('全部程序');
+      } else {
+        scopeText.push(esc(gr.scope));
+      }
+    }
+    if (scopeText.length) {
+      var uniq = [];
+      for (var q = 0; q < scopeText.length; q += 1) {
+        if (uniq.indexOf(scopeText[q]) === -1) uniq.push(scopeText[q]);
+      }
+      items.push({ k: '接管范围', v: uniq.join('、') });
+    }
+
+    var dBytes = fmtBytes(m.downBytes), uBytes = fmtBytes(m.upBytes);
+    if (dBytes || uBytes) {
+      items.push({
+        k: '代理流量',
+        v: '下行 ' + (dBytes || '--') + ' / 上行 ' + (uBytes || '--') +
+          '<span class="wn-dim">（仅统计经 WeakNet 代理的流量）</span>'
+      });
+    }
+
+    html += '<ul class="insight-list">';
+    for (var it = 0; it < items.length; it += 1) {
+      html += '<li><i class="insight-dot insight-dot--info"></i><b>' + items[it].k + '</b>' +
+        items[it].v + '</li>';
+    }
+    html += '</ul>';
+
+    // 对比表
+    var rows = tableRows(m);
+    var hasCompare = m.clean.n > 0 && m.clean.durMs > 0;
+    if (rows.length) {
+      html += '<table class="wn-table"><thead><tr><th>指标</th><th>弱网段</th><th>直连段</th>'
+        + '<th>变化</th></tr></thead><tbody>';
+      for (var ri = 0; ri < rows.length; ri += 1) {
+        var r = rows[ri];
+        var cls = 'wn-flat';
+        if (r.delta != null && r.p !== 0) {
+          // 变化方向 × 极性：帧率涨是好事，卡顿/CPU 涨是坏事
+          var signed = r.delta * r.p;
+          cls = signed > 0.5 ? 'wn-good' : (signed < -0.5 ? 'wn-bad' : 'wn-flat');
+        }
+        html += '<tr>'
+          + '<td>' + r.label + '<span class="wn-dim"> ' + r.unit + '</span></td>'
+          + '<td>' + fmt(r.w, r.d) + '</td>'
+          + '<td>' + (hasCompare ? fmt(r.c, r.d) : '--') + '</td>'
+          + '<td class="' + cls + '">' + (hasCompare ? fmtSigned(r.delta, 1) : '--') + '</td>'
+          + '</tr>';
+      }
+      html += '</tbody></table>';
+    }
+
+    if (risks.length) {
+      html += '<div class="insight-risks">';
+      for (var k2 = 0; k2 < risks.length; k2 += 1) {
+        var flag = risks[k2].tone === 'high' ? '⚠ 风险' : (risks[k2].tone === 'mid' ? '△ 注意' : 'ℹ 提示');
+        html += '<div class="insight-risk insight-risk--' + risks[k2].tone + '">' + flag + '：' +
+          risks[k2].text + '</div>';
+      }
+      html += '</div>';
+    }
+
+    var pollSec = m.pollMs ? Math.round(m.pollMs / 1000) : null;
+    html += '<div class="wn-hint">弱网时段由采集端在采集期间' +
+      (pollSec ? '每 ' + pollSec + ' 秒' : '') + '轮询 WeakNet 控制接口' +
+      (m.ctrlPort ? '（127.0.0.1:' + m.ctrlPort + '）' : '') +
+      '记录；USB 接管的手机走同一引擎，按「手机」归类。弱网段与直连段的统计口径' +
+      '与上方解读总结一致（已剔除加载段影响）。</div>';
+
+    sec.innerHTML = html;
+
+    var host = document.getElementById('insight-box');
+    if (host && host.parentNode) host.parentNode.insertBefore(sec, host.nextSibling);
+    else {
+      var root = document.getElementById('root');
+      if (root) root.appendChild(sec);
+    }
+  }
+
+  /** 返回 true 表示无需再重试 */
+  function build() {
+    if (typeof data === 'undefined' || !data || !data.weaknet) return true;
+    var box = document.getElementById('weaknet-box');
+    if (box) return true;
+    // 等解读总结渲染完再插到它下面，否则会被主体渲染覆盖
+    if (!document.getElementById('insight-box')) return false;
+    var m = buildModel();
+    if (!m) return true;
+    render(m);
+    return true;
+  }
+
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    if (build() || tries >= 60) clearInterval(timer);
+  }, 250);
+})();
+</script>
 </body>
 </html>

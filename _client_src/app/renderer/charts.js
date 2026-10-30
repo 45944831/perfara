@@ -51,6 +51,17 @@ const MAX_RENDER_POINTS = 2000;
  */
 const LAZY_OPT = { lazyUpdate: true, silent: true };
 
+/** 'HH:MM:SS' → 当日秒数；无法解析返回 null（曲线 x 轴与截图时间都是这个格式） */
+function hmsToSec(s) {
+  const m = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(String(s == null ? '' : s).trim());
+  if (!m) return null;
+  return (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]);
+}
+
+const TROUGH_MARK_SIZE = [36, 80];
+const TROUGH_MARK_OFFSET = [0, -46];
+const TROUGH_MARK_MAX_DRIFT_SEC = 20;
+
 // For each chart: what series to render and how to extract from a data point
 const CHART_CONFIGS = {
   cpu: {
@@ -148,6 +159,10 @@ class ChartManager {
     this._data   = {};
     this._ready  = false;
     this._tags = [];
+    this._troughShots = [];
+    this._onTroughShotClick = null;
+    // 各页面的 main 脚本各建一个实例；trough-shots.js 通过 window.chartMgr 接线
+    window.chartMgr = this;
   }
 
   init() {
@@ -176,6 +191,16 @@ class ChartManager {
       if (!cfg.dynamic) chart.setOption(this._buildOption(name, cfg));
     }
     this._ready = true;
+
+    const fpsChart = this._charts.fps;
+    if (fpsChart) {
+      fpsChart.on('click', (p) => {
+        if (!p || p.componentType !== 'markPoint' || !p.data) return;
+        const shot = this._troughShots[p.data.shotIdx];
+        if (shot && this._onTroughShotClick) this._onTroughShotClick(shot);
+      });
+    }
+    if (this._troughShots.length) this._renderTroughMarks();
 
     const ro = new ResizeObserver(() => {
       for (const c of Object.values(this._charts)) c.resize();
@@ -306,7 +331,11 @@ class ChartManager {
       yAxis:  yAxisPatch,
       series: cfg.series.map((_, i) => ({ data: state.series[i] })),
     }, LAZY_OPT);
-    if (trimmed) this._applyTagMarkAreas(cfg, state, chart);
+    if (trimmed) {
+      this._applyTagMarkAreas(cfg, state, chart);
+      // 抽稀会删掉一半时间类目，截图锚点要重新投影到仍然保留的最近点
+      if (name === 'fps') this._renderTroughMarks();
+    }
   }
 
   /**
@@ -337,6 +366,7 @@ class ChartManager {
 
   reset() {
     this._tags = [];
+    this._troughShots = [];
     for (const [name, cfg] of Object.entries(CHART_CONFIGS)) {
       const state = this._data[name];
       const chart = this._charts[name];
@@ -358,12 +388,86 @@ class ChartManager {
         dataZoom: [{ start: 0, end: 100 }],
       });
     }
+    if (this._charts.fps) this._renderTroughMarks();
+  }
+
+  /** 当前曲线的最后一个 x 轴索引（基于 times.length - 1）。若还没有数据点，返回 -1。 */
+  // ─── 低谷截图标记 ──────────────────────────────────────────────────────────
+
+  /** 整批替换（报告/回放用）；传入项需含 {time, fps, thumb|url|file} */
+  setTroughShots(list) {
+    this._troughShots = Array.isArray(list) ? list.slice() : [];
+    this._renderTroughMarks();
+  }
+
+  /** 采集时每命中一次低谷追加一张 */
+  pushTroughShot(shot) {
+    if (!shot || !(shot.thumb || shot.url || shot.file)) return;
+    this._troughShots.push(shot);
+    this._renderTroughMarks();
+  }
+
+  clearTroughShots() {
+    this._troughShots = [];
+    this._renderTroughMarks();
+  }
+
+  /** 点击曲线上的截图标记时回调（参数为 pushTroughShot 传入的对象） */
+  onTroughShotClick(cb) {
+    this._onTroughShotClick = typeof cb === 'function' ? cb : null;
+  }
+
+  _renderTroughMarks() {
+    const chart = this._charts.fps;
+    const state = this._data.fps;
+    if (!chart || !state) return;
+    chart.setOption({
+      series: [{
+        name: 'FPS',
+        markPoint: {
+          silent: false,
+          animation: false,
+          label: { show: false },
+          data: this._buildTroughMarkPoints(state.times),
+        },
+      }],
+    }, LAZY_OPT);
   }
 
   /**
-   * 当前曲线的最后一个 x 轴索引（基于 times.length - 1）。
-   * 若还没有任何数据点，返回 -1。
+   * 把截图时间投影到当前渲染时间轴上（长跑抽稀后会删掉一半类目，
+   * 直接拿原始时间当 category 会整张不渲染）。
    */
+  _buildTroughMarkPoints(times) {
+    if (!Array.isArray(times) || !times.length || !this._troughShots.length) return [];
+    const secs = times.map(hmsToSec);
+    const marks = [];
+    this._troughShots.forEach((s, i) => {
+      const target = hmsToSec(s.time);
+      if (target == null) return;
+      let best = -1;
+      let bestDrift = Infinity;
+      for (let k = 0; k < secs.length; k++) {
+        if (secs[k] == null) continue;
+        const drift = Math.abs(secs[k] - target);
+        if (drift < bestDrift) { bestDrift = drift; best = k; }
+      }
+      if (best < 0 || bestDrift > TROUGH_MARK_MAX_DRIFT_SEC) return;
+      marks.push({
+        name: 'trough' + i,
+        shotIdx: i,
+        coord: [times[best], s.fps],
+        value: s.fps,
+        symbol: 'image://' + (s.thumb || s.url || s.file),
+        symbolSize: TROUGH_MARK_SIZE,
+        symbolOffset: TROUGH_MARK_OFFSET,
+        itemStyle: { shadowBlur: 10, shadowColor: 'rgba(77,163,255,.85)' },
+      });
+    });
+    return marks;
+  }
+
+
   getLastXIndex() {
     let maxLen = 0;
     for (const st of Object.values(this._data || {})) {

@@ -281,6 +281,38 @@ def main() -> int:
         probe3 = socket.socket(); probe3.bind(("127.0.0.1", 0)); dead = probe3.getsockname()[1]; probe3.close()
         check("L30 health_ok 对无服务端口为 False", LP.health_ok(dead) is False)
 
+        # ─────────── 后台健康守卫（并联启动：窗口先开、服务后就绪） ───────────
+        print("[后台健康守卫]")
+
+        class _FakeGui:
+            """只提供 poll()：None=窗口还开着，其它=已退出。"""
+            def __init__(self, rc):
+                self._rc = rc
+
+            def poll(self):
+                return self._rc
+
+        wlog = tmp / "watch.log"
+        srv2 = subprocess.Popen(
+            [str(py), str(srv_script), str(hport)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            if wait_port(hport, 8):
+                LP.watch_health(hport, _FakeGui(None), wlog, time.time())
+                check("L31 守卫：服务就绪后写「已就绪」日志",
+                      "看板服务已就绪" in wlog.read_text(encoding="utf-8"), "")
+            else:
+                check("L31 守卫：服务就绪后写「已就绪」日志", False, "服务未就绪")
+        finally:
+            srv2.kill(); srv2.wait()
+
+        wlog2 = tmp / "watch_dead.log"
+        t_guard = time.time()
+        LP.watch_health(dead, _FakeGui(0), wlog2, time.time(), timeout=1.0)
+        check("L32 守卫：窗口已退出时不再弹窗、及时返回",
+              time.time() - t_guard < 5, f"{time.time() - t_guard:.1f}s")
+
         # ─────────── 清理测试进程 ───────────
         for p in (proc2, tree, jp):
             try:

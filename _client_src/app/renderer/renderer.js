@@ -272,8 +272,74 @@ async function refreshDevices() {
 }
 
 // ─── Package loading（纯 USB/adb 读取，不安装任何 APK）───────────────────────
+/** 下拉框当前对应的设备：后台推来的应用名要按设备过滤，切设备后旧结果直接丢 */
+let _pkgDeviceId = '';
+
+/** 「微信 (com.tencent.mm)」；名字没解出来就只显示包名 */
+function _pkgText(p) {
+  return p.label && p.label !== p.pkg ? `${p.label} (${p.pkg})` : p.pkg;
+}
+
+/**
+ * 重排下拉框。
+ * 解析期间保持包名顺序（名字还在陆续到，按名字排会一直跳动），
+ * 全部解完后按显示名排一次（中文按拼音），方便找人。
+ */
+function renderPackageOptions(sortByLabel) {
+  if (!selApp) return;
+  // 解析中只改文字不重建：重建会把用户正展开的下拉框关掉
+  if (!sortByLabel && selApp.options.length === allPackages.length + 1) {
+    const byPkg = new Map(allPackages.map(p => [p.pkg, p]));
+    for (const opt of selApp.options) {
+      const row = byPkg.get(opt.value);
+      if (!row) continue;
+      const text = _pkgText(row);
+      if (opt.textContent !== text) opt.textContent = text;
+      if (opt.title !== row.pkg) opt.title = row.pkg;
+    }
+    return;
+  }
+  const keep = selApp.value;
+  const rows = allPackages.slice();
+  if (sortByLabel) {
+    const key = (p) => (p.label && p.label !== p.pkg ? p.label : p.pkg);
+    rows.sort((a, b) => key(a).localeCompare(key(b), 'zh-Hans-CN') || a.pkg.localeCompare(b.pkg));
+  }
+  selApp.innerHTML = '<option value="">-- 选择应用 --</option>';
+  for (const p of rows) {
+    const opt = document.createElement('option');
+    opt.value = p.pkg;
+    opt.textContent = _pkgText(p);
+    opt.title = p.pkg;
+    selApp.appendChild(opt);
+  }
+  if (keep) selApp.value = keep;
+  selApp.disabled = false;
+}
+
+function _namedPackageCount() {
+  return allPackages.filter(p => p.label && p.label !== p.pkg).length;
+}
+
+if (selApp && window.perfAPI.onAppLabels) {
+  window.perfAPI.onAppLabels((ev) => {
+    if (!ev || !ev.deviceId || ev.deviceId !== _pkgDeviceId) return;
+    if (Array.isArray(ev.items) && ev.items.length) {
+      for (const it of ev.items) {
+        const row = allPackages.find(p => p.pkg === it.pkg);
+        if (row && it.label) row.label = it.label;
+      }
+    }
+    renderPackageOptions(!!ev.finished);
+    if (ev.finished) {
+      log(`应用名解析完成：${_namedPackageCount()}/${allPackages.length} 个应用显示桌面名`, 'info');
+    }
+  });
+}
+
 async function loadPackages(deviceId) {
   if (!deviceId) return;
+  _pkgDeviceId = deviceId;
   log(`正在加载 ${deviceId} 的应用列表...`);
   if (selApp) {
     selApp.disabled = true;
@@ -281,19 +347,15 @@ async function loadPackages(deviceId) {
   }
   try {
     const packages = await window.perfAPI.getPackages(deviceId);
+    if (_pkgDeviceId !== deviceId) return; // 期间已切到别的设备，这份结果不要了
     allPackages = Array.isArray(packages) ? packages : [];
-    if (selApp) {
-      selApp.innerHTML = '<option value="">-- 选择应用 --</option>';
-      for (const p of allPackages) {
-        const opt = document.createElement('option');
-        opt.value = p.pkg;
-        opt.textContent =
-          p.label && p.label !== p.pkg ? `${p.label} (${p.pkg})` : p.pkg;
-        selApp.appendChild(opt);
-      }
-      selApp.disabled = false;
+    renderPackageOptions(false);
+    const named = _namedPackageCount();
+    log(`加载完成（第三方应用列表），共 ${allPackages.length} 个应用`
+      + (named ? `，已缓存应用名 ${named} 个` : ''), 'info');
+    if (named < allPackages.length) {
+      log('正在后台解析应用显示名（首次约需 1~2 分钟，之后走缓存），可先按包名选择', 'info');
     }
-    log(`加载完成（第三方应用列表），共 ${allPackages.length} 个应用`, 'info');
     scheduleDeviceInfoBar();
   } catch (e) {
     log('加载应用列表失败: ' + e.message, 'error');
@@ -378,12 +440,17 @@ function haltAndroidCollectOnSwitch() {
   _lastDevice = null;
   _lastPkg = null;
   void window.perfAPI.stopCollect().catch(() => {});
+  // 采集被切走等于结束：跟随采集的弱网也要一起收掉
+  if (window.weaknetFollow && window.weaknetFollow.isOn()) {
+    try { void window.weaknetFollow.onCollectStop(); } catch (_) {}
+  }
 }
 
 selDevice.onchange = () => {
   if (isCollecting) haltAndroidCollectOnSwitch();
   if (selDevice.value) loadPackages(selDevice.value);
   else {
+    _pkgDeviceId = '';
     if (selApp) {
       selApp.innerHTML = '<option value="">-- 选择应用 --</option>';
       allPackages = [];
@@ -397,6 +464,7 @@ if (selApp) {
     if (isCollecting) haltAndroidCollectOnSwitch();
     // 切换包名：清空 reports/shots，避免截图串包
     void window.perfAPI.clearReportShots().catch(() => {});
+    if (window.troughShots) window.troughShots.clear();
     scheduleDeviceInfoBar();
   });
 }
@@ -404,6 +472,7 @@ if (selApp) {
 /** 清空本轮 Android 采集：主进程缓存 + 图表 + 卡片 + 场景标记（等清空完成再开始，避免首个采样点被清掉） */
 async function resetAndroidSessionData() {
   try { await window.perfAPI.androidClearHistory(); } catch (_) {}
+  if (window.troughShots) window.troughShots.clear();
   chartMgr.reset();
   resetCards();
   _resetAndroidTags();
@@ -455,6 +524,13 @@ btnStart.onclick = async () => {
       const lb = row && row.label != null ? String(row.label).trim() : '';
       if (lb && lb !== pkg) appLabel = lb;
     }
+    // 弱网跟随采集：先接管目标手机并开限速，再开始采集，保证采样从一开始就处于弱网
+    if (window.weaknetFollow && window.weaknetFollow.isOn()) {
+      try {
+        const wf = await window.weaknetFollow.onCollectStart(deviceId);
+        if (wf && wf.msg) log(wf.msg, wf.ok ? 'info' : 'warn');
+      } catch (_) {}
+    }
     const result = await window.perfAPI.startCollect(deviceId, pkg, devLabel, appLabel, _metricConfig);
     if (!result.ok) throw new Error(result.reason);
   } catch (e) {
@@ -466,11 +542,19 @@ btnStart.onclick = async () => {
     hidePrepHint();
     showStartHint('启动失败：' + brief, 15000);
     setCollecting(false);
+    // 采集没起来，跟随开启的弱网不能悬在那里
+    if (window.weaknetFollow && window.weaknetFollow.isOn()) {
+      try { await window.weaknetFollow.onCollectStop(); } catch (_) {}
+    }
   }
 };
 
 btnStop.onclick = async () => {
   await window.perfAPI.stopCollect();
+  // 跟随采集：停止采集时把弱网一起收掉（限速、系统代理、手机代理）
+  if (window.weaknetFollow && window.weaknetFollow.isOn()) {
+    try { await window.weaknetFollow.onCollectStop(); } catch (_) {}
+  }
   log('已停止采集', 'warn');
   setCollecting(false);
   if (typeof window.showDeviceReportAfterStop === 'function') {
@@ -570,6 +654,10 @@ window.perfAPI.onCollectStopped((payload) => {
   setCollecting(false);
   statusBadge.textContent = '已停止';
   statusBadge.className = 'badge idle';
+  // 自动停止（应用退出 / 设备卡死）同样要让跟随采集的弱网一起收掉
+  if (window.weaknetFollow && window.weaknetFollow.isOn()) {
+    try { void window.weaknetFollow.onCollectStop(); } catch (_) {}
+  }
 });
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────

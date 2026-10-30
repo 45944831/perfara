@@ -10,6 +10,19 @@ contextBridge.exposeInMainWorld('perfAPI', {
 
   getReportsPathInfo: () => ipcRenderer.invoke('get-reports-path-info'),
   openLocalReport: (fileName) => ipcRenderer.invoke('open-local-report', fileName),
+  // 顶部署名：URL 固定在主进程，这里不传参
+  openAttribution: () => ipcRenderer.invoke('open-attribution-link'),
+  // 弱网测试：引擎无窗口运行，界面是采集窗口里的二级页面。
+  // 页面不直接出网（控制接口没有 CORS），控制请求一律经主进程转发。
+  launchWeaknet: () => ipcRenderer.invoke('weaknet-launch'),
+  weaknetApi: (path, body) => ipcRenderer.invoke('weaknet-api', { path, body }),
+  weaknetStopEngine: () => ipcRenderer.invoke('weaknet-engine-stop'),
+  // 手机（USB）接管：建反向映射 + 写系统代理，全程只用 adb
+  weaknetPhone: (req) => ipcRenderer.invoke('weaknet-phone', req),
+  onWeaknetEngineExit: (callback) => {
+    ipcRenderer.on('weaknet-engine-exit', (_e, payload) => callback(payload));
+  },
+  removeWeaknetEngineExit: () => ipcRenderer.removeAllListeners('weaknet-engine-exit'),
 
   getDevices: () => ipcRenderer.invoke('get-devices'),
   getAndroidDeviceInfo: (deviceId) => ipcRenderer.invoke('get-android-device-info', deviceId),
@@ -19,6 +32,13 @@ contextBridge.exposeInMainWorld('perfAPI', {
   disconnectWifi: (ipPort) => ipcRenderer.invoke('disconnect-wifi', ipPort),
   // 应用列表：纯 adb（pm list packages -3）读取，不安装任何 APK
   getPackages: (deviceId) => ipcRenderer.invoke('get-packages', deviceId),
+  // 桌面应用名是后台从 APK 资源里解出来的，解出一个推一个
+  onAppLabels: (callback) => {
+    ipcRenderer.on('app-labels', (_e, payload) => callback(payload));
+  },
+  removeAppLabelsListener: () => {
+    ipcRenderer.removeAllListeners('app-labels');
+  },
   getPid: (deviceId, packageName) => ipcRenderer.invoke('get-pid', deviceId, packageName),
   startCollect: (deviceId, packageName, deviceLabel, appLabel, metricConfig) =>
     ipcRenderer.invoke('start-collect', deviceId, packageName, deviceLabel, appLabel, metricConfig),
@@ -27,6 +47,14 @@ contextBridge.exposeInMainWorld('perfAPI', {
   clearReportShots: () => ipcRenderer.invoke('clear-report-shots'),
   exportData: (format) => ipcRenderer.invoke('export-data', format),
   setTags: (category, tags) => ipcRenderer.invoke('set-tags', category, tags),
+
+  // 低谷截图（Android / iOS 采集共用）
+  onTroughShot: (callback) => {
+    ipcRenderer.on('trough-shot', (_event, meta) => callback(meta));
+  },
+  removeTroughShotListener: () => {
+    ipcRenderer.removeAllListeners('trough-shot');
+  },
 
   onPerfData: (callback) => {
     ipcRenderer.on('perf-data', (_event, data) => callback(data));

@@ -114,6 +114,8 @@ def main():
             return 1
         z.extractall(pkg)
     check("zip 可解压且条目数正常", len(z.infolist()) > 1000, "%d 个条目" % len(z.infolist()))
+    apks = [i.filename for i in z.infolist() if i.filename.lower().endswith(".apk")]
+    check("发布包不带 WeakNet.apk（手机弱网只走 USB，不依赖 APK）", not apks, apks[:3])
 
     launcher = os.path.join(pkg, "Perfara.exe")
     server = os.path.join(pkg, "server", "PerfaraServer.exe")
@@ -126,6 +128,59 @@ def main():
     # 采集客户端在包里，但冒烟只验「起得起、看板可用」，不依赖它
     check("采集客户端随包", os.path.isfile(os.path.join(pkg, "collector", "Perfara.exe")),
           os.path.join(pkg, "collector", "Perfara.exe"))
+
+    # 弱网二级页面：页面在 app.asar 内，引擎在 asar 外（Electron 不能 spawn asar 内文件），
+    # 且 exe 必须支持 --headless —— 旧版 exe 会让页面停在「引擎版本过旧」。
+    asar = os.path.join(pkg, "collector", "resources", "app.asar")
+    inner = []
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))      # perfara/tests/deep
+        tools_dir = os.path.join(here, "..", "..", "..", "tools")
+        sys.path.insert(0, os.path.abspath(tools_dir))
+        import asar_tool
+        if os.path.isfile(asar):
+            header, _ = asar_tool.read_header(asar)
+            inner = [p for p, _ in asar_tool.walk(header)]
+    except Exception as e:                                     # noqa: BLE001
+        print("   app.asar 读取失败：%r" % (e,))
+    need = ("renderer/weaknet-page.js", "renderer/weaknet-page.css",
+            "src/weaknet-host.js", "src/phone-proxy.js")
+    check("弱网二级页面随包（app.asar 内）", all(n in inner for n in need),
+          "缺 %s" % [n for n in need if n not in inner] if not all(n in inner for n in need)
+          else "%d 个文件" % len(inner))
+
+    wn = os.path.join(pkg, "collector", "resources", "weaknet", "WeakNet.exe")
+    check("弱网引擎随包", os.path.isfile(wn),
+          "%.1fMB" % (os.path.getsize(wn) / 1048576) if os.path.isfile(wn) else "缺 " + wn)
+    if os.path.isfile(wn):
+        wr = os.path.join(pkg, "_wn_ready.json")
+        try:
+            os.remove(wr)
+        except OSError:
+            pass
+        wp = subprocess.Popen([wn, "--headless", "--ready-file", wr], cwd=os.path.dirname(wn),
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        info = {}
+        wdl = time.time() + 30
+        while time.time() < wdl:
+            if os.path.isfile(wr):
+                try:
+                    info = json.load(open(wr, encoding="utf-8"))
+                except (ValueError, OSError):
+                    info = {}
+                if info:
+                    break
+            if wp.poll() is not None:
+                break
+            time.sleep(0.3)
+        check("弱网引擎支持 --headless 握手", info.get("status") in ("ready", "already"),
+              json.dumps(info, ensure_ascii=False) or "30s 内无就绪文件（旧版 exe？）")
+        subprocess.run(["taskkill", "/PID", str(wp.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            os.remove(wr)
+        except OSError:
+            pass
 
     proc = subprocess.Popen([launcher], cwd=pkg,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -160,8 +215,14 @@ def main():
     html = body.decode("utf-8", errors="replace")
     check("看板首屏 200 且返回 SPA 外壳", st == 200 and "<div id=\"app\"" in html,
           "status=%s len=%d" % (st, len(html)))
-    check("首屏无外链请求（离线承诺）", "http://" not in html and "https://" not in html,
-          "外链数=%d" % (html.count("http://") + html.count("https://")))
+    # 离线承诺盯的是「首屏加载期会不会外连」：`<a>` 里的外链只有点击才发请求，
+    # 页脚开源署名正是这样一个锚点，把它连同文字一起去掉再判定；脚本/样式/图片
+    # 等资源位上的 http(s) 仍然一律算违约。
+    no_anchor = re.sub(r"<a\b[^>]*>.*?</a>", "", html, flags=re.S)
+    check("首屏无外链请求（离线承诺）",
+          "http://" not in no_anchor and "https://" not in no_anchor,
+          "外链数=%d（含署名锚点，已排除）"
+          % (html.count("http://") + html.count("https://")))
 
     m = re.search(r'(?:src|href)="(/[^"]+\.js)"', html)
     asset = m.group(1) if m else None

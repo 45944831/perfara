@@ -35,9 +35,9 @@ class TestRun(Base):
     content_hash = Column(String, index=True, nullable=True)  # for dedup
     # 上传方 UID（POST /api/upload 的 uid）；列表/详情/去重均只看此字段
     owner_uid = Column(String(128), index=True, nullable=True)
-    # 备用字段，仅存储，不参与权限与查询逻辑
-    para1 = Column(String(128), index=True, nullable=True)
-    para2 = Column(String(256), index=True, nullable=True)
+    # 备用字段，仅存储，不参与权限与查询逻辑（不建索引：库里从来没有这两个索引）
+    para1 = Column(String(128), nullable=True)
+    para2 = Column(String(256), nullable=True)
     started_at = Column(DateTime, index=True)  # parsed from json, or now()
     ended_at = Column(DateTime, nullable=True)
     device = Column(String, nullable=True)  # model/version info, optional

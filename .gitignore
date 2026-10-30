@@ -74,6 +74,7 @@ logs/
 
 # ── 本地数据（含采集数据、数据库）──────────────────────────────────
 perfara/data/
+perfara/.run/
 *.db
 # 例外：脱敏后的种子库**必须入库**。它是 perfara_server.spec 唯一的种子来源，
 # 而它的生成输入 perfara/data/webperf.db 是开发机工作库、不进 git；
@@ -92,8 +93,14 @@ _archive_removed/
 
 # ── 运行期产物（采集端本地报告归档，测试也会生成）────────────────────
 _client_src/app/reports/
+# 批量测试的原始输出：含真机机型/包名的报告截图，只在本地留档
+perfara/tests/_run_out/
 
 # ── 发布期临时产物（修复效果图等，不入库）──────────────────────────────────
 release/修复效果图_*/
 # 泄漏审计用的敏感串模式文件：含真实序列号/机型/包名，绝不能入库
 release/_audit/
+
+# ── 随包携带的弱网工具（二进制，从 WeakNet Release 取，不入库）──
+/perfara/collector/resources/weaknet/
+/_client_src/app/weaknet/

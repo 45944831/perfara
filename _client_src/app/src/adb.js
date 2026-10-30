@@ -69,6 +69,37 @@ function adbShell(deviceId, cmd, timeout = SHELL_TIMEOUT_MS) {
 }
 
 /**
+ * 截取设备当前画面（PNG 原始字节）。
+ * 必须用 exec-out：`shell screencap -p` 在 Windows 上会被 adb 的换行转换破坏 PNG。
+ * 1080×2400 PNG 约 1~3 MB，maxBuffer 给 32 MB 余量。
+ */
+function captureScreen(deviceId, timeout = 8000) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      ADB_BIN,
+      ['-s', deviceId, 'exec-out', 'screencap', '-p'],
+      { timeout, encoding: 'buffer', maxBuffer: 32 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (stderr && String(stderr).trim()) || err.message;
+          return reject(new Error(msg));
+        }
+        const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '');
+        if (buf.length < 100 || buf.slice(0, 8).toString('binary') !== '\x89PNG\r\n\x1a\n') {
+          return reject(new Error(`screencap 返回非法 PNG（${buf.length} B）`));
+        }
+        resolve(buf);
+      }
+    );
+    try {
+      _inflight.add(child);
+      child.once('exit', () => _inflight.delete(child));
+      child.once('error', () => _inflight.delete(child));
+    } catch (_) {}
+  });
+}
+
+/**
  * 设备侧 shell 的单引号安全包裹。
  * adb shell 的参数在 PC 端走 execFile（不过本地 shell），但到了设备端会被
  * /system/bin/sh 重新解析一次 —— 包名/组件名里混进单引号就能改写设备上的命令。
@@ -138,6 +169,32 @@ async function getDeviceInfo(deviceId) {
   return Object.keys(info).length ? info : null;
 }
 
+/**
+ * 反向转发：手机上的 127.0.0.1:phonePort 落到本机 pcPort（省略则为同号端口）。
+ * 手机接管弱网靠它 —— 手机系统代理指向 127.0.0.1:port 时，流量经 USB 进到
+ * 本机的 WeakNet 代理；全程只用 adb，手机不需要装任何东西。
+ */
+async function reverseTcp(deviceId, phonePort, pcPort) {
+  const remote = pcPort || phonePort;
+  await adb(['-s', deviceId, 'reverse', `tcp:${phonePort}`, `tcp:${remote}`], 6000);
+}
+
+/** 撤掉 reverseTcp；映射不存在时 adb 会报错，交给调用方忽略 */
+async function removeReverse(deviceId, port) {
+  await adb(['-s', deviceId, 'reverse', '--remove', `tcp:${port}`], 6000);
+}
+
+/** 当前设备上的反向映射列表（`adb reverse --list` 的原文行） */
+async function listReverses(deviceId) {
+  const out = await adb(['-s', deviceId, 'reverse', '--list'], 6000);
+  return String(out || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+}
+
+/** 把本机文件推到手机上（弱网守护脚本用；脚本里必须保留 LF，不能走 shell 重定向） */
+async function pushFile(deviceId, localPath, remotePath, timeout = 15000) {
+  await adb(['-s', deviceId, 'push', localPath, remotePath], timeout);
+}
+
 async function connectWifi(ipPort) {
   try {
     const out = await adb(['connect', ipPort.trim()], 10000);
@@ -199,12 +256,116 @@ async function disconnectWifi(ipPort) {
   }
 }
 
+/**
+ * 第三方应用列表。带 versionCode 是为了给「应用名缓存」做失效键：
+ * 应用一升级，缓存的桌面名就可能过期，必须重解。
+ * Android 7 以下没有 --show-versioncode，退回纯包名（versionCode=null）。
+ */
 async function getThirdPartyPackages(deviceId) {
-  const pkgOut = await adbShell(deviceId, 'pm list packages -3', 15000);
-  const packages = pkgOut.split('\n')
-    .map(l => l.replace('package:', '').trim().replace(/\r/g, ''))
-    .filter(Boolean).sort();
-  return packages.map(pkg => ({ pkg, label: pkg }));
+  let pkgOut = '';
+  try {
+    pkgOut = await adbShell(deviceId, 'pm list packages -3 --show-versioncode', 15000);
+  } catch (_) {}
+  if (!/versionCode:/.test(pkgOut)) {
+    pkgOut = await adbShell(deviceId, 'pm list packages -3', 15000);
+  }
+  const rows = [];
+  for (const line of pkgOut.split('\n')) {
+    const s = line.replace(/\r/g, '').trim();
+    const m = /^package:(\S+?)(?:\s+versionCode:(\d+))?$/.exec(s);
+    if (!m) continue;
+    rows.push({ pkg: m[1], label: m[1], versionCode: m[2] ? parseInt(m[2], 10) : null });
+  }
+  rows.sort((a, b) => (a.pkg < b.pkg ? -1 : a.pkg > b.pkg ? 1 : 0));
+  return rows;
+}
+
+/** 设备界面语言（取 resources.arsc 里对应语言的 string），拿不到返回 null */
+async function getDeviceLocale(deviceId) {
+  try {
+    const out = await adbShell(
+      deviceId,
+      'getprop persist.sys.locale; getprop persist.sys.language; getprop persist.sys.country',
+      4000,
+    );
+    const [localeRaw = '', langRaw = '', countryRaw = ''] = out
+      .split('\n').map(s => s.trim().toLowerCase());
+    const m = /^([a-z]{2,3})(?:[-_]([a-z0-9]{2,4}))?$/.exec(localeRaw);
+    if (m) return { lang: m[1], country: m[2] || '' };
+    if (/^[a-z]{2,3}$/.test(langRaw)) return { lang: langRaw, country: countryRaw };
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 包的 base.apk 路径；未安装/取不到返回 null */
+async function getApkPath(deviceId, packageName) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const out = await adbShell(deviceId, `pm path ${shellArg(packageName)}`, 8000);
+      const paths = out.split('\n')
+        .map(l => l.replace(/^package:/, '').trim().replace(/\r/g, ''))
+        .filter(Boolean);
+      if (paths.length > 0) return paths.find(p => /base\.apk$/i.test(p)) || paths[0];
+    } catch (_) {}
+    // 一次失败可能只是 adb 通道抖动（实测偶发 device not found），等一下再问
+    await new Promise(r => setTimeout(r, 400));
+  }
+  return null;
+}
+
+/**
+ * 从设备 APK 里直接读一个条目的原始字节（exec-out + 设备端 unzip）。
+ * 不把整个 APK 拉回 PC：一个 resources.arsc 就有 1.8~6.4 MB，整包只会更大。
+ */
+function readApkEntry(deviceId, apkPath, entry, timeout = 25000, maxBytes = 32 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      ADB_BIN,
+      ['-s', deviceId, 'exec-out', `unzip -p ${shellArg(apkPath)} ${shellArg(entry)}`],
+      { timeout, encoding: 'buffer', maxBuffer: maxBytes },
+      (err, stdout) => {
+        const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '');
+        if (err) {
+          // 撑满缓冲说明是被截断的，宁可当失败下次再取，也别拿半个资源表当「没有名字」
+          if (buf.length >= maxBytes) return reject(new Error('entry 超过缓冲上限，已截断'));
+          if (buf.length > 0) return resolve(buf); // 部分 ROM 的 unzip 退出码非 0 但数据完整
+          return reject(err);
+        }
+        resolve(buf);
+      },
+    );
+    try {
+      _inflight.add(child);
+      child.once('exit', () => _inflight.delete(child));
+      child.once('error', () => _inflight.delete(child));
+    } catch (_) {}
+  });
+}
+
+/**
+ * 解析包的桌面显示名。
+ * @returns {Promise<string|null|undefined>} 名字；'' = 确认没有名字（可缓存）；
+ *          null/undefined = 这次没成功（adb 抖动等），不要缓存，下次重试
+ */
+async function resolveAppLabel(deviceId, packageName, locale) {
+  const { readManifestLabel, readArscString } = require('./apk-label');
+  try {
+    const apk = await getApkPath(deviceId, packageName);
+    if (!apk) return null;
+    const manifest = await readApkEntry(deviceId, apk, 'AndroidManifest.xml', 15000);
+    const m = readManifestLabel(manifest);
+    if (!m) return '';
+    if (m.text) return String(m.text).trim();
+    if (!m.resId) return '';
+    // 个别 APK 的资源表能到 47 MB（booking），缓冲给足，不然会静默截断
+    const arsc = await readApkEntry(deviceId, apk, 'resources.arsc', 40000, 64 * 1024 * 1024);
+    const label = readArscString(arsc, m.resId, locale);
+    return label ? String(label).trim() : '';
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -1530,13 +1691,16 @@ function resetDeviceState(deviceId) {
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
 module.exports = {
+  shell: adbShell,
   getDevices, getDeviceInfo, getThirdPartyPackages, getPid, getUid, ensureAppRunning,
+  getDeviceLocale, getApkPath, resolveAppLabel, readApkEntry,
   resolveLauncherComponent, isAppForeground,
   getCpuStats, getMemInfo, getFps,
   getNetStats, getBatteryInfo, getThermalInfo, getGpuUsage,
-  getCpuCoreStats,
+  getCpuCoreStats, captureScreen,
   preflightCheck, probeChannel,
   resetDeviceState, connectWifi, autoConnectWifi, disconnectWifi,
+  reverseTcp, removeReverse, listReverses, pushFile,
   cancelAllInflight,
   // 纯算法导出：供离线回归测试锁定 FPS/Jank 判定口径（不影响运行时行为）
   __algo: {

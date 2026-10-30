@@ -1,0 +1,226 @@
+/* ═══ 弱网测试二级页面 ══════════════════════════════════════════════════════
+   与采集主界面共用 :root 里的配色变量（style.css），这里只定义版式。
+   整页覆盖在窗口上，靠左上角「返回采集」回到主界面，不影响后台采集。 */
+
+.wn-page {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font);
+  font-size: 13px;
+}
+.wn-page[hidden] { display: none; }
+
+/* ── 页头 ───────────────────────────────────────────────────────────────── */
+.wn-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.wn-head .wn-title { font-size: 14px; font-weight: 600; }
+.wn-head .wn-ver { color: var(--text2); font-size: 11px; margin-left: 6px; font-weight: 400; }
+.wn-spacer { flex: 1; }
+.wn-back {
+  font: inherit; font-size: 12.5px; padding: 5px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg3); color: var(--text); cursor: pointer;
+}
+.wn-back:hover { border-color: var(--accent); color: var(--accent); }
+.wn-pill {
+  font-size: 11px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg3); color: var(--text2);
+}
+.wn-pill.is-on { color: var(--green); border-color: rgba(62, 207, 142, .45); background: rgba(62, 207, 142, .1); }
+.wn-btn {
+  font: inherit; font-size: 12.5px; padding: 6px 14px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg3); color: var(--text); cursor: pointer;
+}
+.wn-btn:hover:not(:disabled) { border-color: var(--accent); }
+.wn-btn:disabled { opacity: .45; cursor: default; }
+.wn-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.wn-btn-danger { background: rgba(248, 81, 81, .14); border-color: rgba(248, 81, 81, .5); color: var(--red); }
+.wn-mini {
+  font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg3); color: var(--text2);
+}
+.wn-mini:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.wn-mini.is-on { background: rgba(79, 142, 247, .15); border-color: rgba(79, 142, 247, .55); color: var(--accent); }
+.wn-mini:disabled { opacity: .45; cursor: default; }
+
+/* ── 状态条 ─────────────────────────────────────────────────────────────── */
+.wn-sub {
+  display: flex; flex-wrap: wrap; gap: 22px;
+  padding: 7px 14px; background: var(--bg);
+  border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+.wn-kv { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
+.wn-kv label { color: var(--text2); }
+.wn-kv span { color: var(--text); font-variant-numeric: tabular-nums; }
+.wn-kv span.is-good { color: var(--green); }
+
+/* ── 主体 ───────────────────────────────────────────────────────────────── */
+.wn-body {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  gap: 12px; padding: 12px 14px;
+}
+.wn-col { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; }
+.wn-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px; flex: 0 0 auto;
+}
+.wn-card.wn-grow { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 160px; }
+.wn-card-h {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 600; margin-bottom: 9px;
+}
+.wn-card-h .wn-hint { color: var(--text2); font-weight: 400; font-size: 11px; }
+.wn-card-h .wn-spacer { flex: 1; }
+
+/* 场景 */
+.wn-cat { margin-bottom: 8px; }
+.wn-cat:last-child { margin-bottom: 0; }
+.wn-cat-t { color: var(--text2); font-size: 11px; margin: 2px 0 6px; }
+.wn-scenes { display: flex; flex-wrap: wrap; gap: 6px; }
+.wn-scene {
+  font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg3); color: var(--text2);
+}
+.wn-scene:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.wn-scene.is-on {
+  background: rgba(79, 142, 247, .16); border-color: rgba(79, 142, 247, .6);
+  color: var(--accent); font-weight: 600;
+}
+.wn-scene:disabled { opacity: .45; cursor: default; }
+
+/* 参数 */
+.wn-params { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 14px; }
+.wn-param { display: flex; align-items: center; gap: 8px; }
+.wn-param label { flex: 1; color: var(--text2); font-size: 12px; }
+.wn-param input {
+  width: 86px; font: inherit; font-size: 12px; text-align: right; padding: 4px 8px;
+  border-radius: 6px; background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+.wn-param input:focus { outline: none; border-color: var(--accent); }
+.wn-param input:disabled { opacity: .5; }
+.wn-param .wn-unit { width: 34px; color: var(--text2); font-size: 11px; }
+
+/* 右栏 */
+.wn-switch {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text2); margin-bottom: 7px;
+}
+.wn-switch span { flex: 1; }
+.wn-select {
+  flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 6px;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--bg3);
+  color: var(--text); outline: none;
+}
+.wn-select:disabled { opacity: .5; }
+.wn-phone-state { min-height: 17px; }
+.wn-phone-state.is-bad { color: #ff8a8a; }
+.wn-note { color: var(--text2); font-size: 11px; line-height: 1.7; margin-top: 4px; }
+.wn-note code { font-size: 11px; color: var(--text); }
+.wn-tips { display: flex; flex-direction: column; gap: 3px; margin-top: 0; font-size: 11.5px; }
+.wn-log {
+  flex: 1; overflow: auto; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 9px; font-size: 11.5px; line-height: 1.75;
+  color: var(--text2); min-height: 100px; font-variant-numeric: tabular-nums;
+}
+.wn-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wn-log .wn-t { color: #5c6478; margin-right: 7px; }
+.wn-log .wn-ev-config { color: var(--accent); }
+.wn-log .wn-ev-error { color: var(--red); }
+
+/* ── 弱网组合 ───────────────────────────────────────────────────────────── */
+.wn-combo-state { min-height: 17px; }
+.wn-combo-actions { display: flex; gap: 8px; margin-top: 3px; }
+.wn-combo-actions[hidden] { display: none; }
+.wn-mini.is-danger {
+  border-color: rgba(248, 81, 81, .55); color: var(--red); background: rgba(248, 81, 81, .12);
+}
+.wn-combo-ed {
+  margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--border);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.wn-combo-ed[hidden] { display: none; }
+.wn-combo-ed-t { font-size: 12px; font-weight: 600; }
+.wn-ce-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); }
+.wn-ce-name {
+  flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 8px;
+  border-radius: 6px; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+}
+.wn-ce-name:focus { outline: none; border-color: var(--accent); }
+.wn-ce-name:disabled { opacity: .5; }
+.wn-ce-loop { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); }
+.wn-ce-loop input { accent-color: var(--accent); }
+.wn-ce-steps { display: flex; flex-direction: column; gap: 6px; }
+.wn-ce-step { display: flex; align-items: center; gap: 6px; }
+.wn-ce-n { width: 14px; color: var(--text2); font-size: 11px; text-align: right; }
+.wn-ce-step .wn-select { flex: 1; }
+.wn-ce-num {
+  width: 58px; font: inherit; font-size: 12px; text-align: right; padding: 4px 6px;
+  border-radius: 6px; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.wn-ce-num:focus { outline: none; border-color: var(--accent); }
+.wn-ce-num:disabled { opacity: .5; }
+.wn-ce-unit { color: var(--text2); font-size: 11px; }
+.wn-ce-del { padding: 2px 7px; }
+.wn-ce-err { color: #ff8a8a; font-size: 11.5px; }
+.wn-ce-err[hidden] { display: none; }
+.wn-ce-bar { display: flex; align-items: center; gap: 8px; }
+.wn-ce-bar .wn-btn { padding: 5px 12px; }
+
+/* 引擎异常提示 */
+.wn-banner {
+  margin: 10px 14px 0; padding: 8px 12px; border-radius: 8px;
+  background: rgba(248, 81, 81, .1); border: 1px solid rgba(248, 81, 81, .45);
+  color: var(--red); font-size: 12px; line-height: 1.6;
+}
+.wn-banner[hidden] { display: none; }
+
+/* 顶栏按钮的「限速中」状态：回到主界面也能看到现在被限着 */
+#btn-weaknet.is-on {
+  border-color: rgba(62, 207, 142, .55); color: var(--green);
+  background: rgba(62, 207, 142, .1);
+}
+/* 暂停后限速已关，但接管还留着，用橙色区别于「完全没开」 */
+#btn-weaknet.is-paused {
+  border-color: rgba(245, 166, 35, .55); color: var(--orange);
+  background: rgba(245, 166, 35, .1);
+}
+/* 只开了「跟随性能采集」、还没开始：虚线框提示它会自己生效 */
+#btn-weaknet.is-follow {
+  border-style: dashed; border-color: rgba(79, 142, 247, .55); color: var(--accent);
+}
+
+/* 主界面快捷按钮：只在限速中 / 暂停时出现，直接暂停或收干净，不用再进二级页面 */
+.wn-quick[hidden] { display: none; }
+.wn-quick-pause {
+  border-color: rgba(62, 207, 142, .5); color: var(--green);
+  background: rgba(62, 207, 142, .08);
+}
+.wn-quick-pause:hover:not(:disabled) { border-color: var(--green); }
+.wn-quick-stop {
+  border-color: rgba(248, 81, 81, .45); color: var(--red);
+  background: rgba(248, 81, 81, .08);
+}
+.wn-quick-stop:hover:not(:disabled) { border-color: var(--red); }
+/* 停止结果只在主界面可见（二级页面收起来了），用一行短提示 + 悬停看明细 */
+.wn-quick-hint { font-size: 11.5px; color: var(--text2); white-space: nowrap; }
+.wn-quick-hint.is-ok { color: var(--green); }
+.wn-quick-hint.is-bad { color: var(--red); }
+.wn-quick-hint[hidden] { display: none; }
+.wn-banner.is-ok {
+  background: rgba(62, 207, 142, .1); border-color: rgba(62, 207, 142, .45);
+  color: var(--green);
+}

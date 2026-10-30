@@ -179,7 +179,7 @@ def main():
             holder.kill()
         else:
             tl = subprocess.run(["tasklist", "/FI", f"PID eq {gpid}", "/NH"],
-                                capture_output=True, text=True).stdout
+                                capture_output=True, text=True, encoding="gbk", errors="replace").stdout
             check("Job 内孙进程初始存活", "python" in tl.lower(), f"grandchild={gpid}")
             holder.kill()          # 模拟「启动器被强杀」
             holder.wait(timeout=10)
@@ -187,7 +187,7 @@ def main():
             gone = False
             while time.time() < deadline:
                 tl2 = subprocess.run(["tasklist", "/FI", f"PID eq {gpid}", "/NH"],
-                                     capture_output=True, text=True).stdout
+                                     capture_output=True, text=True, encoding="gbk", errors="replace").stdout
                 if "python" not in tl2.lower():
                     gone = True
                     break

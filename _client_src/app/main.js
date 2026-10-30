@@ -21,6 +21,42 @@ const {
 const { getMachineUid } = require('./src/machine-uid');
 const activationStore = require('./src/activation');
 const trialSession = require('./src/trial-session');
+const troughShots = require('./src/trough-shots');
+const weaknetTracker = require('./src/weaknet-tracker');
+const weaknetHost = require('./src/weaknet-host');
+const phoneProxy = require('./src/phone-proxy');
+const sysproxy = require('./src/sysproxy');
+const appLabels = require('./src/app-labels');
+
+/** 系统代理快照放用户目录：进程被强杀后下次启动还要靠它把整机代理还回去 */
+function sysproxyBackupFile() {
+  return path.join(app.getPath('userData'), 'weaknet-sysproxy-backup.json');
+}
+
+/**
+ * 采集起止与弱网追踪的接线。
+ * 开始采集时启动轮询（只问本机引擎：手机关闭走 USB 代理，限速也在本机引擎上），
+ * 结束时收口并取出时段；没有段就不写进 data.js，报告页也就不会多出空区块。
+ */
+function startWeaknetTracking(category, deviceId) {
+  try {
+    // 引擎端口可能是顺延出来的实际值，不能盲猜 8899
+    const info = weaknetHost.currentInfo();
+    weaknetTracker.start({
+      ctrlPort: (info && info.ctrlPort) || 0,
+      // USB 接管的手机是被本机引擎限速的，报告里的来源要记成手机而不是本机
+      phoneUsb: category === 'android' && !!phoneProxy.heldPort(deviceId),
+    });
+  } catch (_) {}
+}
+
+function stopWeaknetTracking() {
+  try {
+    return weaknetTracker.stop();
+  } catch (_) {
+    return null;
+  }
+}
 
 function sendToRenderer(channel, payload) {
   try {
@@ -67,6 +103,31 @@ function sendToRendererWithTrialLog(channel, payload) {
  */
 function snapshotArr(arr) {
   return Array.isArray(arr) ? arr.slice() : [];
+}
+
+/** 低谷截图失败只提示一次，避免每 10s 刷屏 */
+const _shotWarned = new Set();
+
+/**
+ * 每拍数据进来后喂一次低谷判定；命中则异步截图（不阻塞采样）。
+ * @param {'android'|'ios'} category
+ * @param {object} data 采样点
+ * @param {() => Promise<Buffer>} capture 返回 PNG 字节
+ * @param {string} logChannel 采集日志通道
+ */
+function _pushTroughShot(category, data, capture, logChannel) {
+  const fps = data ? data.fps : null;
+  if (typeof fps !== 'number' || !isFinite(fps) || fps <= 0) return;
+  const ts = Number.isFinite(data.timestamp) ? data.timestamp : Date.now();
+  troughShots.feed(category, ts, fps, capture).then((r) => {
+    if (r.meta) {
+      sendToRenderer('trough-shot', r.meta);
+      sendToRenderer(logChannel, `已截取低谷截图 ${r.meta.time}（FPS ${r.meta.fps} / 目标 ${r.meta.target}）`);
+    } else if (r.error && !_shotWarned.has(category)) {
+      _shotWarned.add(category);
+      sendToRenderer(logChannel, `[warn] 低谷截图失败：${r.error.message}（本轮不再提示）`);
+    }
+  }).catch(() => {});
 }
 
 /**
@@ -206,16 +267,35 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   loadLogpannelFromConfigOutOnce();
+  try {
+    appLabels.init(path.join(app.getPath('userData'), 'app-labels.json'));
+  } catch (_) {}
   // Windows/Linux: remove the default File/Edit/View menu bar from the window.
   // (macOS keeps the system menu bar unless you replace it with a custom Menu.)
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null);
   }
+  // 上次崩溃留下的系统代理接管（引擎被强杀时 atexit 没跑）：先还回去再开窗口
+  try { sysproxy.restoreStale(sysproxyBackupFile()); } catch (_) {}
+  // 手机侧同理：账本只在内存里，强杀重开后是空的，把「映射已断、代理还指着本工具端口」的手机清掉
+  phoneProxy.sweepStale().catch(() => {});
   createWindow();
 });
 
+let weaknetQuitting = false;
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform === 'darwin') return;
+  // 弱网引擎是独立进程：先把它的系统代理接管和限速收掉再退出，
+  // 否则强杀后整机代理会指向一个没人监听的端口（shutdown 内部有 4 s 上限）。
+  // 手机侧同理：USB 接管过的手机要还原系统代理并撤掉反向映射。
+  if (weaknetQuitting) { app.quit(); return; }
+  weaknetQuitting = true;
+  try { appLabels.saveNow(); } catch (_) {}
+  phoneProxy.restoreAll().catch(() => {})
+    .then(() => weaknetHost.shutdown())
+    .then(() => { try { sysproxy.clearBackup(sysproxyBackupFile()); } catch (_) {} })
+    .catch(() => {})
+    .then(() => app.quit());
 });
 
 app.on('activate', () => {
@@ -272,11 +352,39 @@ ipcMain.handle('disconnect-wifi', async (_event, ipPort) => {
   return await ADB.disconnectWifi(ipPort);
 });
 
+// 应用名来自 APK 里的资源（adb 没有取 label 的接口），单包要读一次清单/资源表。
+// 所以这里只做两件快事：把缓存命中直接填上、把剩下的丢给后台逐条解析。
+let _labelRunId = 0;
+
+function startLabelResolution(deviceId, packages) {
+  const runId = ++_labelRunId;
+  const ADB = require('./src/adb');
+  appLabels.resolveAll({
+    deviceId,
+    packages,
+    adb: ADB,
+    // 换设备/刷新列表后旧轮次自行退出，别把上一台机器的名字推到界面
+    isStale: () => runId !== _labelRunId,
+    // 采集中暂停：exec-out 拉资源表会占 USB 通道，宁可名字晚几分钟
+    shouldPause: () => !!collector,
+    onUpdate: (items, progress) => {
+      if (runId !== _labelRunId) return;
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send('app-labels', { deviceId, items, ...progress });
+    },
+  }).catch(() => {});
+}
+
 ipcMain.handle('get-packages', async (_event, deviceId) => {
   const bad = invalidAdbArgs(deviceId, null);
   if (bad) { _logStartup(`[adb] 拒绝 get-packages：${bad}`); return []; }
   const ADB = require('./src/adb');
-  return await ADB.getThirdPartyPackages(deviceId);
+  const packages = await ADB.getThirdPartyPackages(deviceId);
+  try {
+    await appLabels.attachCached(deviceId, packages, ADB);
+  } catch (_) {}
+  startLabelResolution(deviceId, packages);
+  return packages;
 });
 
 // 说明：已移除「安装 perfara.apk + 广播拉应用列表」的采集方式。
@@ -316,6 +424,9 @@ ipcMain.handle('start-collect', async (_event, deviceId, packageName, deviceLabe
   };
 
   collector = new Collector(deviceId, packageName, 1000, mc);
+  startWeaknetTracking('android', deviceId);
+  _shotWarned.delete('android');
+  troughShots.beginRun(getBundledReportsDir(), 'android', packageName, Date.now());
   collector.on('log', (msg) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('collect-log', msg);
@@ -326,6 +437,7 @@ ipcMain.handle('start-collect', async (_event, deviceId, packageName, deviceLabe
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('perf-data', data);
     }
+    _pushTroughShot('android', data, () => require('./src/adb').captureScreen(deviceId), 'collect-log');
   });
   collector.on('stopped', (payload) => {
     trialSession.onCollectStopped();
@@ -349,6 +461,7 @@ ipcMain.handle('start-collect', async (_event, deviceId, packageName, deviceLabe
       collector.stop();
     } catch (_) {}
     collector = null;
+    stopWeaknetTracking();
     return { ok: false, reason: e.message || String(e) };
   }
   trialSession.onCollectStarted(app, getMachineUid, activationStore, readConfigOut, sendToRendererWithTrialLog);
@@ -388,6 +501,7 @@ ipcMain.handle('clear-report-shots', async () => {
   const fallback = path.join(app.getPath('userData'), 'reports', 'shots');
   _tryClearShotsDir(primary);
   _tryClearShotsDir(fallback);
+  troughShots.resetAll();
   return { ok: true };
 });
 
@@ -401,6 +515,7 @@ ipcMain.handle('stop-collect', async () => {
     }
     collector = null;
   }
+  const weaknet = stopWeaknetTracking();
   try {
     if (perfHistory.length > 0 && androidSession) {
       const disp = reportsDataJs.formatReportAppId(
@@ -420,6 +535,9 @@ ipcMain.handle('stop-collect', async () => {
         tag: snapshotArr(androidTags),
         // 采集参数配置：报告端据此隐藏被移除指标的图表与指标行
         metricConfig: androidSession.metricConfig || null,
+        shots: troughShots.getShots('android'),
+        // 采集期间开过弱网才带这一段，报告页据此追加「弱网总结分析」
+        weaknet: weaknet || undefined,
       });
     }
   } catch (e) {
@@ -492,6 +610,7 @@ ipcMain.handle('pc-start-collect', async (_e, exePath, metricConfig) => {
     : null;
   pcSession = { exePath: abs, label, metricConfig: mc };
   pcCollector = new PcCollector(abs, mc);
+  startWeaknetTracking('pc');
   pcCollector.on('log', (msg) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('pc-collect-log', msg);
@@ -536,11 +655,14 @@ ipcMain.handle('pc-stop-collect', async () => {
     }
     pcCollector = null;
   }
+  const weaknet = stopWeaknetTracking();
   try {
     if (pcPerfHistory.length > 0 && pcSession) {
-      reportsDataJs.writeDataJs(
-        buildPcReportDataJsPayload(pcSession, pcPerfHistory, pcTags, getMachineUid(), pcSession.metricConfig),
+      const payload = buildPcReportDataJsPayload(
+        pcSession, pcPerfHistory, pcTags, getMachineUid(), pcSession.metricConfig,
       );
+      payload.weaknet = weaknet || undefined;
+      reportsDataJs.writeDataJs(payload);
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);
@@ -957,6 +1079,9 @@ ipcMain.handle('ios-start-collect', async (_event, bundleId, execName, appName, 
   iosLog.separator(`ios-start-collect bundleId=${bundleId} execName=${execName || ''}`);
 
   iosCollector = new IosCollector(bundleId, execName || '', mc);
+  startWeaknetTracking('ios');
+  _shotWarned.delete('ios');
+  troughShots.beginRun(getBundledReportsDir(), 'ios', bundleId, Date.now());
   iosCollector.on('log', msg => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('ios-collect-log', msg);
@@ -965,6 +1090,7 @@ ipcMain.handle('ios-start-collect', async (_event, bundleId, execName, appName, 
     iosPerfHistory.push(data);
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('ios-perf-data', data);
+    _pushTroughShot('ios', data, () => require('./src/ios-screen').captureIosScreen(iosSession.udid), 'ios-collect-log');
   });
   iosCollector.on('sysmon-missing', () => {
     iosLog.write('[ios] 收到 {"code":0}，未匹配到目标进程 — 停止采集');
@@ -1003,6 +1129,7 @@ ipcMain.handle('ios-stop-collect', async () => {
     }
     iosCollector = null;
   }
+  const weaknet = stopWeaknetTracking();
   try {
     if (iosPerfHistory.length > 0 && iosSession) {
       const disp = reportsDataJs.formatReportAppId(
@@ -1021,6 +1148,8 @@ ipcMain.handle('ios-stop-collect', async () => {
         perf: snapshotArr(iosPerfHistory),
         tag: snapshotArr(iosTags),
         metricConfig: iosSession.metricConfig || null,
+        shots: troughShots.getShots('ios'),
+        weaknet: weaknet || undefined,
       });
     }
   } catch (e) {
@@ -1091,6 +1220,7 @@ ipcMain.handle('ios-gpu-start-collect', async (_event, meta) => {
   iosLog.separator('ios-gpu-start-collect');
 
   iosGpuCollector = new IosGpuCollector();
+  startWeaknetTracking('ios_gpu');
   iosGpuCollector.on('log', msg => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('ios-gpu-log', msg);
@@ -1127,6 +1257,7 @@ ipcMain.handle('ios-gpu-stop-collect', async () => {
     }
     iosGpuCollector = null;
   }
+  const weaknet = stopWeaknetTracking();
   try {
     if (iosGpuHistory.length > 0 && iosGpuSession) {
       const disp = reportsDataJs.formatReportAppId(
@@ -1145,6 +1276,7 @@ ipcMain.handle('ios-gpu-stop-collect', async () => {
         perf: snapshotArr(iosGpuHistory),
         tag: snapshotArr(iosGpuTags),
         metricConfig: iosGpuSession.metricConfig || null,
+        weaknet: weaknet || undefined,
       });
     }
   } catch (e) {
@@ -1244,6 +1376,195 @@ ipcMain.handle('open-local-report', async (_e, fileName) => {
     // file:// + openExternal：由系统用默认浏览器打开 HTML（openPath 可能关联到编辑器）
     await shell.openExternal(pathToFileURL(full).href);
     return { ok: true, path: full };
+  } catch (e) {
+    return { ok: false, reason: e.message || String(e) };
+  }
+});
+
+// 顶部署名链接：地址写死在主进程，不接受渲染进程传入的 URL
+const ATTRIBUTION_URL = 'https://github.com/charmingLitteDeveloper/perfara';
+ipcMain.handle('open-attribution-link', async () => {
+  try {
+    await shell.openExternal(ATTRIBUTION_URL);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message || String(e) };
+  }
+});
+
+/* ══════════════════════════════════════════════════════════════════
+ * 弱网测试（WeakNet）—— 引擎随包携带、以无窗口方式运行，
+ * 界面在采集窗口里（二级页面），请求统一经这里转发。
+ *
+ * 渲染进程不直接出网：控制接口没有 CORS 头，页面里 fetch 127.0.0.1 会被拦；
+ * 而且端口可能顺延，得由这里拿到握手后的实际端口再转发。
+ * ══════════════════════════════════════════════════════════════════ */
+
+/** 弱网工具目录：打包后 resources/weaknet；开发态直接指向仓库里同一份（不进 asar） */
+function getWeaknetDir() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'weaknet');
+  }
+  return path.join(__dirname, '..', '..', 'perfara', 'collector', 'resources', 'weaknet');
+}
+
+/** 让 WeakNet 用到本包自带的 adb：它按 PATH 找 adb.exe，这里只给子进程加目录 */
+function weaknetEnv() {
+  const env = { ...process.env };
+  // 父进程带 ELECTRON_RUN_AS_NODE 时，Electron 系进程会退化；WeakNet 是普通 exe，
+  // 但同一套环境变量可能被它的 pyinstaller 引导程序读取，统一清掉更稳。
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.ELECTRON_NO_ATTACH_CONSOLE;
+  const adbDir = app.isPackaged
+    ? path.join(process.resourcesPath, 'adb', 'win')
+    : path.join(__dirname, '..', '..', 'perfara', 'collector', 'resources', 'adb', 'win');
+  if (fs.existsSync(adbDir)) {
+    env.PATH = adbDir + path.delimiter + (env.PATH || '');
+  }
+  return env;
+}
+
+/**
+ * 启动规格：打包态用随包 WeakNet.exe；未打包时若 PERFARA_WEAKNET_SRC 指向 WeakNet
+ * 源码目录，就跑 `python weaknet_gui.py`（改引擎时不必先重打 exe）。
+ */
+function weaknetLaunchSpec() {
+  const dir = getWeaknetDir();
+  const src = process.env.PERFARA_WEAKNET_SRC;
+  if (!app.isPackaged && src) {
+    const py = path.join(src, 'weaknet_gui.py');
+    if (fs.existsSync(py)) {
+      return { command: 'python', args: [py, '--headless'], cwd: src, env: weaknetEnv() };
+    }
+  }
+  return { command: path.join(dir, 'WeakNet.exe'), args: ['--headless'], cwd: dir, env: weaknetEnv() };
+}
+
+/**
+ * 引擎意外退出（崩溃/被杀）时告诉页面，别让界面一直显示过期的「限速中」。
+ * 手机还指着这个引擎时先把手机代理还原：端口已经没人监听，不还原等于让手机断网。
+ */
+weaknetHost.setExitHandler((info, code) => {
+  // 引擎死了，系统代理还指着它的端口就是整机断网：按开启前的快照还回去
+  // （正常关闭时 shutdown 已经让引擎解除过、快照也已清掉，这里无事可做）
+  try { sysproxy.restoreStale(sysproxyBackupFile()); } catch (_) {}
+  phoneProxy.restoreAll().catch(() => {}).then(() => {
+    try { weaknetTracker.setPhoneUsb(false); } catch (_) {}
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('weaknet-engine-exit', { ...info, code });
+    }
+  });
+});
+
+ipcMain.handle('weaknet-launch', async () => {
+  try {
+    return await weaknetHost.ensure(weaknetLaunchSpec());
+  } catch (e) {
+    return { ok: false, reason: e.message || String(e) };
+  }
+});
+
+/** 页面 → 主进程 → 引擎控制接口。path 走白名单，见 src/weaknet-host.js */
+ipcMain.handle('weaknet-api', async (_e, req) => {
+  const r = req && typeof req === 'object' ? req : {};
+  try {
+    const p = String(r.path || '');
+    // 接管本机流量前存一份注册表原值：引擎被强杀时 atexit 不跑，
+    // 没有这份快照整机代理就永远停在 127.0.0.1:<引擎端口>
+    const togglingProxy = p === '/api/sysproxy';
+    const enableProxy = !!(r.body && r.body.enable);
+    if (togglingProxy && enableProxy) {
+      const info = weaknetHost.currentInfo();
+      try { sysproxy.snapshot(sysproxyBackupFile(), (info && info.proxyPort) || weaknetHost.DEFAULT_PROXY_PORT); } catch (_) {}
+    }
+    const data = await weaknetHost.call(p, r.body, { port: r.port });
+    // 引擎自己已经还原并清好了，快照留着反而会在下次启动时误还原
+    if (togglingProxy && !enableProxy) { try { sysproxy.clearBackup(sysproxyBackupFile()); } catch (_) {} }
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, reason: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('weaknet-engine-stop', async () => {
+  try {
+    await weaknetHost.shutdown();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message || String(e) };
+  }
+});
+
+/**
+ * 手机（USB）弱网接管：只用 adb，手机不装东西。
+ * 代理端口取引擎握手后的实际值（被占时引擎会顺延），不能盲猜 8888。
+ */
+ipcMain.handle('weaknet-phone', async (_e, req) => {
+  const r = req && typeof req === 'object' ? req : {};
+  const action = String(r.action || 'status');
+  // restore 一次还原所有被接管的手机，不带设备号；其余动作必须带合法设备号
+  const bad = action === 'restore'
+    ? null
+    : invalidAdbArgs(r.deviceId == null ? '' : r.deviceId, null);
+  if (bad) return { ok: false, stage: 'device', msg: bad };
+  const deviceId = String(r.deviceId);
+  try {
+    // 采集期间接管/解除手机，报告里的来源标签要跟着变，不能停在开始采集那一刻
+    const syncPhoneUsb = () => {
+      try {
+        const dev = androidSession && androidSession.deviceId;
+        weaknetTracker.setPhoneUsb(!!(dev && phoneProxy.heldPort(dev)));
+      } catch (_) {}
+    };
+    if (action === 'connect') {
+      // 接管本来就要引擎在跑，不该让用户先跑去点别的按钮：不在就自己拉起来。
+      // 拉不起来才报错，并把启动失败的原因原样带回去（多半是 exe 缺失 / 被杀软拦了）。
+      let info = weaknetHost.currentInfo();
+      if (!info || !(await weaknetHost.probe(info.ctrlPort))) {
+        let started;
+        try { started = await weaknetHost.ensure(weaknetLaunchSpec()); }
+        catch (e) { started = { ok: false, reason: e.message || String(e) }; }
+        info = weaknetHost.currentInfo();
+        if (!started || !started.ok || !info || !(await weaknetHost.probe(info.ctrlPort))) {
+          return {
+            ok: false, stage: 'engine',
+            msg: '弱网引擎没有在运行，自动启动也没成功',
+            hint: ((started && (started.reason || started.msg)) || '')
+              + '（引擎起不来，手机接管会把手机关进死端口，所以先拒绝；可先点「开启限速」排查引擎本身）',
+          };
+        }
+      }
+      const res = await phoneProxy.connect({ deviceId, proxyPort: info.proxyPort });
+      if (res && res.ok) syncPhoneUsb();
+      return res;
+    }
+    if (action === 'disconnect') {
+      const res = await phoneProxy.disconnect({ deviceId });
+      // 下拉框可能已经切到别的手机：账本里还挂着代理的那几台一起收干净，
+      // 否则选中项一换，「解除」清的不是真正被接管的那台
+      const rest = await phoneProxy.restoreAll();
+      syncPhoneUsb();
+      if (!rest.length) return res;
+      const merged = Object.assign({}, res, {
+        restoredOthers: rest.map((x) => ({ deviceId: x.deviceId, ok: !!(x && x.ok), msg: (x && x.msg) || '' })),
+      });
+      const failed = rest.find((x) => x && !x.ok);
+      if (failed) {
+        merged.ok = false;
+        merged.stage = (res && res.stage) || failed.stage || 'verify';
+        merged.msg = (merged.msg ? merged.msg + '；' : '') + '还有手机没还原干净（' + failed.deviceId
+          + (failed.msg ? '：' + failed.msg : '') + '）';
+        merged.hint = merged.hint || failed.hint || '';
+      }
+      return merged;
+    }
+    if (action === 'restore') {
+      // 「停止弱网」要把所有接管过的手机一起还原：页面不知道接管过哪些设备
+      const items = await phoneProxy.restoreAll();
+      syncPhoneUsb();
+      return { ok: true, items };
+    }
+    return await phoneProxy.status(deviceId);
   } catch (e) {
     return { ok: false, reason: e.message || String(e) };
   }

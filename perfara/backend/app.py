@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload, load_only
 from sqlalchemy.exc import IntegrityError
 import json
+from urllib.parse import urlsplit
 from typing import List, Optional
 from datetime import datetime, timedelta
 from .database import Base, engine, get_db, new_share_token
@@ -46,6 +47,35 @@ def _cors_allow_origins():
         "http://127.0.0.1:8000",
         "http://localhost:8000",
     ]
+
+
+_UPLOAD_CONTENT_TYPES = ("application/json", "text/json", "multipart/form-data")
+
+
+def _guard_upload_request(request: Request, content_type: str) -> None:
+    """挡跨站写入与不合规 content-type。
+
+    /api/upload 无需登录，任何网页都能向 127.0.0.1 发「简单请求」往库里写垃圾数据。
+    带 Origin 的请求必须与 Host 同源，或在 WEBPERF_CORS_ORIGINS 白名单内；不带
+    Origin 的是脚本/采集端，放行。content-type 只收 JSON 与 multipart ——
+    text/plain 不触发预检，正是这类投毒的入口。
+    """
+    origin = (request.headers.get("origin") or "").strip()
+    if origin and origin not in _cors_allow_origins():
+        host = (request.headers.get("host") or "").strip().lower()
+        if not host or urlsplit(origin).netloc.lower() != host:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "cross_site_denied",
+                        "message": "cross-site upload is not allowed"},
+            )
+    ctype = content_type.split(";", 1)[0].strip().lower()
+    if ctype not in _UPLOAD_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail={"code": "unsupported_content_type",
+                    "message": "content-type must be application/json or multipart/form-data"},
+        )
 
 
 # Initialize logging to <可写目录>/logs/app.log（打包后即 exe 同级的 logs/）
@@ -187,6 +217,7 @@ async def upload_json(
         except ValueError:
             pass
     content_type = request.headers.get("content-type") or ""
+    _guard_upload_request(request, content_type)
     payload = None
     p_uid: Optional[str] = None
     p_para1: Optional[str] = None
@@ -1107,9 +1138,31 @@ except Exception as _mime_err:
 
 try:
     if os.path.exists(os.path.join(FRONTEND_DIST, "assets")):
-        app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
+        class _ImmutableAssets(StaticFiles):
+            """Vite 产物名带内容哈希，可长期缓存。"""
+
+            async def get_response(self, path, scope):
+                resp = await super().get_response(path, scope)
+                resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                return resp
+
+        app.mount(
+            "/assets",
+            _ImmutableAssets(directory=os.path.join(FRONTEND_DIST, "assets")),
+            name="assets",
+        )
 except Exception as _mount_err:
     logging.getLogger(__name__).exception("Mount assets failed: %s", _mount_err)
+
+
+def _static_response(path: str) -> FileResponse:
+    # index.html 必须每次回源（否则发版后仍跑旧 JS）；其余文件（favicon 等）名字无哈希，短缓存。
+    resp = FileResponse(path)
+    if os.path.abspath(path) == os.path.abspath(FRONTEND_INDEX):
+        resp.headers["Cache-Control"] = "no-cache"
+    else:
+        resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
 
 
 @app.get("/{full_path:path}", include_in_schema=False)
@@ -1127,10 +1180,10 @@ def spa_fallback(full_path: str):
         # 也算进来，那些非发布目录里的文件会被当静态资源发出去。
         in_dist = cand == dist_root or cand.startswith(dist_root + os.sep)
         if in_dist and os.path.isfile(cand):
-            return FileResponse(cand)
+            return _static_response(cand)
     except Exception:
         pass
     # SPA fallback to index.html
     if os.path.exists(FRONTEND_INDEX):
-        return FileResponse(FRONTEND_INDEX)
+        return _static_response(FRONTEND_INDEX)
     raise HTTPException(status_code=404, detail="Not Found")

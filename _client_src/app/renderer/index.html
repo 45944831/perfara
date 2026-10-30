@@ -3,13 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:" />
   <title>Perfara离线版</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="weaknet-page.css" />
 </head>
 <body>
 
 <!-- ═══ TOP BAR ════════════════════════════════════════════════════════════ -->
+<!-- 顶部署名：仅标注二次开发来源，不抢视线 -->
+<div class="attribution-bar">本项目基于 <a id="link-attribution" href="#" title="在浏览器中打开原项目">https://github.com/charmingLitteDeveloper/perfara</a> 二次开发，感谢开源</div>
+
 <header class="topbar">
   <div class="topbar-left">
     <span class="logo-icon">⚡</span>
@@ -48,6 +52,10 @@
       <button id="btn-tag-scene" class="btn btn-sm" disabled>开始标记</button>
       <button id="btn-export-csv"  class="btn btn-export" disabled>↓ CSV</button>
       <button id="btn-export-json" class="btn btn-export" disabled>↓ JSON</button>
+      <button type="button" id="btn-weaknet" class="btn btn-sm" title="弱网测试：打开弱网页面，可对手机/本机做限速 / 延迟 / 丢包 / 断网，采集时可同时观察弱网表现">≈ 弱网测试</button>
+      <button type="button" id="btn-wn-pause" class="btn btn-sm wn-quick wn-quick-pause" title="暂停弱网：流量恢复直连，场景 / 系统代理 / 手机接管都保留，随时可继续" hidden>⏸ 暂停弱网</button>
+      <button type="button" id="btn-wn-stop" class="btn btn-sm wn-quick wn-quick-stop" title="停止弱网：结束限速，并解除系统代理、还原手机代理" hidden>■ 停止弱网</button>
+      <span id="wn-quick-hint" class="wn-quick-hint" hidden></span>
       <span id="prep-hint" class="prep-hint prep-hint--json" hidden></span>
     </div>
   </div>
@@ -194,13 +202,16 @@
   <div id="log-output" class="log-output"></div>
 </div>
 
+<script src="attribution.js"></script>
 <script src="apply-app-brand.js"></script>
 <script src="echarts-loader.js"></script>
 <script src="charts.js"></script>
 <script src="device-info-strip.js"></script>
 <script src="log-panel.js"></script>
 <script src="report-launch.js"></script>
+<script src="weaknet-page.js"></script>
 <script src="start-mode.js"></script>
+<script src="trough-shots.js"></script>
 <script src="metric-settings.js"></script>
 <script src="renderer.js"></script>
 </body>

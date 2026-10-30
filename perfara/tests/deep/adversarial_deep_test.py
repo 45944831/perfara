@@ -22,6 +22,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -256,6 +257,34 @@ def run_tests():
     st, _, r = jcall("POST", "/api/upload", body=mp_txt,
                      headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
     check("multipart 非 .json 文件名返回 400", st == 400, f"{st} {str(r)[:120]}")
+
+    # ─────────────────── 02b 上传入口收口（CSRF / content-type） ───────────────────
+    section("02b 上传入口收口（CSRF / content-type）")
+    ok_body = json.dumps(make_payload(pkg="com.adv.guard", label="guard")).encode()
+
+    st, _, r = jcall("POST", "/api/upload", {"uid": "guard"}, body=ok_body,
+                     headers={"Content-Type": "text/plain"})
+    check("text/plain 被 415 拒绝（简单请求不能投毒）", st == 415, f"{st} {str(r)[:120]}")
+
+    st, _, r = jcall("POST", "/api/upload", {"uid": "guard"}, body=ok_body, headers={})
+    check("缺 content-type 被 415 拒绝", st == 415, f"{st} {str(r)[:120]}")
+
+    st, _, r = jcall("POST", "/api/upload", {"uid": "guard"}, body=ok_body,
+                     headers={"Content-Type": "application/json",
+                              "Origin": "http://evil.example.com"})
+    check("跨站 Origin 被 403 拒绝", st == 403, f"{st} {str(r)[:120]}")
+
+    st, _, r = jcall("POST", "/api/upload", {"uid": "guard"}, body=ok_body,
+                     headers={"Content-Type": "application/json", "Origin": "null"})
+    check("Origin: null 被 403 拒绝", st == 403, f"{st} {str(r)[:120]}")
+
+    st, _, r = jcall("POST", "/api/upload", {"uid": "guard"}, body=ok_body,
+                     headers={"Content-Type": "application/json", "Origin": BASE})
+    check("同源 Origin 放行", st == 200, f"{st} {str(r)[:120]}")
+
+    st, _, r = jcall("POST", "/api/upload", {"uid": "guard"}, body=ok_body,
+                     headers={"Content-Type": "application/json"})
+    check("无 Origin（脚本/采集端）放行", st == 200, f"{st} {str(r)[:120]}")
 
     # ───────────────────────── 03 非有限浮点与超长字段 ─────────────────────────
     section("03 非有限浮点与超长字段")
@@ -507,8 +536,11 @@ def run_tests():
     st, _, body = call("GET", "/")
     check("看板首页 200", st == 200, str(st))
     index_html = open(os.path.join(dist, "index.html"), "rb").read().decode("utf-8", "replace")
-    check("index.html 无外部 http(s) 依赖", "https://" not in index_html and "http://" not in index_html,
-          index_html[:120])
+    # 只看资源依赖：署名锚点 <a href="https://github.com/..."> 不是请求，剥掉再判
+    no_anchors = re.sub(r"<a\b[^>]*>.*?</a>", "", index_html, flags=re.S | re.I)
+    check("index.html 除署名锚点外无外部 http(s) 依赖",
+          "https://" not in no_anchors and "http://" not in no_anchors,
+          no_anchors[:120])
     st, _, body = call("GET", "/api/definitely-not-a-route")
     check("未知 API 返回 404 而非 SPA 首页", st == 404 and b"<html" not in body.lower(), f"{st}")
     st, _, body = call("GET", "/whatever/route")

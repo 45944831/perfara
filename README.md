@@ -29,6 +29,7 @@
 ## 界面预览
 
 > 以下截图均取自本项目真实运行界面（真机采集数据 + 本地看板 / 本地报告），未做美化替换。
+> 采集窗口与看板顶部各有一行不显眼的开源署名：本项目基于 [charmingLitteDeveloper/perfara](https://github.com/charmingLitteDeveloper/perfara) 二次开发。
 
 **本地看板**：按日期范围、项目名称筛选测试记录，列表直接给出 FPS / CPU / 内存均值与场景标记；「复制 testid」拿到该条记录的 32 位 ID，用于详情链接与竞品比对
 
@@ -50,13 +51,17 @@
 
 ![趋势统计](docs/screenshots/trends.png)
 
+**弱网二级页面**：采集窗口内直接调场景与参数，状态条给代理地址、连接数与上下行；返回采集不停限速，顶栏按钮变绿提示还限着
+
+![弱网二级页面](docs/screenshots/weaknet-page.png)
+
 ---
 
 ## 功能特性
 
 ### 多平台采集
 
-- **Android**：USB 直连或无线 adb，Android 6.0+（FPS 走 `SurfaceFlinger --timestats`，需 Android 11+，低版本自动回退 `gfxinfo`）；应用列表走 `pm list packages -3`，**不在手机上安装任何 APK**
+- **Android**：USB 直连或无线 adb，Android 6.0+（FPS 走 `SurfaceFlinger --timestats`，需 Android 11+，低版本自动回退 `gfxinfo`）；应用列表走 `pm list packages -3`，**不在手机上安装任何 APK**；下拉框显示手机桌面上的应用名（`src/apk-label.js` 直接解析 APK 的 `AndroidManifest.xml` + `resources.arsc`，按设备语言取名，后台逐条解析并缓存）
 - **iOS**：真机性能采集，含 CPU / 内存 / FPS / 网络 / 电量 / 温度；便携版自带 `ios.exe` + Python + `pymobiledevice3` 工具链，无需自行安装 Python
 - **iOS GPU 专项**：渲染管线细分数据（GPU 占用、带宽、纹理、着色器、缓存、ALU 等）
 - **PC**：按进程采集本机 CPU / 内存 / GPU / 磁盘 / 线程等指标
@@ -96,6 +101,17 @@
 CPU（系统 / 进程 / 各核心使用率与频率 / **CPU 限频**）、内存（PSS、Java Heap、Native Heap、Code、Graphics…）、
 网络上下行、GPU 使用率、GPU 温度、机身温度、电池（电量 / 电压 / 电流 / 功耗）、磁盘 I/O、
 **上下文切换**、线程数、系统事件。
+
+### 弱网测试（随包携带）
+
+- 采集按钮组里的 `≈ 弱网测试` 在采集窗口内打开弱网测试页（覆盖式二级页面，配色与采集界面统一），引擎 **WeakNet** 以 `--headless` 随 Perfara 无窗口启动（`collector/resources/weaknet/WeakNet.exe`）；页面经主进程转发控制请求，端口用 `--ready-file` 握手回传，不再硬编码 8899
+- 17 个内置场景（常规网络 / 弱网环境 / 极端环境三档）+ 13 项自定义参数（上下行延迟、抖动、带宽、丢包、断连率/间隔/时长、卡顿、黑洞率、拒连率、DNS 故障率），点场景即时生效
+- **弱网组合**：把多段场景按顺序排成一条时间线（最多 5 段，每段选场景 + 时长，可循环），页面里直接新建/编辑/删除，点一下即播放；播放中状态显示「第 2/3 段 · Wi-Fi 良好 · 还剩 0:42」。组合与 WeakNet 图形界面共用同一份配置，两端都看得到；组合不能嵌套，场景被删掉时跳过该段
+- 接管三选一：本机桌面程序（系统代理）、**手机 USB 直连**（`adb reverse` 手机 `127.0.0.1:18888` → 本机引擎 `8888` + 写手机系统代理，手机不装 App，接管时自动开限速、点「解除」或退出自动还原）、同一 Wi-Fi 的手机（局域网代理 `PC IP:8888`）
+- 手机 USB 接管只对读系统代理的程序生效（自己开 TCP/UDP 的多数手游不走代理）；部分 ROM 禁止 adb 写系统设置，页面会按阶段报错并给出「禁止权限监控 / USB 调试（安全设置）」的开启指引（不写死厂商），不猜「大概成功了」
+- `← 返回采集` 只关页面不停限速，顶栏按钮变绿色 `≈ 限速中`；退出 Perfara 先关限速、解除系统代理再结束引擎，不会把机器留在断网状态
+- 弱网只改接管对象的网络路径，adb 采集链路不受影响，可以边限速边采，观察应用在弱网下的帧率与流量
+- **报告自动带「弱网总结分析」**：采集期间每 2s 轮询 WeakNet 控制接口（端口取自握手；USB 接管的手机走同一引擎，段记到「手机（USB 接管）」名下），把限速时段记进 `data.weaknet`；报告页在「解读总结」下方追加一块——弱网时长占比、场景/时段/接管范围/代理流量、弱网段 vs 直连段的六项指标对比（帧率、达帧率、1% Low、卡顿、流量、进程 CPU）与风险建议。没开弱网就没有这一段，老报告不受影响
 
 ### 报告与看板
 
@@ -415,11 +431,12 @@ Perfara_Portable_20261028_r2.zip   （211,587,345 B，约 202MB，对应 v2026.1
 | `perfara/frontend/patch-spa-metric-config.js` | 后处理 SPA 产物：注入指标配置（`dist/` 不入库，仓库里没有 Vue 源码，只能这样调） |
 | `perfara/frontend/patch-spa-offline-fonts.js` | 后处理 SPA 产物：剥掉 `index.html` 的外链字体，让首屏真的不联网；`--check` 可当发布前检查 |
 | `perfara/frontend/patch-spa-favicon.js` | 后处理 SPA 产物：把 `frontend/favicon/` 复制进 `dist/` 并注入 favicon `<link>`（幂等）；图标设计源在 `docs/icon/` |
+| `perfara/frontend/patch-spa-attribution.js` | 后处理 SPA 产物：在 `index.html` 顶部注入「本项目基于原项目二次开发」的小字署名（幂等，已存在时会升级为最新样式）；`--check` 可当发布前检查 |
 
 改了采集器源码后**必须**重跑 `tools/build_app.py` 再打包，否则发布包里的 `app.asar` 会落后于源码。
 
 改了 `backend/` 或 `frontend/dist` 后**必须**重打 `perfara/perfara_server.spec`，否则便携包里的服务会落后于源码（历史上曾因此出现 `.js` 被当 `text/plain` 返回、看板整页空白）。
-`dist/` 是构建产物、不入库，所以对它的任何修复都得落成脚本（见上表三个 patch-*），否则前端一重建就回去了。
+`dist/` 是构建产物、不入库，所以对它的任何修复都得落成脚本（见上表四个 patch-*），否则前端一重建就回去了。
 
 ```bash
 # 重打便携版启动器（约 20s，产物 build/portable-dist/Perfara.exe）
@@ -450,8 +467,8 @@ node perfara/tests/realdevice/preflight_breaker_test.js
 node perfara/tests/realdevice/jank_algo_test.js
 node perfara/tests/realdevice/lazy_module_test.js
 
-# 深度套件（10 套：启动器进程/端口、加载算法、报告边界、畸形上传、对比泳道、
-# PC 启动注入、种子库完整性、接口深度、看板 SPA 端到端）
+# 深度套件（18 套：启动器进程/端口、加载算法、报告边界、畸形上传、对比泳道、
+# PC 启动注入、种子库完整性、弱网追踪/报告/组合/引擎/页面/手机接管、接口深度、看板 SPA 端到端）
 bash perfara/tests/run_deep_batch.sh      # 末尾按真实退出码汇总，任一套红即 exit 1
 ```
 
@@ -482,6 +499,16 @@ A：不会离开本机。看板服务只监听 `127.0.0.1`，数据存在本地 
 
 | 版本 | 内容 |
 | --- | --- |
+| `20261030` | **真机接管专项验收（r17）**：手机写系统代理的权限放开后，用打包态采集端把「引擎 → USB 接管 → 限速 → 停止 / 解除 / 退出」整条链路在真机上跑了一遍（39 项全过）。手机侧限速不再靠 `toybox nc` 量（本机 ROM 的 nc 连回环都不转发数据），改成让手机 Chrome 走系统代理下载本机源站的 2 MB 文件，按下载目录落盘计时：直连 657 ms、4G 弱网 6065 ms（9.2 倍，前一轮同参数 602 → 5598 ms，同为 9 倍量级），两次都是完整 2 MB。源站只看到本机出口 IP —— 手机的 Wi-Fi 在 172.16 网段、到不了本机 192.168 网段，能下到就只能是走 USB 反向隧道。顺带修掉一个真缺陷：**接管进行中关窗会留下反向映射** —— 一次接管是 reverse → 写代理 → 装守护好几趟 adb，账本要到最后一刻才写，退出清理这时读到的是空账本，随后 connect 又把映射/代理写上。现在 `connect` / `disconnect` / `restoreAll` 走同一个串行队列，退出清理排在手上这趟接管之后，映射建好就先落账，失败分支再撤掉。`phone_proxy_test.js` 81 项（新增「接管中退出」5 项）、deep 21 套、离线 16 套全绿。发布包 `Perfara_Portable_20261030_r17`（222,245,812 B / 2894 条目，SHA-256 `29c7e0e6…db9b2e`）：`zip_smoke_test.py` 18 PASS / 0 FAIL、`scan_package.py` CLEAN、`scan_seed_db.py` 0 命中。**未上传 GitHub** |
+| `20261030` | **引擎启动失败复核 + 两处加固**：用打包态 `WeakNet.exe` 复盘「启动后立即退出（code=-1）」，确认是探测脚本路径编码坏掉导致的 spawn ENOENT，引擎本身能正常拉起（host `ensure` 握手 1.8s、复用 2ms、`shutdown` 后端口释放；用户自己开着的 8899 实例不受影响，也没有留下孤儿进程）。顺带修两处：①spawn 自身的 error（exe 被杀软隔离 / 被删 / 无执行权限）以前只报「立即退出（code=-1）」，现在直接带上系统错误原文与常见原因；②引擎回 `already`（端口上已有别的实例）时只报 ctrl_port，接管后代理端口为 null，手机会 reverse 到默认 8888 —— 现在接管前先探一次 `/api/status`，取对方真实的 `listen.port`。`weaknet_host_test.js` 53/53 通过（新增两条静态守卫）；发布包 `Perfara_Portable_20261030_r16` 已本地生成（222,245,323 B / 2894 条目，SHA-256 `5916e09e…dd01e6`）：`zip_smoke_test.py` 18 PASS / 0 FAIL、`scan_package.py` CLEAN、`scan_seed_db.py` 0 命中。**未上传 GitHub** |
+| `20261030` | **接管手机不再要求先开限速**：`弱网引擎没有在运行，先点「开启限速」` 这条死路去掉 ——手机接管本来就要引擎，主进程在 `weaknet-phone` 的 connect 分支里先确保引擎可用（不在就 `ensure`），拉不起来才报错并原样带回启动失败原因；页面在接管成功后同步把引擎状态置为可用（主进程刚拉起的引擎不会让页面停在「未启动」）。同时补上 `weaknet-host.ensure` 的一个洞：原来只要手里还留着 `state.info` 就直接 `ok`，引擎卡死 / 端口不答话也照样复用它，现在先探一次控制端口（1500ms），探不到按「引擎已退出」走同一套收尾（还原手机代理、系统代理、通知页面）再重新拉起。`weaknet_host_test.js` 51 项（新增「接管时引擎不在会自动拉起」「自动拉起后引擎可用」、接线静态检查）。**未打包、未上传** |
+| `20261030` | **弱网页启停合并成一个按钮**：页头的 `⚡ 立即开始` 与 `▶ 开启限速` 功能重叠（手机接管过之后两者几乎一样），去掉 `⚡ 立即开始`，只留 `▶ 开启限速` / `■ 停止限速` 一个按钮。点开始时一次做完：引擎没起就拉起 → 下拉框选了手机且未接管就接管 → 按当前场景开限速；没选手机就只限本机；手机接管失败只提示、限速照开，限速没开成会把刚接管的手机退回去（提示条写「已还原手机代理」）。限速中同一个按钮变 `■ 停止限速`，只停限速，场景 / 代理 / 手机接管都保留。`weaknet_page_ui_test.js` 相应改写：「页头只剩一个启停按钮」「没选手机时开限速不碰手机」「一键开始顺手接管所选手机」「失败回滚」共 94 项。**未打包、未上传** |
+| `20261030` | **弱网残留自查（第二轮）**：逐条核对接管 / 解除 / 换机 / 引擎退出 / 强杀 / 重启等路径后修掉四处。①解除失败时不再丢记账：退出、下次接管还会按账本重试，接管前记下的用户原代理也不会丢（此前失败即删记录，重试时会把 `127.0.0.1:18888` 当成本工具写的直接删，公司的代理回不去了）；②本机系统代理加崩溃兜底 —— 开启前把 HKCU 的 `ProxyEnable/ProxyServer/ProxyOverride` 快照到 `userData/weaknet-sysproxy-backup.json`（已经是本引擎接管时跳过快照，免得把 `127.0.0.1` 存成「用户原值」），引擎意外退出按快照还原并用 PowerShell 调 `InternetSetOption` 通知系统刷新，整个程序被强杀则下次启动先还原再开窗口；只在当前代理仍等于快照记录的引擎端口时才改注册表，用户中途换过代理就只丢快照；③`⚡ 立即开始` / 跟随采集在「限速没开成」时把刚接管的手机退回去，提示里写明「已还原手机代理」，不留接管着但没限速的半截状态；④失败提示条带 15s 存活期，状态轮询不再把它顺手清掉；⑤接管来的引擎（用户自己开着的 WeakNet）没有子进程 `exit` 事件，`ensure` 后每 5s 探活，连续两次探不到控制端口就按「引擎退出」走同一套收尾（还原手机代理 → 系统代理快照 → 通知页面），不再出现「窗口关了、手机还指着它的端口」；本机若在 8899 跑着引擎，`weaknet_host_test.js` 的 IPC 部分会临时接管它开限速，跑完按原值还原；⑥手机侧加启动自检：程序被任务管理器强杀 / 蓝屏时内存账本丢了，重开后对已连接手机逐个检查，只在「代理是 `127.0.0.1:18888` 且 `reverse --list` 里没有这条映射」时清代理（映射还在可能正在限速、或代理不是本工具写的，一律不碰）。新增 `sysproxy_residue_test.js` 21 项（快照/还原/端口不一致/用户改过/接线静态检查），`phone_proxy_test.js` 76 项（新增失败保账本、重试还原原代理、启动自检四类设备）、`weaknet_page_ui_test.js` 93 项（新增回滚两例）、`weaknet_host_test.js` 48 项（新增「接管实例消失触发收尾」、外部引擎限速开关还原）；deep 批量扩为 21 套。**未打包、未上传** |
+| `20261030` | **弱网：修「拔线后手机还断网」+ 立即开始 / 跟随采集**：手机接管成功后推送守护脚本 `/data/local/tmp/perfara_proxy_watch.sh`（`setsid` 起会话，每 2s 看 `/proc/net/tcp{,6}` 里 `18888` 是否还在 LISTEN，连续两次消失就先 `settings put global http_proxy :0`（触发 MIUI 把 Wi-Fi 网络配置里镜像的代理一起清掉）再删 `global_http_proxy_host/port` 与 `http_proxy`；删前回读，值已被别人改过就退出，不跟别的工具抢；无 `awk` 时只记日志不清理，避免误清把限速打断）；守护装不上不影响接管，界面提示「拔线守护未安装，拔线前请先解除」。弱网页页头新增 `⚡ 立即开始`（引擎 → 接管所选手机 → 开限速，一步完成，直连场景会提示选了才有效果），右栏新增 `跟随性能采集`（localStorage 记住）：点采集 `开始` 时先接管当前设备并开限速再采样，停止 / 切设备换应用 / 应用退出自动停止 / 启动失败回滚都会把限速、系统代理、手机代理一起收掉；只开跟随时顶栏显示 `≈ 弱网·跟随`。紧随 WeakNet v1.1.12 的残留收口同步三处：接管/解除按「已接管的那台 + 端口」记账，下拉框切到别的手机再点解除也清得对（主进程在解除后会按账本把残留的其余设备一并还原，页面提示「另一台手机还挂着代理」）；换机 / 换端口重连前先按账本还原上一台，旧 reverse 映射与旧代理不再留到拔线，重连也不会把自己写的 `127.0.0.1` 当成用户原代理；自动还原失败的手动命令改成 `settings put global http_proxy :0`（`delete` 清不掉 MIUI 网络配置副本），`Address already in use` 单独点名「手机上的 18888 被代理 App 占着」。测试：`phone_proxy_test.js` 64 项（守护编排、`:0` 顺序、换机/换端口还原、端口占用、手动命令）、`weaknet_page_ui_test.js` 91 项（立即开始、跟随起停、账本提示），deep 批量 20 套。**未打包、未上传** |
+| `20261029` | **弱网测试页集成「弱网组合」**：左栏新增组合卡片，引擎 `/api/combos` 的配置直接列出（与 WeakNet 图形界面共用同一份文件），点一下选中并开限速播放；`＋ 新建` 打开编辑器（名称、循环、最多 5 段「场景 + 时长」，时长最小 1s），保存/编辑/删除都走页面，删除需二次确认（4s 内再点一次）；播放进度不新增接口，用采集端已轮询的 `status.profile.name` 对上段首场景名逐段推进并从段时长倒数，显示「第 2/3 段 · Wi-Fi 良好 · 还剩 0:42」；步骤下拉同时列 17 个内置场景与自定义场景（`/api/upresets`），场景被删就跳过该段，组合不能嵌套。引擎无改动（不用重编 exe）。测试：`weaknet_page_ui_test.js` 扩到 61 项（假引擎补组合增删改与播放态）、`weaknet_host_test.js` 扩到 45 项（真引擎建 2 段组合 → 开限速 → 轮询到换段 → 删除回直连）、`weaknet_report_test.js` 53 项（`c:<id>` 按 profile 变化拆段）；手册新增 §9.3 弱网组合。本地用真 Electron + 随包引擎实跑（21 + 9 项）时发现并修掉一个旧问题：关掉采集窗口后 `WeakNet.exe` 会残留继续占 8888/8899——`weaknet-host.stop()` 原来是异步 `spawn` taskkill，紧接着的 `app.quit()` 把它一起带走，改成同步 `execFileSync` 后退出即清干净。**未打包、未上传** |
+| `20261029` | **弱网改为二级页面**：`≈ 弱网测试` 不再弹 WeakNet 的 tkinter 窗口，改为采集窗口内的覆盖式页面（Perfara 配色，顶栏/胶囊/状态条/场景/自定义参数/接管开关/事件日志），`← 返回采集` 不停限速、顶栏按钮变绿 `≈ 限速中`。引擎以 `--headless` 无窗口启动并用 `--ready-file` 回传实际代理/控制端口（不再硬编码 8899）；渲染进程不直接出网（控制接口无 CORS），改走 `weaknet-launch` / `weaknet-api`（24 条路由白名单）/ `weaknet-engine-stop` 三个 IPC → 新增 `_client_src/app/src/weaknet-host.js`（握手、接管已运行实例、旧版引擎可读报错、退出回收）。退出 Perfara 先 `/api/sysproxy off` + `/api/stop` 再 `taskkill /T /F`（强杀会绕过引擎 `atexit` 的系统代理还原）；追踪器改用握手端口。测试：`weaknet_host_test.js` 38 项（真引擎限速 ≥3×、接管、旧版报错、经 IPC 全链路）、`weaknet_page_ui_test.js` 27 项（Playwright + 假 perfAPI），deep 批量扩为 17 套全绿；手册 §9 重写并换真引擎配图。**随包 `WeakNet.exe` 已用同一份 1.1.10 源码重编**（补 `--headless` / `--ready-file`，10.3 MB）；发布包 `Perfara_Portable_20261029_r8` 已本地生成（212.0 MB / 2889 条目，SHA-256 `0211d8d1…`）：`zip_smoke_test.py` 17 PASS / 0 FAIL（新增「二级页面随包」「引擎 `--headless` 握手」两项闸门）、`scan_package.py` CLEAN、`scan_seed_db.py` 0 命中。**未上传 GitHub** |`≈ 弱网测试` 不再弹 WeakNet 的 tkinter 窗口，改为采集窗口内的覆盖式页面（Perfara 配色，顶栏/胶囊/状态条/场景/自定义参数/接管开关/事件日志），`← 返回采集` 不停限速、顶栏按钮变绿 `≈ 限速中`。引擎以 `--headless` 无窗口启动并用 `--ready-file` 回传实际代理/控制端口（不再硬编码 8899）；渲染进程不直接出网（控制接口无 CORS），改走 `weaknet-launch` / `weaknet-api`（24 条路由白名单）/ `weaknet-engine-stop` 三个 IPC → 新增 `_client_src/app/src/weaknet-host.js`（握手、接管已运行实例、旧版引擎可读报错、退出回收）。退出 Perfara 先 `/api/sysproxy off` + `/api/stop` 再 `taskkill /T /F`（强杀会绕过引擎 `atexit` 的系统代理还原）；追踪器改用握手端口。测试：`weaknet_host_test.js` 38 项（真引擎限速 ≥3×、接管、旧版报错、经 IPC 全链路）、`weaknet_page_ui_test.js` 27 项（Playwright + 假 perfAPI），deep 批量扩为 17 套全绿；手册 §9 重写并换真引擎配图。**随包 `WeakNet.exe` 已用同一份 1.1.10 源码重编**（补 `--headless` / `--ready-file`，10.3 MB）；发布包 `Perfara_Portable_20261029_r8` 已本地生成（212.0 MB / 2889 条目，SHA-256 `0211d8d1…`）：`zip_smoke_test.py` 17 PASS / 0 FAIL（新增「二级页面随包」「引擎 `--headless` 握手」两项闸门）、`scan_package.py` CLEAN、`scan_seed_db.py` 0 命中。**未上传 GitHub** |
+| `20261029` | **报告新增「弱网总结分析」**：采集期间每 2s 轮询 WeakNet `127.0.0.1:8899`（手机 APK 由采集端 `adb forward tcp:18999 tcp:8899` 拉回），把限速时段记为段（换场景/改参数拆段、WeakNet 退出按最后一次成功时刻收口）随 `data.js` 落盘；报告页在「解读总结」下追加区块：时长占比徽标、场景/时段/接管范围/代理流量、弱网段 vs 直连段六项对比表（帧率方向判好坏、CPU/卡顿反向、流量中性）、按衰减幅度出的风险建议。统计与解读总结同口径（先剔加载段）；四端（android/pc/ios/iosgpu）采集入口全部接线；没开弱网不渲染。新增 2 套深度用例（状态机 45 项 + 合成数据渲染 44 项），deep 批量扩为 15 套 |
+| `20261029` | **集成弱网模拟**：采集按钮组新增 `≈ 弱网测试`（与开始/停止/标记/CSV/JSON 同排），拉起随包的 WeakNet 1.1.9（exe 10.8 MB + 手机端 APK），界面风格与采集窗口统一；`weaknet` 目录在 asar 外（Electron 不能 spawn asar 内文件），发布包内 2 个条目、运行期日志/设置文件不入包；`.gitignore` 排除二进制，不入库。真机联调结论：ColorOS 拒绝写 `http_proxy`（`WRITE_SECURE_SETTINGS`），PC 端 USB 模式只能建反向端口，改用 APK 的 VPN 接管后限速生效（弱 Wi-Fi 场景 256 KB 平均 57 KB/s vs 4G LTE 867 KB/s），弱网下采集窗口帧率/流量正常出数。新增图解手册 `docs/操作手册-采集与报告.md` |
 | `20261028` | **深度测试后的修复轮**：种子库脱敏改坏 44 处 JSON 导致「点详情 500 + 列表无均值」（`make_seed_db.py` 改为按 JSON 叶子节点脱敏，正则补前瞻）；未鉴权上传触发 500 并回显 SQL/绑定参数/他人 uid（`normalize_device` 兜底 + 错误分支只回人话）；看板首屏不再请求 Google Fonts；`.gitignore` 放行 `_seed/*.db`，发布链可复现；`run_deep_batch.sh` 退出码取的是 `tail` 的假状态，改为真实退出码汇总；`Server: uvicorn` 响应头关闭；SPA 兜底前缀守卫改 `abspath`+`os.sep`（同层 `dist_evil/` 不再可绕）；`project_id=0` / `test_id=0` 被当未传、`q=%` 被当 LIKE 通配符，三处一并修；采集侧 adb 设备命令统一 `shellArg()` 转义并在 IPC 入口加白名单；PC 采集「启动目标程序」不再经 `cmd start`（文件名含 `^&` 曾在本机多执行一条命令）；`scan_seed_db.py` 增补「JSON 可解析 + 详情不打 500」两个发布判据。新增 5 套测试资产 + 1 个取证脚本，deep 批量扩为 10 套全绿。**复核时追加两项**：D17——脱敏三条自检全绿的种子库，把文件当二进制仍能 grep 出真机机型 / 品牌 / 真实包名（SQLite 的 free page 只标记不清零），构建末尾补 `VACUUM`（552,960→389,120 B），并给 `make_seed_db.py` / `scan_seed_db.py` / `seed_integrity_test.py` 各加一道整文件字节扫描，发布门禁由三判据扩为四判据；D18——`perfara/.gitattributes`（UGit 生成）把 `*.db` / `*.pyc` 全交给 Git LFS，所以「已入库的种子库」其实是个 131 B 指针：克隆拿不到数据、打包会把指针当库塞进 exe，而 `git push` 的 pre-push 钩子会把真库上传到 LFS 存储（叠加 D17 等于把带残留的库发到公网）；仓库根 2026-10-21 已声明停用 LFS，漏了这个子目录。改为 `*.db binary`，`git lfs ls-files` 现为 0 条 |
 | `20261027` | **修复种子数据库泄漏（严重）**：`perfara_server.spec` / `perfara.spec` 原先把 `data/webperf.db`（开发机真实数据）当种子库编进 exe，首次启动复制给用户 —— 含真实设备序列号、真机机型与品牌、真实应用包名与真实用户 uid；zip 层审计（剔 `data/` + 扫文本条目）看不见，因为它在 PyInstaller 归档里。改为打包脱敏后的 `_seed/webperf.db`（`tools/make_seed_db.py` 生成，spec 缺文件直接中止），并新增 `tools/scan_seed_db.py`——真跑 exe 取首次生成的库再扫，补上审计盲区。**体积**：剔除 `devimages/DeveloperDiskImage.dmg`（8.46MB，全仓 0 引用、`ios image auto` 联网下载）与 `tests/`（0.93MB），210.5→201.6MB。**启动**：修 `database.py` 里 `if "share_md5" in cols or True` 恒真死条件导致每次启动全表扫描；列表接口按需列裁剪，不再白读 `raw_json`。顺带清理演示快照指向已删除记录的 5 条 |
 | `20261023` | **修复采集通道断开时「假活」**：所有采集调用全失败时旧逻辑用 0 兜底照常产样本，`_lastDataTs` 被刷新导致无数据熔断永不触发（界面「采集中」、曲线一条零线）；改为全失败不产样本 + 连续 3 轮立即熔断（实测 2.2s）。新增 `probeChannel()` 探活，区分「应用被杀」与「连接断开」，不再把 USB 掉线误诊为应用崩溃。打包卫生：asar 剔除 `reports/history`、`reports/shots`；示例数据/用例/文档中的机型·ROM·应用标识全量脱敏 |
