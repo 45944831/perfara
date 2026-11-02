@@ -174,6 +174,10 @@ const stub = new Proxy({
     ? { ok: false, reason: '弱网引擎版本过旧，不支持无界面模式（需重新打包 WeakNet.exe）' }
     : { ok: true, ctrlPort: 8899, proxyPort: 8888, version: '1.1.10' }),
   weaknetPhone: (req) => window.__fakePhone(req),
+  weaknetStopEngine: async () => {
+    window.__wn.engineStops = (window.__wn.engineStops || 0) + 1;
+    return { ok: true, stopped: true, adopted: false, reclaimed: 0 };
+  },
   getDevices: async () => [
     { id: 'FAKEDEV1', displayName: '测试机 A', wifi: false },
     { id: 'FAKEDEV2', displayName: '测试机 B (无线)', wifi: true },
@@ -574,8 +578,12 @@ window.perfAPI = stub;
         const l = o && o.lastElementChild;
         return l ? l.textContent : '';
       })(),
+      engineStops: window.__wn.engineStops || 0,
     };
   });
+  check('停止会结束引擎进程（不是只关限速）', stopped.engineStops === 1, 'stops=' + stopped.engineStops);
+  check('停止后提示里说明引擎已结束', /弱网引擎已结束/.test(stopped.banner)
+    && /下次开启会重新拉起引擎/.test(stopped.banner), stopped.banner);
   check('停止先关限速', stopped.runCall && stopped.runCall.body.enable === false,
     JSON.stringify(stopped.runCall));
   check('停止解除系统代理', stopped.sysCall && stopped.sysCall.body.enable === false,

@@ -41,6 +41,11 @@ const ALLOWED_PATHS = new Set([
 /** @type {{proc:import('child_process').ChildProcess|null, info:object|null, starting:Promise|null}} */
 const state = { proc: null, info: null, starting: null };
 let exitHandler = null;
+/**
+ * 本进程 spawn 出来、还没退出的引擎子进程。
+ * 握手完成前 state.proc 还是空的，只靠 state 收回会在「引擎启动中退出」时漏掉它。
+ */
+const owned = new Set();
 
 function setExitHandler(fn) {
   exitHandler = typeof fn === 'function' ? fn : null;
@@ -53,6 +58,58 @@ function _tmpReadyFile() {
 
 function _sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * onefile 的 exe 是「引导进程 + 真身」两层：只杀引导会留下真身占着端口。
+ * 同步等 taskkill 跑完，异步 spawn 的 taskkill 会跟着 Electron 的 job 一起被杀。
+ */
+function _killTree(child) {
+  if (!child || !child.pid) return;
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'],
+        { windowsHide: true, stdio: 'ignore', timeout: 5000 });
+      return;
+    } catch (_) {}
+  }
+  try { child.kill(); } catch (_) {}
+}
+
+/**
+ * 接管来的实例没有我们的子进程句柄，退出时会留在后台（用户看到的就是
+ * 「关掉工具后 WeakNet.exe 还在」）。只有当它同时满足「跑的是本包自带的那个 exe」
+ * 和「无窗口（headless）」才收掉：用户自己开的图形版窗口不动。
+ */
+function _reclaimAdopted(exePath) {
+  if (process.platform !== 'win32' || !exePath) return [];
+  let target = '';
+  try { target = fs.realpathSync(exePath).toLowerCase(); } catch (_) {
+    try { target = path.resolve(exePath).toLowerCase(); } catch (__) { return []; }
+  }
+  let out = '';
+  try {
+    out = execFileSync('powershell',
+      ['-NoProfile', '-NonInteractive', '-Command',
+        'Get-Process WeakNet -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id)|$($_.Path)|$($_.MainWindowHandle)" }'],
+      { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+  } catch (_) { return []; }
+  const killed = [];
+  for (const line of out.split(/\r?\n/)) {
+    const [rawPid, exe, hwnd] = line.trim().split('|');
+    const pid = Number(rawPid);
+    if (!pid || !exe) continue;
+    if (Number(hwnd) !== 0) continue;
+    let p = '';
+    try { p = fs.realpathSync(exe).toLowerCase(); } catch (_) { p = String(exe).toLowerCase(); }
+    if (p !== target) continue;
+    try {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'],
+        { windowsHide: true, stdio: 'ignore', timeout: 5000 });
+      killed.push(pid);
+    } catch (_) {}
+  }
+  return killed;
 }
 
 /** 直接打引擎的 /api/status，用来判断某个端口上是不是已经有 WeakNet */
@@ -86,7 +143,7 @@ function currentInfo() {
  * 复用已在跑的引擎（用户可能自己开了 WeakNet.exe，也可能上一次没退干净）。
  * 命中就接管，不再起第二个进程 —— 两个引擎抢同一套端口只会互相踩。
  */
-async function _adoptIfRunning(defaultCtrlPort) {
+async function _adoptIfRunning(defaultCtrlPort, exePath) {
   if (state.info && state.proc) return null;
   const st = await probe(defaultCtrlPort);
   if (!st) return null;
@@ -96,9 +153,21 @@ async function _adoptIfRunning(defaultCtrlPort) {
     version: st.version || '',
     pid: null,
     adopted: true,
+    exePath: exePath || null,
   };
   _watchAdopted();
   return state.info;
+}
+
+/**
+ * 只接管已在跑的引擎，绝不新起进程。
+ * 页面启动时会静默探一次引擎（典型是上次没退干净的实例），这条路径不经过 ensure，
+ * 主进程没有记录；「停止弱网」要能把它收掉，得在停之前补一次接管。
+ */
+async function adopt(ctrlPort, exePath) {
+  if (state.info) return currentInfo();
+  const info = await _adoptIfRunning(Number(ctrlPort) || DEFAULT_CTRL_PORT, exePath);
+  return info ? { ...info } : null;
 }
 
 /**
@@ -148,15 +217,18 @@ async function ensure(spec) {
     // 拿这个「活着」的状态去接手机，只会把手机指到一个没人监听的端口
     if (await probe(state.info.ctrlPort, 1500)) return { ok: true, ...state.info };
     const was = { ...state.info };
+    const hung = state.proc;
     state.proc = null;
     state.info = null;
+    // 卡死的自有引擎不能只丢掉句柄：它还可能占着端口，换新实例会顺延到别的端口
+    _killTree(hung);
     if (exitHandler) { try { exitHandler(was, { code: 'unresponsive' }); } catch (_) {} }
   }
   if (state.starting) return state.starting;
   const ctrlPort = Number(spec && spec.ctrlPort) || DEFAULT_CTRL_PORT;
   const proxyPort = Number(spec && spec.proxyPort) || DEFAULT_PROXY_PORT;
 
-  const adopted = await _adoptIfRunning(ctrlPort);
+  const adopted = await _adoptIfRunning(ctrlPort, spec && spec.command);
   if (adopted) return { ok: true, ...adopted };
 
   if (!spec || !spec.command) return { ok: false, reason: '未配置弱网引擎启动命令' };
@@ -185,6 +257,8 @@ async function _spawnAndHandshake(spec, ctrlPort, proxyPort) {
   } catch (e) {
     return { ok: false, reason: '启动弱网引擎失败：' + (e.message || String(e)) };
   }
+  owned.add(child);
+  child.on('exit', () => { owned.delete(child); });
 
   let tail = '';
   const collect = (buf) => {
@@ -203,6 +277,12 @@ async function _spawnAndHandshake(spec, ctrlPort, proxyPort) {
       let info = null;
       try { info = JSON.parse(fs.readFileSync(readyFile, 'utf8')); } catch (_) {}
       if (info && info.status === 'ready') {
+        if (!owned.has(child)) {
+          // 启动过程中被 stop()/shutdown() 收掉了：别再登记成「活着」
+          _killTree(child);
+          try { fs.unlinkSync(readyFile); } catch (_) {}
+          return { ok: false, reason: '弱网引擎在启动过程中被停止' };
+        }
         state.proc = child;
         state.info = {
           ctrlPort: Number(info.ctrl_port) || ctrlPort,
@@ -233,14 +313,15 @@ async function _spawnAndHandshake(spec, ctrlPort, proxyPort) {
           version: info.version || (live && live.version) || '',
           pid: info.pid || null,
           adopted: true,
+          exePath: spec.command || null,
         };
-        try { child.kill(); } catch (_) {}
+        _killTree(child);
         try { fs.unlinkSync(readyFile); } catch (_) {}
         _watchAdopted();
         return { ok: true, ...state.info };
       }
       if (info && info.status === 'failed') {
-        try { child.kill(); } catch (_) {}
+        _killTree(child);
         try { fs.unlinkSync(readyFile); } catch (_) {}
         return { ok: false, reason: info.reason || '弱网引擎启动失败' };
       }
@@ -252,7 +333,7 @@ async function _spawnAndHandshake(spec, ctrlPort, proxyPort) {
     await _sleep(120);
   }
 
-  try { child.kill(); } catch (_) {}
+  _killTree(child);
   try { fs.unlinkSync(readyFile); } catch (_) {}
   return { ok: false, reason: '弱网引擎启动超时（' + Math.round(READY_TIMEOUT_MS / 1000) + ' 秒）' };
 }
@@ -327,24 +408,13 @@ function call(apiPath, body, opts) {
 function stop() {
   _stopAdoptWatch();
   const info = state.info;
-  const child = state.proc;
+  // 握手完成前 state.proc 还是空的，但子进程已经在跑了：按 spawn 记录收，别漏
+  const children = [...owned];
+  owned.clear();
   state.proc = null;
   state.info = null;
-  if (!child) return { stopped: false, adopted: !!(info && info.adopted) };
-  const pid = child.pid;
-  try {
-    // onefile 的 exe 是「引导进程 + 真身」两层，只 kill 引导会留下真身占着端口。
-    // 必须同步等 taskkill 跑完：退出路径上紧接着就是 app.quit()，异步 spawn 的
-    // taskkill 会跟着 Electron 的 job 一起被杀，引擎就成了没人管的孤儿进程。
-    if (process.platform === 'win32') {
-      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'],
-        { windowsHide: true, stdio: 'ignore', timeout: 5000 });
-    } else {
-      child.kill();
-    }
-  } catch (_) {
-    try { child.kill(); } catch (__) {}
-  }
+  if (!children.length) return { stopped: false, adopted: !!(info && info.adopted) };
+  for (const child of children) _killTree(child);
   return { stopped: true, adopted: false };
 }
 
@@ -356,18 +426,24 @@ function stop() {
  * 所以这两步不能省；万一接口已经不响应，也别把退出拖住，4 秒后照样杀。
  */
 async function shutdown() {
-  if (!state.info) return { ok: true, skipped: true };
+  // 启动中退出时 state.info 还没写（握手要 1~2 s），只认 state 就会漏掉这个子进程
+  if (!state.info && owned.size === 0) return { ok: true, skipped: true };
   const bounded = new Promise((r) => setTimeout(r, 4000));
   const cleanup = (async () => {
-    if (state.info && state.info.adopted) return;   // 别人的实例：不动它的全局设置
+    if (!state.info || state.info.adopted) return;   // 别人的实例：不动它的全局设置
     try { await call('/api/sysproxy', { enable: false }); } catch (_) {}
     try { await call('/api/stop'); } catch (_) {}
   })();
   await Promise.race([cleanup, bounded]);
-  return { ok: true, ...stop() };
+  const info = state.info ? { ...state.info } : null;
+  const res = stop();
+  // 接管来的实例：如果跑的就是本包自带的 exe，说明是「上一次没退干净」的残留
+  // （常见于引擎启动中就把程序关了），这时要收掉；用户自己的那份不动。
+  const reclaimed = info && info.adopted ? _reclaimAdopted(info.exePath) : [];
+  return { ok: true, ...res, reclaimed: reclaimed.length };
 }
 
 module.exports = {
-  ensure, call, stop, shutdown, probe, isAlive, currentInfo,
+  ensure, adopt, call, stop, shutdown, probe, isAlive, currentInfo,
   setExitHandler, ALLOWED_PATHS, DEFAULT_CTRL_PORT, DEFAULT_PROXY_PORT, READY_TIMEOUT_MS,
 };

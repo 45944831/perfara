@@ -48,6 +48,7 @@
     editorOpen: false,
     delArmed: '',          // 删除按钮的两步确认：记住已经确认过的组合 id
     play: null,            // 组合播放的本地进度（段索引 + 该段开始时刻）
+    expectExitUntil: 0,    // 主动结束引擎的窗口期：这时收到的退出事件不用再提示「引擎已退出」
   };
   try { st.follow = localStorage.getItem(FOLLOW_KEY) === '1'; } catch (_) { st.follow = false; }
 
@@ -868,11 +869,39 @@
           }
         } catch (_) { fails.push('手机代理：还原失败'); }
       }
+      // 「停止」= 完全关闭，不是暂停：引擎进程也要收掉，否则任务管理器里一直留着
+      // WeakNet.exe。要保留热备就点「⏸ 暂停」。
+      if (typeof window.perfAPI.weaknetStopEngine === 'function') {
+        st.expectExitUntil = Date.now() + 5000;
+        try {
+          const r = await window.perfAPI.weaknetStopEngine();
+          if (!r || !r.ok) {
+            fails.push('引擎：' + ((r && r.reason) || '未能结束'));
+          } else if (r.adopted && !r.reclaimed) {
+            done.push('外部 WeakNet 实例保持运行');
+          } else {
+            done.push(r.reclaimed ? '残留引擎已回收' : '弱网引擎已结束');
+          }
+          if (r && r.ok && !(r.adopted && !r.reclaimed)) {
+            st.ready = false;
+            st.status = null;
+            // 引擎没了，refresh() 会直接返回：顶栏和快捷按钮得在这里收干净
+            paintTopBtn(false, false);
+            if (btnPause) btnPause.hidden = true;
+            if (btnStop) btnStop.hidden = true;
+            const d = st.dom;
+            if (d) {
+              d.pill.textContent = '引擎未启动';
+              d.pill.classList.remove('is-on');
+            }
+          }
+        } catch (_) { fails.push('引擎：未能结束'); }
+      }
       st.paused = false;
       await refresh();
       const summary = fails.length
         ? '停止弱网未完全成功：' + fails.join('；')
-        : '已停止弱网：' + done.join('、') + '。采集不受影响，随时可以再开。';
+        : '已停止弱网：' + done.join('、') + '。采集不受影响，下次开启会重新拉起引擎。';
       if (fails.length) {
         setBanner(summary);
         showQuickHint('停止弱网未完全成功', true, summary);
@@ -1126,7 +1155,7 @@
     }
     if (btnStop) {
       btnStop.hidden = !(on || paused);
-      btnStop.title = '停止弱网：结束限速，并解除系统代理、还原手机代理';
+      btnStop.title = '停止弱网：结束限速与引擎进程，并解除系统代理、还原手机代理';
     }
 
     if (!s) { syncBusy(); return; }
@@ -1342,11 +1371,13 @@
 
   if (typeof window.perfAPI.onWeaknetEngineExit === 'function') {
     window.perfAPI.onWeaknetEngineExit(() => {
+      // 主动「停止」时事件会紧接着回来：界面已经按停止结果画好了，别再盖一层「引擎已退出」
+      const intentional = Date.now() < st.expectExitUntil;
       st.ready = false;
       st.status = null;
       st.paused = false;
       if (st.dom) {
-        setBanner('弱网引擎已退出（进程结束）。重新点「开始」即可再拉起。');
+        if (!intentional) setBanner('弱网引擎已退出（进程结束）。重新点「开始」即可再拉起。');
         st.dom.pill.textContent = '引擎未启动';
         st.dom.pill.classList.remove('is-on');
       }

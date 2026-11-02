@@ -1488,8 +1488,15 @@ ipcMain.handle('weaknet-api', async (_e, req) => {
 
 ipcMain.handle('weaknet-engine-stop', async () => {
   try {
-    await weaknetHost.shutdown();
-    return { ok: true };
+    // 页面启动时会静默探一次已在跑的引擎（典型是上次没退干净的实例），那条路径不经过
+    // ensure，主进程这边没有记录。用户点「停止弱网」就是要它停，先补一次接管再收。
+    if (!weaknetHost.isAlive()) {
+      try {
+        await weaknetHost.adopt(weaknetHost.DEFAULT_CTRL_PORT, weaknetLaunchSpec().command);
+      } catch (_) {}
+    }
+    const r = await weaknetHost.shutdown();
+    return { ok: true, ...r };
   } catch (e) {
     return { ok: false, reason: e.message || String(e) };
   }

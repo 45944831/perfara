@@ -204,6 +204,51 @@ async function realEnginePart() {
       goneFired === true && HOST.isAlive() === false,
       'exits+' + (exits - exitsBefore) + ' alive=' + HOST.isAlive());
 
+    // 启动中退出：握手要 1~2 s，这期间 state.info 还是空的。只按 state 回收会把
+    // 子进程漏在后台，之后每次启动都「接管」它，而接管实例退出时不动 → 永久残留
+    const mid = HOST.ensure(spec());
+    await sleep(120);
+    const sdMid = await HOST.shutdown();
+    const midRes = await mid.catch((e) => ({ ok: false, reason: e.message }));
+    await sleep(1500);
+    check('启动中退出也回收子进程',
+      sdMid.stopped === true && (await probePort(CTRL)) === false,
+      JSON.stringify(sdMid) + ' ensure=' + JSON.stringify(midRes));
+
+    // 本包 exe 的残留（上一次没退干净）：被接管后，退出时要收掉；
+    // 用户自己开的图形版有窗口，_reclaimAdopted 不会碰
+    const bundled = path.join(ROOT, 'perfara', 'collector', 'resources', 'weaknet', 'WeakNet.exe');
+    if (fs.existsSync(bundled)) {
+      const bare2 = spawn(bundled, ['--headless', '--ctrl-port', '18906', '--proxy-port', '18894'],
+        { cwd: path.dirname(bundled), stdio: 'ignore', windowsHide: true });
+      let up2 = false;
+      for (let i = 0; i < 60; i++) { if (await probePort(18906)) { up2 = true; break; } await sleep(250); }
+      const r5 = await HOST.ensure({ command: bundled, args: ['--headless'], cwd: path.dirname(bundled),
+        ctrlPort: 18906, proxyPort: 18894 });
+      const sd5 = await HOST.shutdown();
+      await sleep(800);
+      check('接管本包 exe 的残留实例', up2 === true && r5.adopted === true,
+        JSON.stringify(r5));
+      check('退出时回收本包残留引擎',
+        sd5.reclaimed >= 1 && (await probePort(18906)) === false, JSON.stringify(sd5));
+      if (bare2.exitCode === null && (await probePort(18906))) { try { bare2.kill(); } catch (_) {} }
+
+      // 页面启动时会静默探到已在跑的引擎并直接显示状态，这条路径不经过 ensure：
+      // 「停止弱网」得先补一次接管再收，否则点了停止进程还在
+      const bare3 = spawn(bundled, ['--headless', '--ctrl-port', '18907', '--proxy-port', '18895'],
+        { cwd: path.dirname(bundled), stdio: 'ignore', windowsHide: true });
+      let up3 = false;
+      for (let i = 0; i < 60; i++) { if (await probePort(18907)) { up3 = true; break; } await sleep(250); }
+      const info6 = await HOST.adopt(18907, bundled);
+      const sd6 = await HOST.shutdown();
+      await sleep(800);
+      check('停止时接管页面静默发现的引擎', up3 === true && !!info6 && info6.adopted === true,
+        JSON.stringify(info6));
+      check('停止时回收静默发现的引擎',
+        sd6.reclaimed >= 1 && (await probePort(18907)) === false, JSON.stringify(sd6));
+      if (bare3.exitCode === null && (await probePort(18907))) { try { bare3.kill(); } catch (_) {} }
+    }
+
     // 旧版本 exe：不认 --headless 时要翻译成人话
     await sleep(300);
     const r3 = await HOST.ensure({ command: 'python',
@@ -227,6 +272,9 @@ function wiringPart() {
   check('main.js 用 host 拉起引擎', hasAll(main, ['weaknetHost.ensure(', 'weaknetLaunchSpec(']));
   check('main.js 提供 weaknet-api 转发', hasAll(main, ["ipcMain.handle('weaknet-api'", 'weaknetHost.call(']));
   check('main.js 退出前回收引擎', hasAll(main, ['weaknetHost.shutdown()']));
+  check('停止弱网前补接管静默发现的引擎',
+    /weaknet-engine-stop'[\s\S]{0,500}weaknetHost\.adopt\(/.test(main),
+    '页面启动时的静默探测不经过 ensure，停止时必须自己接管');
   check('接管手机前先确保引擎可用',
     /action === 'connect'[\s\S]{0,700}weaknetHost\.ensure\(weaknetLaunchSpec\(\)\)/.test(main),
     'main.js 接管分支需自行拉起引擎，不能要求用户先点别的按钮');
