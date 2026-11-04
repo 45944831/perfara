@@ -160,6 +160,8 @@
 }
 .wn-ce-name:focus { outline: none; border-color: var(--accent); }
 .wn-ce-name:disabled { opacity: .5; }
+/* 名称字数上限提示：与输入框同一行，浅灰小字，不抢视线 */
+.wn-ce-hint { flex: 0 0 auto; font-size: 11px; color: var(--text2); opacity: .75; }
 .wn-ce-loop { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); }
 .wn-ce-loop input { accent-color: var(--accent); }
 .wn-ce-steps { display: flex; flex-direction: column; gap: 6px; }

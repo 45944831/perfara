@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('perfAPI', {
   getAppName: () => ipcRenderer.invoke('get-app-name'),
+  // 窗口标题（含版本号与新版本标记）由主进程生成，渲染进程只做同步，不自己拼
+  getWindowTitle: () => ipcRenderer.invoke('get-window-title'),
   getConfigOut: () => ipcRenderer.invoke('get-config-out'),
   getMachineUid: () => ipcRenderer.invoke('get-machine-uid'),
   onTrialBudgetChanged: (callback) => {
@@ -12,6 +14,12 @@ contextBridge.exposeInMainWorld('perfAPI', {
   openLocalReport: (fileName) => ipcRenderer.invoke('open-local-report', fileName),
   // 顶部署名：URL 固定在主进程，这里不传参
   openAttribution: () => ipcRenderer.invoke('open-attribution-link'),
+  // 顶栏「新版本」：只拿缓存状态 + 订阅推送；跳转地址由主进程白名单决定，不接受 URL
+  getAppUpdate: () => ipcRenderer.invoke('get-app-update'),
+  onAppUpdate: (callback) => {
+    ipcRenderer.on('app-update', (_e, info) => callback(info));
+  },
+  openAppUpdate: () => ipcRenderer.invoke('open-app-update'),
   // 弱网测试：引擎无窗口运行，界面是采集窗口里的二级页面。
   // 页面不直接出网（控制接口没有 CORS），控制请求一律经主进程转发。
   launchWeaknet: () => ipcRenderer.invoke('weaknet-launch'),
@@ -32,6 +40,11 @@ contextBridge.exposeInMainWorld('perfAPI', {
   disconnectWifi: (ipPort) => ipcRenderer.invoke('disconnect-wifi', ipPort),
   // 应用列表：纯 adb（pm list packages -3）读取，不安装任何 APK
   getPackages: (deviceId) => ipcRenderer.invoke('get-packages', deviceId),
+  // 启动时读真机前台应用：主进程只给事实，桌面时不改界面
+  getForegroundApp: (deviceId) => ipcRenderer.invoke('get-foreground-app', deviceId),
+  // 系统应用不在第三方列表里时，单独补一次桌面显示名（可失败，界面退回包名）
+  getForegroundAppLabel: (deviceId, packageName) =>
+    ipcRenderer.invoke('get-foreground-app-label', deviceId, packageName),
   // 桌面应用名是后台从 APK 资源里解出来的，解出一个推一个
   onAppLabels: (callback) => {
     ipcRenderer.on('app-labels', (_e, payload) => callback(payload));

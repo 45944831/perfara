@@ -27,6 +27,39 @@ const weaknetHost = require('./src/weaknet-host');
 const phoneProxy = require('./src/phone-proxy');
 const sysproxy = require('./src/sysproxy');
 const appLabels = require('./src/app-labels');
+const appVersionInfo = require('./src/app-version');
+const { isValidVersion, normalizeVersion } = require('./src/version-scheme');
+const { fetchLatestRelease, sanitizeReleaseUrl } = require('./src/update-check');
+const { DEFAULT_APP_NAME, formatWindowTitle } = require('./src/window-title');
+const foregroundApp = require('./src/foreground-app');
+
+// ─── 窗口标题 / 新版本状态 ───────────────────────────────────────────────────
+// 标题栏由主进程统一生成（应用名 + 版本号 + 新版本标记），渲染进程改不了它。
+const APP_UPDATE_CHANNEL = 'app-update';
+let latestAppUpdate = null;
+let appUpdateCheckInflight = false;
+let windowAppName = DEFAULT_APP_NAME;   // 首屏后再用 configout 里的应用名覆盖
+let cachedAppVersion = null;
+
+/** 版本号一次运行只读一次：标题栏和新版本检查共用同一来源，不会各读各的 */
+function getAppVersionCached() {
+  if (cachedAppVersion === null) cachedAppVersion = readCurrentAppVersion();
+  return cachedAppVersion;
+}
+
+function buildWindowTitle() {
+  return formatWindowTitle({
+    appName: windowAppName,
+    version: getAppVersionCached(),
+    hasUpdate: !!latestAppUpdate,
+  });
+}
+
+function applyWindowTitle() {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setTitle(buildWindowTitle());
+  } catch (_) {}
+}
 
 /** 系统代理快照放用户目录：进程被强杀后下次启动还要靠它把整机代理还回去 */
 function sysproxyBackupFile() {
@@ -149,6 +182,23 @@ function invalidAdbArgs(deviceId, packageName) {
   return null;
 }
 
+/**
+ * 采集参数的展示顺序：renderer 把它放在 metricConfig.__order 里随 IPC 传过来。
+ * 顺序只影响展示、不参与采集过滤，因此不进入 normalizeMetricConfig 的结果；
+ * 这里单独抽出，写报告时放到 payload.metricOrder，报告端据此重排卡片与图表。
+ */
+function extractMetricOrder(rawCfg) {
+  if (!rawCfg || typeof rawCfg !== 'object' || !Array.isArray(rawCfg.__order)) return null;
+  const seen = new Set();
+  const out = [];
+  for (const g of rawCfg.__order) {
+    if (typeof g !== 'string' || !g || g === '__order' || seen.has(g)) continue;
+    seen.add(g);
+    out.push(g);
+  }
+  return out.length ? out : null;
+}
+
 /** PC 上报 JSON：根级 category；device 包名/应用名为 exe 文件名；deviceId 用本机 UID 作上传 uid */
 function buildPcReportDataJsPayload(pcSession, perfArr, tagArr, machineUid, metricConfig) {
   const raw = pcSession && pcSession.exePath ? String(pcSession.exePath) : '';
@@ -170,6 +220,8 @@ function buildPcReportDataJsPayload(pcSession, perfArr, tagArr, machineUid, metr
     tag: snapshotArr(tagArr),
     // 采集参数配置（勾选项）；报告端据此隐藏被移除指标的图表与指标行
     metricConfig: metricConfig && typeof metricConfig === 'object' ? JSON.parse(JSON.stringify(metricConfig)) : null,
+    // 采集参数的展示顺序；报告端据此重排卡片与图表
+    metricOrder: pcSession && Array.isArray(pcSession.metricOrder) ? pcSession.metricOrder.slice() : null,
   };
 }
 
@@ -215,8 +267,8 @@ function createWindow() {
     },
     titleBarStyle: 'default',
     // 标题里的应用名要读 configout 配置（同步扫盘），放到首屏之后再补，
-    // 避免这一次 I/O 阻塞窗口创建
-    title: 'Perfara离线版 - 移动端性能工具',
+    // 避免这一次 I/O 阻塞窗口创建；版本号与新版本标记从建窗口时就带上
+    title: buildWindowTitle(),
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
   });
 
@@ -230,17 +282,22 @@ function createWindow() {
   mainWindow.once('ready-to-show', showNow);
   setTimeout(showNow, 3000);
 
+  // 渲染进程（apply-app-brand.js / 页面自身）改 document.title 时，别把标题栏里的
+  // 版本号与新版本标记冲掉：忽略文档标题变更，重新压上主进程生成的标题。
+  mainWindow.webContents.on('page-title-updated', (e) => {
+    try { e.preventDefault(); } catch (_) {}
+    applyWindowTitle();
+  });
+
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   // Flush any queued startup logs after renderer is ready.
   try {
     mainWindow.webContents.on('did-finish-load', () => {
-      // 首屏已出，此时再读配置补标题（不阻塞启动）
+      // 首屏已出，此时再读配置补应用名（不阻塞启动）；标题仍统一由主进程生成
       try {
-        const appDisplayName = readAppNameFromReports();
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.setTitle(`${appDisplayName} - 移动端性能工具`);
-        }
+        windowAppName = readAppNameFromReports();
+        applyWindowTitle();
       } catch (_) {}
       if (_startupLogFlushed) return;
       _startupLogFlushed = true;
@@ -280,6 +337,9 @@ app.whenReady().then(async () => {
   // 手机侧同理：账本只在内存里，强杀重开后是空的，把「映射已断、代理还指着本工具端口」的手机清掉
   phoneProxy.sweepStale().catch(() => {});
   createWindow();
+  // 每次运行只查一次：延时 5s 避开启动路径；本次运行期间不再轮询（失败也不重试，
+  // 想重新检查请重启程序）。这样既不会打扰长时间运行的采集，也不会产生后台流量。
+  setTimeout(() => { runAppUpdateCheck(); }, 5000);
 });
 
 let weaknetQuitting = false;
@@ -291,11 +351,22 @@ app.on('window-all-closed', () => {
   if (weaknetQuitting) { app.quit(); return; }
   weaknetQuitting = true;
   try { appLabels.saveNow(); } catch (_) {}
+  // 兜底：链上任何一步的 await 卡死（adb 通道僵死、引擎不响应）都不能让进程变成
+  // 「窗口没了但进程常驻」的僵尸 —— 8 s 后无条件退出。
+  const hardExit = setTimeout(() => { try { app.exit(0); } catch (_) {} }, 8000);
+  if (hardExit.unref) hardExit.unref();
   phoneProxy.restoreAll().catch(() => {})
     .then(() => weaknetHost.shutdown())
     .then(() => { try { sysproxy.clearBackup(sysproxyBackupFile()); } catch (_) {} })
     .catch(() => {})
-    .then(() => app.quit());
+    // 收掉本次运行自己拉起来的 adb server：否则 adb.exe 会以孤儿进程常驻，
+    // 既占着 5037，也把便携包里的 adb.exe 文件锁住（整个目录移不走也删不掉）。
+    // 先取消在途 adb 子进程，避免 kill 的瞬间又有一条命令把 server 重新拉起来。
+    .then(() => {
+      try { require('./src/adb').cancelAllInflight(); } catch (_) {}
+      try { return require('./src/adb').killServerIfOwned().catch(() => null); } catch (_) { return null; }
+    })
+    .then(() => { clearTimeout(hardExit); app.quit(); });
 });
 
 app.on('activate', () => {
@@ -303,6 +374,85 @@ app.on('activate', () => {
 });
 
 // ─── IPC Handlers ────────────────────────────────────────────────────────────
+
+/* ═══ 新版本提示（静默，不弹窗） ═══════════════════════════════════════════
+   每次启动只问一次 GitHub Releases，运行中不再检查。结果同时驱动窗口标题栏的
+   「新版本可用」标记和顶栏那个可点击标签（标题栏不能点，跳转入口仍在顶栏）。
+   状态变量在文件顶部统一声明；离线 / 超时 / 限流 / 响应异常一律静默忽略。 */
+
+/** 版本优先读包外 version.txt（发版脚本生成，改它无需重打包 asar），否则用源码常量 */
+function readCurrentAppVersion() {
+  const candidates = [];
+  if (app.isPackaged) candidates.push(path.join(process.resourcesPath, 'version.txt'));
+  candidates.push(path.join(__dirname, 'version.txt'));
+  for (const f of candidates) {
+    try {
+      if (!fs.existsSync(f)) continue;
+      const v = String(fs.readFileSync(f, 'utf8')).trim();
+      // 旧包残留的日期式版本号（2026.11.02）不合新规范，忽略它回退到源码常量，
+      // 否则标题会显示旧格式、新版本判定也会把本地版本误当成不支持。
+      if (isValidVersion(v)) return normalizeVersion(v);
+    } catch (_) {}
+  }
+  return appVersionInfo.APP_VERSION;
+}
+
+function broadcastAppUpdate() {
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(APP_UPDATE_CHANNEL, latestAppUpdate);
+    }
+  } catch (_) {}
+  // 同一份检查结果也刷新标题栏上的「新版本可用」标记
+  applyWindowTitle();
+}
+
+async function runAppUpdateCheck() {
+  if (appUpdateCheckInflight) return latestAppUpdate;
+  appUpdateCheckInflight = true;
+  try {
+    const r = await fetchLatestRelease({
+      owner: appVersionInfo.GITHUB_OWNER,
+      repo: appVersionInfo.GITHUB_REPO,
+      currentVersion: getAppVersionCached(),
+      timeoutMs: 5000,
+    });
+    if (r && r.ok && r.update) {
+      // 带上本地版本，顶栏标签可以提示「当前 vX → 新版本 vY」
+      latestAppUpdate = { ...r.update, currentVersion: getAppVersionCached() };
+      broadcastAppUpdate();
+    }
+  } catch (_) {
+    // 离线是常态，检查失败不提示
+  } finally {
+    appUpdateCheckInflight = false;
+  }
+  return latestAppUpdate;
+}
+
+// 渲染进程首屏拿缓存（可能比后台检查更早），后续靠事件推送
+ipcMain.handle('get-app-update', () => latestAppUpdate);
+
+// 渲染进程同步窗口标题，避免它自己拼一个没有版本号 / 新版本标记的 document.title
+ipcMain.handle('get-window-title', () => ({
+  title: buildWindowTitle(),
+  version: getAppVersionCached(),
+  hasUpdate: !!latestAppUpdate,
+  updateTag: latestAppUpdate ? latestAppUpdate.tag : null,
+}));
+
+// 地址固定取自主进程缓存且再过一次白名单，渲染进程不能传 URL
+ipcMain.handle('open-app-update', async () => {
+  const url = latestAppUpdate && sanitizeReleaseUrl(
+    latestAppUpdate.url, appVersionInfo.GITHUB_OWNER, appVersionInfo.GITHUB_REPO);
+  if (!url) return { ok: false, reason: '暂无可用的新版本' };
+  try {
+    await shell.openExternal(url);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message || String(e) };
+  }
+});
 
 ipcMain.handle('get-devices', async () => {
   const ADB = require('./src/adb');
@@ -387,6 +537,57 @@ ipcMain.handle('get-packages', async (_event, deviceId) => {
   return packages;
 });
 
+/* ═══ 启动时自动选中真机前台应用 ═════════════════════════════════════════════
+   主进程只给「事实」：当前前台包名、是否系统桌面。要不要落到下拉框由渲染进程决定。
+   设备在系统桌面（或读不到前台）时 renderer 一律保持原样式，不打扰用户。 */
+ipcMain.handle('get-foreground-app', async (_event, deviceId) => {
+  const bad = invalidAdbArgs(deviceId, null);
+  if (bad) { _logStartup(`[adb] 拒绝 get-foreground-app：${bad}`); return null; }
+  try {
+    const ADB = require('./src/adb');
+    const r = foregroundApp.parseForegroundApp(await ADB.getForegroundSnapshot(deviceId));
+    if (!r.pkg || r.isDesktop) return r;
+    // 命中磁盘缓存就顺手带回显示名，省掉一次往返；没命中由 renderer 异步补
+    try {
+      const locale = await ADB.getDeviceLocale(deviceId);
+      const cached = appLabels.cacheGet(r.pkg, null, locale);
+      if (cached) r.label = cached;
+    } catch (_) {}
+    return r;
+  } catch (_) {
+    return null;
+  }
+});
+
+/** 系统应用不在 pm list -3 里，单独补一次桌面显示名；失败/超时返回空串，界面退回包名 */
+ipcMain.handle('get-foreground-app-label', async (_event, deviceId, packageName) => {
+  const bad = invalidAdbArgs(deviceId, packageName);
+  if (bad) return '';
+  let timer = null;
+  try {
+    const ADB = require('./src/adb');
+    const locale = await ADB.getDeviceLocale(deviceId).catch(() => null);
+    const cached = appLabels.cacheGet(packageName, null, locale);
+    if (cached) return cached;
+    // resources.arsc 可能几十 MB，给 6s 上限；超时就保持包名，绝不拖住启动
+    const cap = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), 6000);
+      if (timer.unref) timer.unref();
+    });
+    const label = await Promise.race([
+      ADB.resolveAppLabel(deviceId, packageName, locale).catch(() => null),
+      cap,
+    ]);
+    if (typeof label === 'string' && label) {
+      appLabels.cachePut(packageName, null, locale, label);
+      return label;
+    }
+  } catch (_) {} finally {
+    if (timer) clearTimeout(timer);
+  }
+  return '';
+});
+
 // 说明：已移除「安装 perfara.apk + 广播拉应用列表」的采集方式。
 // Android 端所有性能数据（CPU/内存/FPS/Jank/网络/温度等）均通过 USB + adb shell 直接读取，
 // 应用列表统一由 get-packages（pm list packages -3）提供，不再向手机安装任何 APK。
@@ -421,6 +622,7 @@ ipcMain.handle('start-collect', async (_event, deviceId, packageName, deviceLabe
     deviceLabel: deviceLabel || deviceId,
     appLabel: label,
     metricConfig: mc,
+    metricOrder: extractMetricOrder(metricConfig),
   };
 
   collector = new Collector(deviceId, packageName, 1000, mc);
@@ -533,8 +735,9 @@ ipcMain.handle('stop-collect', async () => {
         },
         perf: snapshotArr(perfHistory),
         tag: snapshotArr(androidTags),
-        // 采集参数配置：报告端据此隐藏被移除指标的图表与指标行
+        // 采集参数配置：报告端据此隐藏被移除指标的图表与指标行；metricOrder 据此重排
         metricConfig: androidSession.metricConfig || null,
+        metricOrder: androidSession.metricOrder || null,
         shots: troughShots.getShots('android'),
         // 采集期间开过弱网才带这一段，报告页据此追加「弱网总结分析」
         weaknet: weaknet || undefined,
@@ -608,7 +811,7 @@ ipcMain.handle('pc-start-collect', async (_e, exePath, metricConfig) => {
   const mc = metricConfig && typeof metricConfig === 'object'
     ? PcCollectorMod.normalizePcMetricConfig(metricConfig)
     : null;
-  pcSession = { exePath: abs, label, metricConfig: mc };
+  pcSession = { exePath: abs, label, metricConfig: mc, metricOrder: extractMetricOrder(metricConfig) };
   pcCollector = new PcCollector(abs, mc);
   startWeaknetTracking('pc');
   pcCollector.on('log', (msg) => {
@@ -1075,6 +1278,7 @@ ipcMain.handle('ios-start-collect', async (_event, bundleId, execName, appName, 
     appName: appName || bundleId,
     udid: udid != null ? String(udid).trim() : '',
     metricConfig: mc,
+    metricOrder: extractMetricOrder(metricConfig),
   };
   iosLog.separator(`ios-start-collect bundleId=${bundleId} execName=${execName || ''}`);
 
@@ -1148,6 +1352,7 @@ ipcMain.handle('ios-stop-collect', async () => {
         perf: snapshotArr(iosPerfHistory),
         tag: snapshotArr(iosTags),
         metricConfig: iosSession.metricConfig || null,
+        metricOrder: iosSession.metricOrder || null,
         shots: troughShots.getShots('ios'),
         weaknet: weaknet || undefined,
       });
@@ -1210,6 +1415,7 @@ ipcMain.handle('ios-gpu-start-collect', async (_event, meta) => {
         metricConfig: (meta.metricConfig && typeof meta.metricConfig === 'object')
           ? meta.metricConfig
           : null,
+        metricOrder: extractMetricOrder(meta && meta.metricConfig),
       }
     : null;
   // iOS GPU 页只有一组指标：未勾选时无需采集（此时也没有任何可用数据）
@@ -1276,6 +1482,7 @@ ipcMain.handle('ios-gpu-stop-collect', async () => {
         perf: snapshotArr(iosGpuHistory),
         tag: snapshotArr(iosGpuTags),
         metricConfig: iosGpuSession.metricConfig || null,
+        metricOrder: iosGpuSession.metricOrder || null,
         weaknet: weaknet || undefined,
       });
     }

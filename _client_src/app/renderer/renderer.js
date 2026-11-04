@@ -274,6 +274,8 @@ async function refreshDevices() {
 // ─── Package loading（纯 USB/adb 读取，不安装任何 APK）───────────────────────
 /** 下拉框当前对应的设备：后台推来的应用名要按设备过滤，切设备后旧结果直接丢 */
 let _pkgDeviceId = '';
+/** 自动选中前台应用的轮次号：设备切换/刷新后旧结果直接作废 */
+let _autoSelectRunId = 0;
 
 /** 「微信 (com.tencent.mm)」；名字没解出来就只显示包名 */
 function _pkgText(p) {
@@ -337,6 +339,59 @@ if (selApp && window.perfAPI.onAppLabels) {
   });
 }
 
+/* ═══ 启动时自动选中真机前台应用 ═════════════════════════════════════════════
+   设备已经开着某个应用时，直接把它填进「应用」下拉框，用户点「开始」即可采集：
+   采集器检测到应用已在前台会直接复用进程，不会重新拉起、也不等冷启动稳定期。
+   设备停在系统桌面、读不到前台、用户已手动选过、或正在采集中 → 一律保持原样式，
+   连提示都不弹，便利功能不能变成干扰。 */
+function autoSelectForegroundApp(deviceId) {
+  const runId = ++_autoSelectRunId;
+  const api = window.perfAPI;
+  if (!api || typeof api.getForegroundApp !== 'function') return;
+  if (isCollecting || !selApp) return;
+  Promise.resolve()
+    .then(() => api.getForegroundApp(deviceId))
+    .then((info) => {
+      if (runId !== _autoSelectRunId || _pkgDeviceId !== deviceId) return;
+      if (!info || !info.pkg || info.isDesktop) return;   // 系统桌面 / 无前台：保持当前样式
+      if (isCollecting || !selApp || selApp.value) return; // 用户已选过，绝不覆盖
+      const pkg = String(info.pkg);
+      const label = typeof info.label === 'string' ? info.label : '';
+      let row = allPackages.find((p) => p && p.pkg === pkg);
+      const added = !row;
+      if (!row) {
+        // 系统应用不在 pm list -3 的第三方列表里，补一个可选项，保证照样能直接点开始
+        row = { pkg, label: label && label !== pkg ? label : pkg, versionCode: null };
+        allPackages.push(row);
+      } else if (label && label !== pkg && (!row.label || row.label === pkg)) {
+        row.label = label;
+      }
+      renderPackageOptions(false);
+      selApp.value = pkg;
+      selApp.disabled = false;
+      scheduleDeviceInfoBar();
+      log(`检测到真机前台应用：${_pkgText(row)}，已自动选中，可直接点「开始」采集`, 'info');
+
+      // 新补进来的系统应用没有桌面名时异步补一次；第三方包名走既有的后台解析通道
+      if (added && (!label || label === pkg)
+          && typeof api.getForegroundAppLabel === 'function') {
+        Promise.resolve()
+          .then(() => api.getForegroundAppLabel(deviceId, pkg))
+          .then((name) => {
+            if (runId !== _autoSelectRunId || _pkgDeviceId !== deviceId) return;
+            if (typeof name !== 'string' || !name || name === pkg) return;
+            const cur = allPackages.find((p) => p && p.pkg === pkg);
+            if (!cur) return;
+            cur.label = name;
+            renderPackageOptions(false);
+            if (selApp.value !== pkg) selApp.value = pkg;
+          })
+          .catch(() => {});
+      }
+    })
+    .catch(() => {});
+}
+
 async function loadPackages(deviceId) {
   if (!deviceId) return;
   _pkgDeviceId = deviceId;
@@ -357,6 +412,7 @@ async function loadPackages(deviceId) {
       log('正在后台解析应用显示名（首次约需 1~2 分钟，之后走缓存），可先按包名选择', 'info');
     }
     scheduleDeviceInfoBar();
+    autoSelectForegroundApp(deviceId);
   } catch (e) {
     log('加载应用列表失败: ' + e.message, 'error');
     if (selApp) {

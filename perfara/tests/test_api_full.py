@@ -213,8 +213,11 @@ def main():
 
     call("POST", "/api/upload?uid=%s" % DEMO, "W01 upload demo->403", 403, body=payload)
     call("POST", "/api/upload", "W02 upload no-uid->400", 400, body=payload)
-    # 无效 JSON
-    call("POST", "/api/upload?uid=%s" % throwaway, "W03 upload bad-json->400", 400, body=b"{not json")
+    # 无 content-type：写入守卫优先返回 415
+    call("POST", "/api/upload?uid=%s" % throwaway, "W03 upload bad-json->415", 415, body=b"{not json")
+    # 合法 content-type + 无效 JSON：解析失败返回 400
+    call("POST", "/api/upload?uid=%s" % throwaway, "W03b upload bad-json->400", 400,
+         headers={"Content-Type": "application/json"}, body=b"{not json")
     # 缺 perf
     bad = dict(payload)
     bad.pop("perf", None)

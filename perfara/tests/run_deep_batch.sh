@@ -47,6 +47,7 @@ run_py() {
   sleep 1
 }
 
+run_py   "version_scheme"       perfara/tests/deep/version_scheme_py_test.py
 run_py   "launcher_process"     perfara/tests/deep/launcher_process_test.py
 run_py   "launcher_port"        perfara/tests/deep/launcher_port_test.py
 run_py   "loading_algo"         perfara/tests/deep/loading_algo_consistency.py

@@ -230,6 +230,36 @@ select:focus, input:focus {
   white-space: nowrap;
 }
 
+/* ═══ 顶栏「新版本」提示 ═══════════════════════════════════════════════════
+   一个不打扰的小徽标：默认 hidden，只有后台检查到新版才出现，点击才跳转。 */
+.update-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid rgba(62, 207, 142, .45);
+  border-radius: 999px;
+  background: rgba(62, 207, 142, .12);
+  color: var(--green);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* display:inline-flex 会压过 UA 的 [hidden]，必须显式还原 */
+.update-notice[hidden] { display: none; }
+.update-notice:hover { background: rgba(62, 207, 142, .22); }
+.update-notice:focus-visible { outline: 1px solid var(--green); outline-offset: 2px; }
+.update-notice-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 2px rgba(62, 207, 142, .18);
+}
+
 .elapsed {
   color: var(--text2);
   font-size: 12px;
@@ -902,7 +932,7 @@ body.not-activated.trial-mode .topbar-controls {
   background: rgba(0, 0, 0, 0.55);
 }
 .ms-box {
-  width: 460px;
+  width: 520px;
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 60px);
   overflow: auto;
@@ -932,28 +962,67 @@ body.not-activated.trial-mode .topbar-controls {
 }
 .ms-row {
   display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 8px 10px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 6px;
   border-radius: 6px;
-  cursor: pointer;
   user-select: none;
+  border: 1px solid transparent;
 }
 .ms-row:hover { background: var(--bg3); }
+.ms-row.ms-dragging { opacity: 0.45; border-color: var(--accent); }
+.ms-grip {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: -2px;
+  cursor: grab;
+  opacity: 0.7;
+}
+.ms-grip:active { cursor: grabbing; }
+.ms-row-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
 .ms-row input[type="checkbox"] {
   margin-top: 2px;
   accent-color: var(--accent);
   width: 14px;
   height: 14px;
   cursor: pointer;
+  flex: none;
 }
-.ms-row-txt { display: flex; flex-direction: column; gap: 1px; }
+.ms-row-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ms-row-txt b { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .ms-row-txt i { font-style: normal; font-size: 11px; color: var(--text2); }
+/* 上移 / 下移：放在 label 之外，避免点按钮时连带切换勾选 */
+.ms-move { display: flex; flex-direction: column; gap: 2px; flex: none; }
+.ms-move button {
+  width: 24px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ms-move button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ms-move button:disabled { opacity: 0.28; cursor: default; }
 .ms-ops {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 /* ═══ 低谷截图条（采集时 FPS 跌破目标 80% 自动截取）═══════════════════════ */

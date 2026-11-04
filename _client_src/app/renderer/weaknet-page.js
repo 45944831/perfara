@@ -20,10 +20,14 @@
 
   const OPEN_POLL_MS = 1000;
   const IDLE_POLL_MS = 4000;
-  /** 与引擎 spec 的 combo 上限一致：段数、单段分/秒 */
+  /** 与引擎 spec 的 combo / name_max 一致：段数、单段分/秒、自定义名字数 */
   const MAX_COMBO_STEPS = 5;
   const MAX_STEP_MIN = 600;
   const MAX_STEP_SEC = 59;
+  /** 引擎 spec 的 name_max：自定义场景与弱网组合的名字最多 10 个字 */
+  const NAME_MAX = 10;
+  /** 场景区里自定义场景那一组的标题（与引擎 / WeakNet 图形界面同一个叫法） */
+  const CUSTOM_CAT = '自定义场景';
   const FOLLOW_KEY = 'perfara.weaknet.follow';
 
   const st = {
@@ -42,6 +46,8 @@
     devices: [],
     phoneOn: false,
     sceneOpts: [],         // 组合编辑器里的场景下拉（内置 + 自定义）
+    builtin: [],           // 17 支内置预设（静态）
+    customScenes: [],      // 自定义场景（含引擎出厂的 5 支，可能被别处增删）
     combos: [],            // 弱网组合列表
     comboSig: '',
     editing: '',           // 编辑器正在编辑的组合 id，空 = 新建
@@ -53,6 +59,13 @@
   try { st.follow = localStorage.getItem(FOLLOW_KEY) === '1'; } catch (_) { st.follow = false; }
 
   const $ = (id) => document.getElementById(id);
+
+  /** 名字按 Unicode 码点算字数：中文 1 个字、emoji 也算 1 个字，不会截出半个代理对 */
+  function capName(s) {
+    const str = String(s == null ? '' : s);
+    const chars = Array.from(str);
+    return chars.length > NAME_MAX ? chars.slice(0, NAME_MAX).join('') : str;
+  }
 
   // ── DOM ────────────────────────────────────────────────────────────────────
   function el(tag, cls, text) {
@@ -170,6 +183,7 @@
     tipH.appendChild(el('span', null, '使用提示'));
     const tipList = el('div', 'wn-note wn-tips');
     tipList.innerHTML = '<div>· 限速只改变网络路径，adb / USB 采集链路不受影响，可以边限速边采集。</div>'
+      + '<div>· 场景区末尾的「自定义场景」由弱网引擎提供，出厂自带 5 支（常用 3 支 + 极限 2 支），和内置场景一样点一下就切换。</div>'
       + '<div>· 手机走 USB 接管（推荐）：插上数据线，在右侧「手机（USB 直连）」里选设备点「接管」，手机不用装任何 App。</div>'
       + '<div>· 采集期间开启的弱网时段会写进报告，报告页对应生成「弱网总结分析」。</div>'
       + '<div>· 「返回采集」不会停引擎；退出 Perfara 时会停掉它拉起的引擎、解除系统代理并还原手机代理。</div>';
@@ -307,26 +321,41 @@
     return true;
   }
 
-  /** 场景与参数定义是静态的，取一次即可 */
+  /** 场景与参数定义是静态的，取一次即可；自定义场景会变，由 loadCustomScenes 单独重取 */
   async function loadStatic() {
-    const d = buildDom();
     const [presets, params] = await Promise.all([api('/api/presets'), api('/api/params')]);
     st.paramDefs = (params && params.items) || [];
+    st.builtin = (presets || []).map((p) => ({ key: p.key, name: p.name, cat: p.cat }));
+    renderParams();
+    await loadCustomScenes();
+  }
 
-    // 组合编辑器要能选到「自定义场景」（WeakNet 图形界面里存的），老引擎没有这个接口
+  /**
+   * 自定义场景：引擎出厂的 5 支（地铁刷视频卡顿 / 秒杀抢购拥塞 / 视频通话卡顿 /
+   * 超低速 100K / 极限丢包闪断）+ 用户在 WeakNet 图形界面里自己存的那些。
+   * 别的端可能随时增删，所以每次打开页面都重取一次；老引擎没这个接口就当没有。
+   */
+  async function loadCustomScenes() {
     let ups = [];
     try {
       const r = await api('/api/upresets');
       ups = (r && r.items) || [];
     } catch (_) {}
-    st.sceneOpts = (presets || []).map((p) => ({ key: p.key, name: p.name, cat: p.cat }));
-    ups.forEach((u) => {
-      st.sceneOpts.push({ key: 'u:' + u.id, name: u.name, cat: '自定义场景' });
+    st.customScenes = ups.map((u) => ({ key: 'u:' + u.id, name: u.name }));
+    st.sceneOpts = (st.builtin || []).map((p) => ({ key: p.key, name: p.name, cat: p.cat }));
+    st.customScenes.forEach((u) => {
+      st.sceneOpts.push({ key: u.key, name: u.name, cat: CUSTOM_CAT });
     });
+    renderScenes();
+    return st.customScenes;
+  }
 
+  /** 场景网格：内置按分类分组，末尾追加一组自定义场景（与内置用同一套按钮样式） */
+  function renderScenes() {
+    const d = st.dom || buildDom();
     const cats = [];
     const byCat = new Map();
-    (presets || []).forEach((p) => {
+    st.sceneOpts.forEach((p) => {
       if (!byCat.has(p.cat)) { byCat.set(p.cat, []); cats.push(p.cat); }
       byCat.get(p.cat).push(p);
     });
@@ -339,6 +368,10 @@
         const b = el('button', 'wn-scene', p.name);
         b.type = 'button';
         b.dataset.key = p.key;
+        // 自定义场景来自别处保存的参数，点一下只是切换，不会把当前参数存回去
+        b.title = p.key.indexOf('u:') === 0
+          ? '自定义场景「' + p.name + '」：点一下即切换'
+          : p.name;
         b.addEventListener('click', () => selectScene(p.key));
         row.appendChild(b);
       });
@@ -346,7 +379,17 @@
       frag.appendChild(box);
     });
     d.scenes.replaceChildren(frag);
+    // 重建后按当前 preset_key 重新点亮，避免重取自定义场景的瞬间高亮丢一下
+    const cur = st.status && st.status.preset_key;
+    if (cur) {
+      d.scenes.querySelectorAll('button').forEach((b) => {
+        b.classList.toggle('is-on', b.dataset.key === cur);
+      });
+    }
+  }
 
+  function renderParams() {
+    const d = st.dom || buildDom();
     const pFrag = document.createDocumentFragment();
     st.paramDefs.forEach((p) => {
       const wrap = el('div', 'wn-param');
@@ -411,9 +454,23 @@
     const name = el('input', 'wn-ce-name');
     name.id = 'wn-ce-name';
     name.type = 'text';
-    name.maxLength = 24;
+    // 刻意不用 maxLength：它按 UTF-16 单元算，一个 emoji 会被当成 2 个字。
+    // 与引擎一致的做法是按码点数截断（见 capName），所以只用 input 事件兜住。
     name.placeholder = '例如：通勤路上';
-    rowName.append(lab, name);
+    name.addEventListener('input', () => {
+      // 中文输入法组字途中不能打断，等 compositionend 再截
+      if (name.dataset.composing === '1') return;
+      const capped = capName(name.value);
+      if (capped !== name.value) name.value = capped;
+    });
+    name.addEventListener('compositionstart', () => { name.dataset.composing = '1'; });
+    name.addEventListener('compositionend', () => {
+      delete name.dataset.composing;
+      const capped = capName(name.value);
+      if (capped !== name.value) name.value = capped;
+    });
+    const nameHint = el('span', 'wn-ce-hint', '最多 ' + NAME_MAX + ' 字');
+    rowName.append(lab, name, nameHint);
 
     const loopRow = el('label', 'wn-ce-loop');
     const loop = el('input');
@@ -554,7 +611,8 @@
 
   async function saveCombo() {
     if (st.busy) return;
-    const name = ($('wn-ce-name').value || '').trim();
+    // 名字按码点截到 NAME_MAX：引擎也会截，但界面先截住才能让用户当场看到结果
+    const name = capName(($('wn-ce-name').value || '').trim());
     if (!name) { setComboErr('先给组合起个名字'); return; }
     const rows = Array.prototype.slice.call($('wn-ce-steps').children);
     const steps = rows.map((r) => ({
@@ -620,10 +678,12 @@
     st.comboSig = sig;
     const frag = document.createDocumentFragment();
     (st.combos || []).forEach((c) => {
-      const b = el('button', 'wn-scene', '🔀 ' + c.name);
+      // 与「自定义场景」同一套按钮：只写名字、不掺彩色 emoji（WeakNet 双端也去掉了 🔀）
+      const b = el('button', 'wn-scene', c.name);
       b.type = 'button';
       b.dataset.combo = c.id;
-      b.title = c.summary || c.name;
+      const steps = (c.steps || []).length;
+      b.title = (c.summary || c.name) + (steps ? '（' + steps + ' 段）' : '');
       b.addEventListener('click', () => selectCombo(c.id));
       frag.appendChild(b);
     });
@@ -1272,7 +1332,11 @@
     const ok = await ensureEngine();
     if (ok) await refresh();
     else syncBusy();   // 引擎没起来：把操作全部置灰，别让人点了没反应
-    if (ok) loadCombos().catch(() => {});   // 组合可能在图形界面里改过，每次打开重取
+    // 组合与自定义场景都可能在 WeakNet 图形界面里被增删，每次打开重取
+    if (ok) {
+      loadCombos().catch(() => {});
+      loadCustomScenes().catch(() => {});
+    }
     loadPhoneDevices().catch(() => {});
     schedule();
   }

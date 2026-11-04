@@ -57,6 +57,11 @@ const COMBOS = [
     { key: 'wifi', minutes: 1, seconds: 0 },
   ] },
 ];
+// 自定义场景：引擎出厂自带 5 支 + 用户自己存的，这里取两支够覆盖分组与选中
+const UPRESETS = [
+  { id: 'up1', name: '我的自定义场景', profile: {} },
+  { id: 'up2', name: '地铁刷视频卡顿', profile: {} },
+];
 const sceneName = (k) => (PRESETS.find((p) => p.key === k) || { name: k }).name;
 const comboSummary = (c) => c.steps.map((x) => sceneName(x.key) + ' '
   + Math.floor((x.minutes * 60 + x.seconds) / 60) + ':'
@@ -70,9 +75,7 @@ window.__fakeEngine = async (p, body) => {
   if (p === '/api/status') return { ok: true, data: JSON.parse(JSON.stringify(s)) };
   if (p === '/api/presets') return { ok: true, data: PRESETS };
   if (p === '/api/params') return { ok: true, data: PARAMS };
-  if (p === '/api/upresets') return { ok: true, data: { items: [
-    { id: 'up1', name: '我的自定义场景', profile: {} },
-  ] } };
+  if (p === '/api/upresets') return { ok: true, data: { items: UPRESETS } };
   if (p === '/api/combos') {
     return { ok: true, data: { items: COMBOS.map((c) => ({
       id: c.id, name: c.name, loop: c.loop, summary: comboSummary(c), steps: c.steps,
@@ -102,6 +105,10 @@ window.__fakeEngine = async (p, body) => {
       // 组合：限速开着就从第一段开始播（与引擎一致）
       const c = COMBOS.find((x) => x.id === String(body.key).slice(2));
       if (c && s.limit_on && c.steps.length) s.profile.name = sceneName(c.steps[0].key);
+    } else if (String(body.key).indexOf('u:') === 0) {
+      // 自定义场景：与引擎一致，key 是 u:<id>，profile 用场景自己的名字
+      const u = UPRESETS.find((x) => 'u:' + x.id === body.key);
+      s.profile.name = u ? u.name : body.key;
     } else {
       const pr = PRESETS.find((x) => x.key === body.key);
       s.profile.name = pr ? pr.name : body.key;
@@ -234,9 +241,10 @@ window.perfAPI = stub;
       logLines: document.querySelectorAll('#wn-log div').length };
   });
   check('点击后页面可见', opened.hidden === false);
-  check('场景按钮 4 个', opened.scenes === 4, 'n=' + opened.scenes);
+  check('场景按钮 6 个（4 内置 + 2 自定义）', opened.scenes === 6, 'n=' + opened.scenes);
   check('参数输入 3 个', opened.params === 3, 'n=' + opened.params);
-  check('场景按分类分组', opened.cats.join('/') === '常规网络/弱网环境/极端环境', opened.cats.join('/'));
+  check('场景按分类分组，最后一组是自定义场景',
+    opened.cats.join('/') === '常规网络/弱网环境/极端环境/自定义场景', opened.cats.join('/'));
   check('状态条读到版本与场景', opened.ver === 'v1.1.10' && opened.scene === '直连（不限制）',
     opened.ver + ' ' + opened.scene);
   check('接管范围默认全部程序', opened.scope === '全部程序', opened.scope);
@@ -254,6 +262,34 @@ window.perfAPI = stub;
     JSON.stringify(sceneOn.call));
   check('场景高亮跟随 preset_key', sceneOn.on.length === 1 && /4G 弱网/.test(sceneOn.on[0]),
     sceneOn.on.join(','));
+
+  // ── 自定义场景：引擎出厂的 5 支默认场景存在这里，点一下要和内置场景一样立刻生效
+  const customBtn = await page.evaluate(() => {
+    const b = document.querySelector('.wn-scene[data-key="u:up1"]');
+    if (!b) return null;
+    const box = b.closest('.wn-cat');
+    return { text: b.textContent, title: b.title,
+      cat: box ? box.querySelector('.wn-cat-t').textContent : '',
+      inGrid: !!b.closest('#wn-presets') };
+  });
+  check('自定义场景按钮在场景区「自定义场景」分组里', !!customBtn && customBtn.inGrid
+    && customBtn.cat === '自定义场景' && customBtn.text === '我的自定义场景',
+  JSON.stringify(customBtn));
+  check('自定义场景带悬停说明', !!customBtn && /点一下即切换/.test(customBtn.title),
+    customBtn && customBtn.title);
+  await page.click('.wn-scene[data-key="u:up1"]');
+  await page.waitForTimeout(150);
+  const customOn = await page.evaluate(() => ({
+    call: window.__wn.calls.filter((c) => c.path === '/api/preset').pop(),
+    on: [...document.querySelectorAll('.wn-scene.is-on')].map((e) => e.textContent),
+    scene: document.getElementById('wn-k-scene').textContent,
+  }));
+  check('点自定义场景调用 /api/preset u:<id>', customOn.call
+    && customOn.call.body.key === 'u:up1', JSON.stringify(customOn.call));
+  check('自定义场景选中后立刻高亮（不等下一轮轮询）', customOn.on.length === 1
+    && /我的自定义场景/.test(customOn.on[0]), customOn.on.join(','));
+  // 注意：真实引擎在限速没开时只记 preset_key、不改 profile，
+  // 所以「当前场景」仍显示直连属正常，这里不对它做断言
 
   // ── 开限速（没选手机时只开限速，不碰手机）
   await page.selectOption('#wn-phone-dev', '');
@@ -362,6 +398,8 @@ window.perfAPI = stub;
   }));
   check('组合卡片列出组合', comboInit.n === 2 && /通勤组合/.test(comboInit.labels.join('|')),
     JSON.stringify(comboInit.labels));
+  check('组合按钮与自定义场景同一套按钮（不再掺 🔀）',
+    !/🔀/.test(comboInit.labels.join('')), comboInit.labels.join('|'));
   check('未选中时说明怎么用', /点一支组合/.test(comboInit.state), comboInit.state);
 
   await page.click('#wn-combos button[data-combo="cmb1"]');
@@ -406,6 +444,28 @@ window.perfAPI = stub;
     && edOpen.sceneOpts.length >= 5 && /我的自定义场景/.test(edOpen.sceneOpts.join('|')),
   edOpen.sceneOpts.join('|'));
 
+  // ── 名字上限 10 字（与引擎 spec 的 name_max 一致，按 Unicode 码点数）
+  const namePolicy = await page.evaluate(() => ({
+    hint: (document.querySelector('#wn-combo-ed .wn-ce-hint') || {}).textContent || '',
+    maxLength: document.getElementById('wn-ce-name').maxLength,
+  }));
+  check('名称旁标出「最多 10 字」', namePolicy.hint.trim() === '最多 10 字', namePolicy.hint);
+  check('不用 maxLength（否则 emoji 会被当成 2 个字截掉）', namePolicy.maxLength === -1,
+    String(namePolicy.maxLength));
+
+  await page.fill('#wn-ce-name', '一二三四五六七八九十壹');
+  await page.waitForTimeout(80);
+  const capped11 = await page.inputValue('#wn-ce-name');
+  check('11 个汉字被截到 10 个', capped11 === '一二三四五六七八九十', capped11);
+
+  await page.fill('#wn-ce-name', '😀😀😀😀😀😀😀😀😀😀😀');
+  await page.waitForTimeout(80);
+  const cappedEmoji = await page.inputValue('#wn-ce-name');
+  check('11 个 emoji 按码点截到 10 个（不是 5 个）', Array.from(cappedEmoji).length === 10,
+    Array.from(cappedEmoji).length + ' 个');
+
+  // 名字上限验完先清空，才能走到「没填名字不能保存」这条分支
+  await page.fill('#wn-ce-name', '');
   await page.click('#wn-ce-save');
   await page.waitForTimeout(200);
   const noName = await page.evaluate(() => ({

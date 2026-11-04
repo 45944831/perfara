@@ -984,6 +984,43 @@ function metricDisabled(rep, key) {
   return !!(mc && typeof mc === 'object' && mc[g] === false);
 }
 
+// ─── 采集参数展示顺序（对比表 / 对比曲线）────────────────────────────────────
+// 顺序由采集界面保存，随每次采集写入 payload.metricOrder 与报告索引 meta。
+// 多份报告顺序不一致时，以参与对比的第一份带顺序配置的报告为准；旧报告无配置则保持原顺序。
+let CMP_METRIC_ORDER = null;
+
+function pickCompareOrder(reps, payloads) {
+  const src = (payloads || []).concat(reps || []);
+  for (const p of src) {
+    if (!p || typeof p !== 'object') continue;
+    const o = Array.isArray(p.metricOrder) ? p.metricOrder
+      : (p.metricConfig && Array.isArray(p.metricConfig.__order) ? p.metricConfig.__order : null);
+    if (o && o.length) return o;
+  }
+  return null;
+}
+
+/** 按参数组顺序稳定重排指标定义：同组内保持原有相对顺序，未分组的排在最后 */
+function orderedByGroup(items, order, groupOf) {
+  if (!order) return items;
+  const rank = {};
+  let n = 0;
+  for (const g of order) {
+    if (typeof g === 'string' && g && !Object.prototype.hasOwnProperty.call(rank, g)) rank[g] = n++;
+  }
+  if (!n) return items;
+  return items.map((it, i) => {
+    const g = groupOf(it);
+    const r = (g && Object.prototype.hasOwnProperty.call(rank, g)) ? rank[g] : n;
+    return { it: it, i: i, r: r };
+  }).sort((a, b) => a.r - b.r || a.i - b.i).map(x => x.it);
+}
+
+/** 对比曲线的所属参数组（cswitch 归系统事件） */
+function chartGroup(cfg) {
+  return METRIC_GROUP[cfg.key] || (cfg.key === 'cswitch' ? 'events' : '');
+}
+
 const $ = (id) => document.getElementById(id);
 
 // ─── 小工具 ─────────────────────────────────────────────────────────────────
@@ -1517,6 +1554,7 @@ function hideCompare() {
   if (ins) { ins.classList.remove('is-on'); ins.innerHTML = ''; }
   const saveBtn = $('btn-export-compare');
   if (saveBtn) saveBtn.disabled = true;
+  CMP_METRIC_ORDER = null;
   destroyCharts();
 }
 
@@ -1534,6 +1572,7 @@ async function runCompare() {
 
   const reps = ids.map(id => state.reports.find(r => r.id === id)).filter(Boolean);
   const payloads = await Promise.all(ids.map(loadReportData));
+  CMP_METRIC_ORDER = pickCompareOrder(reps, payloads);
 
   renderCompareTable(reps, payloads);
   renderCompareInsight(reps, payloads);
@@ -1800,7 +1839,9 @@ function renderCompareTable(reps, payloads) {
   const gpuAllMissing = kpis.every(k => k.gpu == null);
   const gpuUseTemp = gpuAllMissing && kpis.some(k => k.gpuTemp != null);
 
-  for (const m of METRICS) {
+  // 按采集界面保存的参数顺序重排指标行（同组内保持原有相对顺序）
+  const metricRows = orderedByGroup(METRICS, CMP_METRIC_ORDER, m => METRIC_GROUP[m.key] || '');
+  for (const m of metricRows) {
     // Jank/10min 四项是上面 Jank 的派生计数，不再单独立一行，避免表里出现两组几乎相同的 Jank
     if (CMP_SUB_ROWS.has(m.key)) continue;
     const useTemp = (m.key === 'gpu' && gpuUseTemp);
@@ -1918,7 +1959,9 @@ function renderCompareCharts(reps, payloads) {
   destroyCharts();
   const box = $('cmp-charts');
 
-  for (const cfg of CHARTS) {
+  // 按采集界面保存的参数顺序重排曲线（同组内保持原有相对顺序）
+  const chartCfgs = orderedByGroup(CHARTS, CMP_METRIC_ORDER, chartGroup);
+  for (const cfg of chartCfgs) {
     // 采集时移除了该参数组的报告不参与这条曲线
     const seriesList = payloads.map((p, i) => (p && !metricDisabled(reps[i], cfg.key) ? seriesOf(p, cfg.key) : []));
     // 全都没数据就不画这张图

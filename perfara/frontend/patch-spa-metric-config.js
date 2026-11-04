@@ -82,6 +82,52 @@ if (trend.indexOf(MARK) !== -1) {
   console.log('[ok] trend bundle patched at', at3);
 }
 
+// ─── 补丁 4：采集参数展示顺序（payload.metricOrder → 卡片/图表 CSS order） ────
+// 与采集界面 metric-settings.js、本地报告 perf.html 用的是同一套规则：
+// 按组 rank 排序、同组内保持原相对顺序；无标记块固定首/尾或跟在前组之后。
+// 顺序字段由客户端写入 payload.metricOrder，后端 canonical_payload_for_hash
+// 原样保留进 test_raw，因此 SPA 的 e.payload 里能直接读到。
+const ORDER_MARK = 'perfara-metric-order-patch-v1';
+const ORDER_END = 'perfara-metric-order-patch-end';
+const ORDER_ANCHOR = 'const j=H=>{var ve,Te;for(const ye of Object.values(B))';
+
+if (main.indexOf(ORDER_MARK) !== -1) {
+  console.log('[skip] main bundle already order-patched');
+} else {
+  const oAt = main.indexOf(ORDER_ANCHOR);
+  if (oAt === -1) throw new Error('order anchor not found in main bundle');
+  if (main.indexOf(ORDER_ANCHOR, oAt + 1) !== -1) throw new Error('order anchor not unique in main bundle');
+
+  const orderPatch = `/*${ORDER_MARK}*/;(function(){try{
+var _p=e.payload||{},_o=_p.metricOrder||(_p.metricConfig&&_p.metricConfig.__order);
+if(!Array.isArray(_o)||!_o.length)return;
+var _G={"chart-cpu":"cpu","chart-cpu-cores":"cpu","chart-cpu-freq":"cpu","chart-mem":"mem","chart-memdetail":"mem","chart-fps":"fps","chart-jank":"fps","chart-jankrate":"fps","chart-net":"net","chart-gpu":"gpu","chart-temp":"temp","chart-current":"battery","chart-power":"battery","chart-battery":"battery","chart-disk":"disk","chart-pc-disk":"disk","chart-events":"events","chart-cswitch":"events","chart-pid":"proc","chart-occupancy":"gpu","card-cpu":"cpu","card-proccpu":"cpu","card-syscpu":"cpu","card-mem":"mem","card-fps":"fps","card-jank":"fps","card-bigjank":"fps","card-big-jank":"fps","card-stutter":"fps","card-net":"net","card-gpu":"gpu","card-temp":"temp","card-battery":"battery","card-disk":"disk","card-thread":"proc","card-ctx":"events","card-pid":"proc"};
+var _rank={},_n=0;for(var _i=0;_i<_o.length;_i++){var _g=_o[_i];if(typeof _g==="string"&&_g&&!(_g in _rank))_rank[_g]=_n++;}
+if(!_n)return;
+function _group(el){if(el.id&&_G[el.id])return _G[el.id];var c=el.querySelector&&el.querySelector("[id]");if(c&&_G[c.id])return _G[c.id];return "";}
+function _apply(){
+var _root=r.value||document,_boxes=_root.querySelectorAll?_root.querySelectorAll("section.cards, .charts-grid"):[];
+for(var _b=0;_b<_boxes.length;_b++){
+var _kids=_boxes[_b].children,_first=-1,_last=-1;
+for(var _a=0;_a<_kids.length;_a++){if(_group(_kids[_a])){if(_first<0)_first=_a;_last=_a;}}
+if(_first<0)continue;
+var _seq={},_prev=-1;
+for(var _j=0;_j<_kids.length;_j++){
+var _gg=_group(_kids[_j]);
+if(!_gg){_kids[_j].style.order=_j<_first?"-1000":(_j>_last?String((_n+1)*1000):String((_prev<0?0:_prev)*1000+500));continue;}
+var _rr=(_gg in _rank)?_rank[_gg]:_n;_prev=_rr;
+var _s=_seq[_rr]||0;_seq[_rr]=_s+1;
+_kids[_j].style.order=String(_rr*1000+_s);
+}}}
+_apply();
+if(typeof MutationObserver==="function"){var _t=null,_ob=new MutationObserver(function(){if(_t)return;_t=setTimeout(function(){_t=null;_apply();},30);});_ob.observe(r.value||document.body,{childList:true,subtree:true});}
+}catch(_e){}})();/*${ORDER_END}*/`;
+
+  main = main.slice(0, oAt) + orderPatch + main.slice(oAt);
+  fs.writeFileSync(mainFile, main, 'utf8');
+  console.log('[ok] main bundle order-patched at', oAt);
+}
+
 // ─── 语法校验 ──────────────────────────────────────────────────────────────
 const { execFileSync } = require('child_process');
 for (const f of [mainFile, cmpFile, trendFile]) {

@@ -456,6 +456,8 @@ function archiveReport(payload, dataJsPath) {
       kpi: sum.kpi,
       // 本次采集的参数配置（勾选项）；对比报告据此逐列隐藏被移除的指标
       metricConfig: payload.metricConfig || null,
+      // 本次采集保存的参数展示顺序；对比报告据此重排指标行与曲线
+      metricOrder: payload.metricOrder || null,
     };
 
     const list = readReportIndex();

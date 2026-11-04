@@ -87,6 +87,28 @@ def normalize_metric_config(payload: Dict[str, Any]) -> Optional[Dict[str, bool]
     return out or None
 
 
+def normalize_metric_order(payload: Dict[str, Any]) -> Optional[List[str]]:
+    """payload.metricOrder → 去重、只认已知指标组；旧数据无配置返回 None。
+
+    顺序只是展示配置，不参与 series 过滤与 summary 计算，因此单独存放，
+    不混进 metricConfig 的 {组: bool} 字典（那样会污染上传回归的等值断言）。
+    兼容老客户端把顺序放在 metricConfig.__order 里的形态。
+    """
+    if not isinstance(payload, dict):
+        return None
+    order = payload.get("metricOrder")
+    if not isinstance(order, list) or not order:
+        cfg = payload.get("metricConfig")
+        order = cfg.get("__order") if isinstance(cfg, dict) else None
+    if not isinstance(order, list) or not order:
+        return None
+    out: List[str] = []
+    for g in order:
+        if isinstance(g, str) and g in METRIC_GROUPS and g not in out:
+            out.append(g)
+    return out or None
+
+
 def filter_series_by_metric_config(
     series: DefaultDict[str, List[Any]],
     category: str,
@@ -517,7 +539,11 @@ def parse_uploaded_json(
             if g and not mc.get(g, True):
                 summary[k] = None
 
-    content = {"timestamp": timestamps, "series": series, "meta": {"category": category, "metricConfig": mc}}
+    content = {
+        "timestamp": timestamps,
+        "series": series,
+        "meta": {"category": category, "metricConfig": mc, "metricOrder": normalize_metric_order(payload)},
+    }
     blob = MetricBlob(test_run=test_run, content=json.dumps(content, ensure_ascii=False, allow_nan=False))
     # 保留 null，列表页可稳定读到 fpsAvg / cpuProcAvg / memFootprintAvg 等键
     test_run.summary = json.dumps(summary, ensure_ascii=False, allow_nan=False)

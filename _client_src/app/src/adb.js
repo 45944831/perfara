@@ -3,6 +3,7 @@
 const { execFile } = require('child_process');
 const path = require('path');
 const fs   = require('fs');
+const net  = require('net');
 
 // Prefer bundled adb; fall back to system adb
 function resolveAdb() {
@@ -39,8 +40,120 @@ const DUMPSYS_TIMEOUT_MS = 10000;
 // Track inflight adb child processes so we can cancel stale tasks
 const _inflight = new Set();
 
+/* ─── adb server 归属：退出时「该不该收」────────────────────────────────────
+   adb 客户端执行任意命令时会自动 fork 一个常驻的 adb server（`fork-server server`），
+   它**不随客户端退出**。本工具是「开着采完就关」的用法，如果不管它，adb.exe 就会以
+   孤儿进程常驻：既占着 5037，又把便携包里的 adb.exe 文件锁住（整个目录都移不走 / 删不掉）。
+
+   但 5037 是全局共享的（Escrcpy、Android Studio、用户自己的 adb 都连它），无脑
+   `kill-server` 会打断别人。所以只在「本进程第一次调 adb 之前 5037 没人监听」时，
+   认定这个 server 是我们拉起来的；退出时也只收自己拉起的那个。 */
+const ADB_SERVER_PORT = resolveServerPort();
+let _serverProbe = null;        // Promise<boolean>，整个进程只探测一次
+let _serverStartedByUs = false;
+
+/**
+ * adb 客户端认 `ANDROID_ADB_SERVER_PORT`（多设备/多工具共存时常用）。
+ * 探测必须跟它走同一个端口，否则要么探测不到自己拉起的 server，要么去杀别人的。
+ */
+function resolveServerPort() {
+  const raw = parseInt(process.env.ANDROID_ADB_SERVER_PORT || '', 10);
+  return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 5037;
+}
+
+function _probeServerRunning() {
+  return new Promise((resolve) => {
+    let sock = null;
+    let done = false;
+    const finish = (running) => {
+      if (done) return;
+      done = true;
+      try { if (sock) sock.destroy(); } catch (_) {}
+      resolve(running);
+    };
+    try {
+      sock = net.connect({ host: '127.0.0.1', port: ADB_SERVER_PORT });
+    } catch (_) {
+      return resolve(false);
+    }
+    sock.setTimeout(700);
+    sock.once('connect', () => finish(true));
+    sock.once('timeout', () => finish(false));
+    sock.once('error', () => finish(false));
+  });
+}
+
+// 测试注入点（离线套件不碰真实 5037，也不真的去杀 server）
+let _probeFn = _probeServerRunning;
+let _killFn = (cb) => execFile(
+  ADB_BIN, ['kill-server'], { timeout: 3000, windowsHide: true }, (err) => cb(err));
+
+/**
+ * 首个 adb 命令之前探一次 5037。必须 await 在真正 spawn 之前，否则等第一条命令
+ * 把 server 拉起来就分辨不出「本来就有」和「我们起的」。
+ */
+function ensureServerOwnership() {
+  if (!_serverProbe) {
+    _serverProbe = Promise.resolve()
+      .then(() => _probeFn())
+      .then((running) => {
+        if (!running) _serverStartedByUs = true;
+        return !!running;
+      })
+      .catch(() => false);
+  }
+  return _serverProbe;
+}
+
+/**
+ * 退出清理：只收本进程拉起的 adb server。
+ * 直连 execFile 而不是走 adb()：kill 期间不该再登记 inflight，也别被探测/门闩顺序卡住。
+ * 拿不到结果就放弃（最多 timeout+0.5 s），绝不拖住退出。
+ * @returns {Promise<{ok:boolean, killed:boolean, reason?:string}>}
+ */
+function killServerIfOwned(timeout = 3000) {
+  return ensureServerOwnership().then(() => {
+    if (!_serverStartedByUs) return { ok: true, killed: false, reason: 'not-ours' };
+    return new Promise((resolve) => {
+      let settled = false;
+      let child = null;
+      const finish = (killed) => {
+        if (settled) return;
+        settled = true;
+        resolve({ ok: true, killed });
+      };
+      // 不要 unref：这个定时器就是「kill 卡住时的唯一出路」。unref 之后一旦事件循环
+      // 没有别的句柄，计时器不会触发，promise 永远不 resolve —— 退出链又变成死等。
+      const guard = setTimeout(() => {
+        try { if (child) child.kill(); } catch (_) {}
+        finish(false);
+      }, timeout + 500);
+      try {
+        child = _killFn((err) => { clearTimeout(guard); finish(!err); });
+      } catch (_) {
+        clearTimeout(guard);
+        finish(false);
+      }
+    });
+  }).then((res) => {
+    if (res && res.killed) _serverStartedByUs = false;
+    return res;
+  }).catch(() => ({ ok: false, killed: false }));
+}
+
+/** 测试用：替换探测/结束器，并在用例之间重置状态 */
+function __setServerRunner(runner) {
+  const r = runner || {};
+  _probeFn = typeof r.probe === 'function' ? r.probe : _probeServerRunning;
+  _killFn = typeof r.kill === 'function' ? r.kill : ((cb) => execFile(
+    ADB_BIN, ['kill-server'], { timeout: 3000, windowsHide: true }, (err) => cb(err)));
+  _serverProbe = null;
+  _serverStartedByUs = false;
+}
+
 function adb(args, timeout = 10000) {
-  return new Promise((resolve, reject) => {
+  // 先确认 server 归属再 spawn：顺序不能反（见 ensureServerOwnership）
+  return ensureServerOwnership().then(() => new Promise((resolve, reject) => {
     const child = execFile(ADB_BIN, args, { timeout, encoding: 'utf8' }, (err, stdout, stderr) => {
       // If we were cancelled, treat as silent failure for callers to handle.
       if (err) {
@@ -61,7 +174,7 @@ function adb(args, timeout = 10000) {
       child.once('exit', () => _inflight.delete(child));
       child.once('error', () => _inflight.delete(child));
     } catch (_) {}
-  });
+  }));
 }
 
 function adbShell(deviceId, cmd, timeout = SHELL_TIMEOUT_MS) {
@@ -74,7 +187,7 @@ function adbShell(deviceId, cmd, timeout = SHELL_TIMEOUT_MS) {
  * 1080×2400 PNG 约 1~3 MB，maxBuffer 给 32 MB 余量。
  */
 function captureScreen(deviceId, timeout = 8000) {
-  return new Promise((resolve, reject) => {
+  return ensureServerOwnership().then(() => new Promise((resolve, reject) => {
     const child = execFile(
       ADB_BIN,
       ['-s', deviceId, 'exec-out', 'screencap', '-p'],
@@ -96,7 +209,7 @@ function captureScreen(deviceId, timeout = 8000) {
       child.once('exit', () => _inflight.delete(child));
       child.once('error', () => _inflight.delete(child));
     } catch (_) {}
-  });
+  }));
 }
 
 /**
@@ -320,7 +433,7 @@ async function getApkPath(deviceId, packageName) {
  * 不把整个 APK 拉回 PC：一个 resources.arsc 就有 1.8~6.4 MB，整包只会更大。
  */
 function readApkEntry(deviceId, apkPath, entry, timeout = 25000, maxBytes = 32 * 1024 * 1024) {
-  return new Promise((resolve, reject) => {
+  return ensureServerOwnership().then(() => new Promise((resolve, reject) => {
     const child = execFile(
       ADB_BIN,
       ['-s', deviceId, 'exec-out', `unzip -p ${shellArg(apkPath)} ${shellArg(entry)}`],
@@ -341,7 +454,7 @@ function readApkEntry(deviceId, apkPath, entry, timeout = 25000, maxBytes = 32 *
       child.once('exit', () => _inflight.delete(child));
       child.once('error', () => _inflight.delete(child));
     } catch (_) {}
-  });
+  }));
 }
 
 /**
@@ -454,6 +567,27 @@ async function isAppForeground(deviceId, packageName) {
   } catch (_) {
     return false;
   }
+}
+
+/**
+ * 采集「启动时要不要自动选中前台应用」所需的三路原始输出。
+ * 判定逻辑全在 src/foreground-app.js（纯函数），这里只负责取数：
+ *   - dumpsys 两路互为兜底（部分 ROM 只在 window 里写 mCurrentFocus）
+ *   - HOME resolver 给出设备自己的桌面包名，避免硬编码厂商 launcher 清单
+ * 三路并行、各自吞异常；任何一路失败都只是少一个判据，绝不让启动卡住。
+ */
+async function getForegroundSnapshot(deviceId) {
+  const quiet = (p) => p.catch(() => '');
+  const [activityDump, windowDump, homeResolve] = await Promise.all([
+    quiet(adbShell(deviceId,
+      "dumpsys activity activities 2>/dev/null | grep -m2 -E 'ResumedActivity'", DUMPSYS_TIMEOUT_MS)),
+    quiet(adbShell(deviceId,
+      "dumpsys window 2>/dev/null | grep -m2 -E 'mCurrentFocus|mFocusedApp'", DUMPSYS_TIMEOUT_MS)),
+    quiet(adbShell(deviceId,
+      'cmd package resolve-activity --brief -a android.intent.action.MAIN'
+      + ' -c android.intent.category.HOME 2>/dev/null', 6000)),
+  ]);
+  return { activityDump, windowDump, homeResolve };
 }
 
 async function ensureAppRunning(deviceId, packageName, logFn) {
@@ -1694,7 +1828,7 @@ module.exports = {
   shell: adbShell,
   getDevices, getDeviceInfo, getThirdPartyPackages, getPid, getUid, ensureAppRunning,
   getDeviceLocale, getApkPath, resolveAppLabel, readApkEntry,
-  resolveLauncherComponent, isAppForeground,
+  resolveLauncherComponent, isAppForeground, getForegroundSnapshot,
   getCpuStats, getMemInfo, getFps,
   getNetStats, getBatteryInfo, getThermalInfo, getGpuUsage,
   getCpuCoreStats, captureScreen,
@@ -1702,6 +1836,9 @@ module.exports = {
   resetDeviceState, connectWifi, autoConnectWifi, disconnectWifi,
   reverseTcp, removeReverse, listReverses, pushFile,
   cancelAllInflight,
+  // 退出清理：只收本进程拉起的 adb server（见 ensureServerOwnership）
+  killServerIfOwned, ensureServerOwnership, ADB_SERVER_PORT,
+  __setServerRunner,
   // 纯算法导出：供离线回归测试锁定 FPS/Jank 判定口径（不影响运行时行为）
   __algo: {
     parseHistogram, histDelta, detectVsync, analyseHistogram,

@@ -1922,6 +1922,78 @@ body { overflow-x: hidden; }
       });
     }
 
+    // ── 采集参数顺序：按采集界面保存的顺序重排指标卡与图表 ──────────────────
+    // 顺序来自 payload.metricOrder（旧报告无此字段 → 保持模板默认顺序不变）。
+    // 用 CSS order 而不是移动 DOM：echarts 实例绑在原节点上，移动会牵动渲染。
+    (function () {
+      const raw = (data && Array.isArray(data.metricOrder) && data.metricOrder)
+        || (data && data.metricConfig && Array.isArray(data.metricConfig.__order) && data.metricConfig.__order)
+        || null;
+      if (!raw || !raw.length) return;
+      const GROUP_IDS = ['fps', 'cpu', 'mem', 'net', 'gpu', 'temp', 'battery', 'disk', 'events', 'proc'];
+      const order = [];
+      const seen = {};
+      for (const g of raw) {
+        if (typeof g === 'string' && GROUP_IDS.indexOf(g) !== -1 && !seen[g]) { order.push(g); seen[g] = true; }
+      }
+      if (!order.length) return;
+      const rank = {};
+      for (let i = 0; i < order.length; i++) rank[order[i]] = i;
+      const unknown = order.length;
+
+      function apply() {
+        const els = document.querySelectorAll('[data-metric]');
+        const parents = [];
+        for (const el of els) {
+          const p = el.parentNode;
+          if (p && parents.indexOf(p) === -1) parents.push(p);
+        }
+        for (const parent of parents) {
+          const kids = parent.children;
+          let first = -1, last = -1;
+          for (let a = 0; a < kids.length; a++) {
+            if (kids[a].getAttribute && kids[a].getAttribute('data-metric')) {
+              if (first < 0) first = a;
+              last = a;
+            }
+          }
+          if (first < 0) continue;
+          const seqByRank = {};
+          let prevRank = -1;
+          for (let b = 0; b < kids.length; b++) {
+            const g = kids[b].getAttribute && kids[b].getAttribute('data-metric');
+            if (!g) {
+              // 无指标标记块：首块固定最前、尾块固定最后、中间块跟在前一组之后
+              if (b < first) kids[b].style.order = '-1000';
+              else if (b > last) kids[b].style.order = String((unknown + 1) * 1000);
+              else kids[b].style.order = String((prevRank < 0 ? 0 : prevRank) * 1000 + 500);
+              continue;
+            }
+            const r = Object.prototype.hasOwnProperty.call(rank, g) ? rank[g] : unknown;
+            prevRank = r;
+            const seq = seqByRank[r] || 0;
+            seqByRank[r] = seq + 1;
+            kids[b].style.order = String(r * 1000 + seq);
+          }
+        }
+      }
+
+      apply();
+      // 主体渲染后还会动态追加 KPI 卡 / 分区标题，追加完再排一次（幂等，只监听容器直接子节点）
+      if (typeof MutationObserver === 'function') {
+        const targets = [document.querySelector('section.cards'), document.querySelector('.charts-grid')].filter(Boolean);
+        if (targets.length) {
+          let pending = false;
+          const mo = new MutationObserver(() => {
+            if (pending) return;
+            pending = true;
+            setTimeout(() => { pending = false; apply(); }, 0);
+          });
+          for (const t of targets) mo.observe(t, { childList: true });
+        }
+      }
+    })();
+
     const chartMgr = new ChartManager();
     chartMgr.init();
 

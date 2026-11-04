@@ -1,17 +1,42 @@
 """把构建产物打成 zip。
 
+版本号规范（1.0 → 1.1 → … → 1.10 → 2.0 → … → 2.10 → 3.0 …）由
+tools/version_scheme.py 与客户端 src/version-scheme.js 共同定义，两边必须一致。
+
 用法：
     python make_release_zip.py changes <源目录> <输出.zip>   # 只打改动文件
     python make_release_zip.py full    <源目录> <输出.zip>   # 打完整便携版（较大，建议后台跑）
+    ... 追加 --app-version=next                             # 按规范递增版本号（并同步源码常量）
+    ... 追加 --app-version=1.3                              # 显式指定（补发/重打某个版本）
+
+版本标识写入 <源目录>/collector/resources/version.txt（app.asar 之外），
+主进程优先读它，无需重打包 asar。三种取值：
+  · 不传参（仅 full）：沿用 src/app-version.js 里的 APP_VERSION，不再按当天日期推断，
+    避免又生成日期式版本号、也避免 tag 与包内版本对不上导致误报「新版本」；
+    首个序列版本 v1.0 就这样发（源码常量当前为 1.0）。
+  · --app-version=next：读当前版本、按 1.10→2.0 规则递增，回写源码常量并写 version.txt，
+    同时打印本次应使用的 Release tag（vX.Y）；v1.0 之后的每次发版用它；
+  · --app-version=X.Y：严格校验新规范后写 version.txt（只写包内标识，不改源码，
+    便于补发历史版本）。日期式（2026.11.02 / 20261102）一律拒绝。
 
 full 模式会剔除「运行期用不到」的体积项（见 PRUNE_PREFIXES / PRUNE_SITE_PKGS /
 PRUNE_FLAT_DIRS / PRUNE_SCRIPT_STEMS）。
 这些文件仍保留在源目录里（不删本地文件），只是不进发布包 —— 出问题改这里重打即可。
 """
 import os
+import re
 import sys
 import time
 import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from version_scheme import (  # noqa: E402
+    is_valid_version, normalize_version, next_version, to_version_tag,
+)
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APP_VERSION_JS = os.path.join(ROOT, '_client_src', 'app', 'src', 'app-version.js')
+APP_VERSION_RE = re.compile(r"(APP_VERSION\s*:\s*')([^']*)(')")
 
 # 完整便携版里这些是运行期产生的日志/缓存/数据，不进发布包
 SKIP_SUFFIX = {
@@ -175,12 +200,68 @@ def add(zf, src, mode):
     return n, total, skipped, skipped_bytes
 
 
+def read_source_app_version():
+    """读 src/app-version.js 里的 APP_VERSION；读不到或格式不对直接中止打包。"""
+    try:
+        with open(APP_VERSION_JS, encoding='utf-8') as f:
+            m = APP_VERSION_RE.search(f.read())
+    except OSError as e:
+        sys.exit(f'  错误：读不到源码版本常量 {APP_VERSION_JS}: {e}')
+    if not m or not is_valid_version(m.group(2)):
+        sys.exit(f'  错误：{APP_VERSION_JS} 里的 APP_VERSION 不合新规范（应为 1.0~x.10）')
+    return normalize_version(m.group(2))
+
+
+def write_source_app_version(ver):
+    """--app-version=next 时同步源码常量，保证开发态与发布包显示同一版本号。"""
+    # newline='' 保留原文件的 CRLF/LF，避免回写时把整个文件换行风格改掉造成全量 diff
+    with open(APP_VERSION_JS, encoding='utf-8', newline='') as f:
+        text = f.read()
+    new_text, n = APP_VERSION_RE.subn(
+        lambda m: m.group(1) + ver + m.group(3), text, count=1)
+    if n != 1:
+        sys.exit('  错误：源码版本常量替换失败，已中止（未写入任何版本号）')
+    with open(APP_VERSION_JS, 'w', encoding='utf-8', newline='') as f:
+        f.write(new_text)
+
+
 def main():
     mode = sys.argv[1]
     src = sys.argv[2]
     out = sys.argv[3]
+    # 可选：把本次发布版本写进包外 version.txt（app.asar 之外，主进程优先读）。
+    # 必须在 os.walk 之前写，否则这一版 zip 里没有版本标识、用户会一直看到「新版本」。
+    app_ver_arg = ''
+    for arg in sys.argv[4:]:
+        if arg.startswith('--app-version='):
+            app_ver_arg = arg.split('=', 1)[1].strip()
+
+    app_ver = ''
+    if app_ver_arg == 'next':
+        # 递增前先校验当前源码常量，避免从一个日期式版本号上继续爬。
+        app_ver = next_version(read_source_app_version())
+        write_source_app_version(app_ver)
+        print(f'  版本已递增并同步源码常量: {app_ver}（Release tag 建议用 {to_version_tag(app_ver)}）')
+    elif app_ver_arg:
+        # 显式指定只写包内标识，不改源码 —— 便于补发 / 重打历史版本。
+        if not is_valid_version(app_ver_arg):
+            sys.exit(f'  错误：--app-version={app_ver_arg} 不合版本规范。'
+                     '应为「主版本.次版本」（1.0~x.10，次版到 10 进位），'
+                     '日期式版本号（2026.11.02 / 20261102）已停用；递增请用 --app-version=next')
+        app_ver = normalize_version(app_ver_arg)
+    elif mode == 'full':
+        # 不再按当天日期推断：沿用源码常量，tag 与包内版本天然一致，
+        # 也就不会让刚装上新包的用户一直看到「新版本」。
+        app_ver = read_source_app_version()
+
     t0 = time.time()
     os.makedirs(os.path.dirname(out), exist_ok=True)
+    if app_ver:
+        vf = os.path.join(src, 'collector', 'resources', 'version.txt')
+        os.makedirs(os.path.dirname(vf), exist_ok=True)
+        with open(vf, 'w', encoding='utf-8') as f:
+            f.write(app_ver + '\n')
+        print(f'  写入版本标识: {vf} -> {app_ver}')
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         n, total, skipped, skipped_bytes = add(zf, src, mode)
     size = os.path.getsize(out)

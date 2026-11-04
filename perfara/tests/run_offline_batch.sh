@@ -69,6 +69,13 @@ run_node "fps_legend_overlap"   realdevice/fps_legend_overlap_test.js
 run_node "perf_html"            e2e_metric_config/run_perf_html_test.js
 run_node "library"              e2e_metric_config/run_library_test.js
 run_node "collector_pages"      e2e_metric_config/run_collector_pages_test.js
+run_node "metric_order"         e2e_metric_config/run_metric_order_test.js
+run_node "foreground_app"       foreground_app_test.js
+run_node "foreground_app_ui"    foreground_app_ui_test.js
+run_node "adb_server_cleanup"   adb_server_cleanup_test.js
+run_node "version_scheme"       version_scheme_test.js
+run_node "update_check"         update_check_test.js
+run_node "update_notice_ui"     update_notice_ui_test.js
 run_node "metric_info"          e2e_metric_config/run_metric_info_test.js
 run_node "open_location"        e2e_metric_config/run_open_location_test.js
 run_node "check_readability"    e2e_metric_config/check_readability.js
