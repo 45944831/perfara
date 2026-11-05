@@ -73,6 +73,14 @@ run_node "metric_order"         e2e_metric_config/run_metric_order_test.js
 run_node "foreground_app"       foreground_app_test.js
 run_node "foreground_app_ui"    foreground_app_ui_test.js
 run_node "adb_server_cleanup"   adb_server_cleanup_test.js
+# 采集口径三件套（离线，纯函数 + 源码断言）：
+#   thermal_source   温度分层 / 单位换算
+#   perf_param_audit 算法算错（comm 错位、热插拔、GPU 累计、滚动窗口）
+#   perf_source_audit 采集源本身（错采 / 漏采 / 重复采集）
+run_node "thermal_source"       realdevice/thermal_source_test.js
+run_node "perf_param_audit"     realdevice/perf_param_audit_test.js
+run_node "perf_source_audit"    realdevice/perf_source_audit_test.js
+run_node "chart_scroll_perf"    realdevice/chart_scroll_perf_test.js
 run_node "version_scheme"       version_scheme_test.js
 run_node "update_check"         update_check_test.js
 run_node "update_notice_ui"     update_notice_ui_test.js

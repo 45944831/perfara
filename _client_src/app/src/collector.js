@@ -87,7 +87,7 @@ const ANDROID_METRIC_KEYS = {
   mem: ['mem'],
   net: ['net'],
   gpu: ['gpu'],
-  temp: ['temperature', 'gpuTemp'],
+  temp: ['temperature', 'gpuTemp', 'cpuTemp', 'batteryTemp', 'skinTemp', 'tempSource'],
   battery: ['battery'],
 };
 
@@ -422,13 +422,13 @@ class Collector extends EventEmitter {
     try {
       // 按采集参数只调用启用的采集项：被移除的参数完全不采（省 adb 开销）
       const jobs = [];
-      if (mc.cpu)   jobs.push(['cpu',     ADB.getCpuStats(this.deviceId, this._pid)]);
-      if (mc.cpu)   jobs.push(['cores',   ADB.getCpuCoreStats(this.deviceId)]);
+      if (mc.cpu)   jobs.push(['cpu',     ADB.getCpuSnapshot(this.deviceId, this._pid)]);
       if (mc.mem)   jobs.push(['mem',     ADB.getMemInfo(this.deviceId, this.packageName)]);
-      if (mc.fps)   jobs.push(['fps',     ADB.getFps(this.deviceId, this.packageName, logFn)]);
+      if (mc.fps)   jobs.push(['fps',     ADB.getFps(this.deviceId, this.packageName, logFn, this.intervalMs)]);
       if (mc.net)   jobs.push(['net',     ADB.getNetStats(this.deviceId)]);
       if (mc.battery) jobs.push(['battery', ADB.getBatteryInfo(this.deviceId)]);
-      if (mc.temp)  jobs.push(['thermal', ADB.getThermalInfo(this.deviceId)]);
+      // 采了电池就让 thermal 别再读一次 dumpsys battery（后面的兜底会复用这份结果）
+      if (mc.temp)  jobs.push(['thermal', ADB.getThermalInfo(this.deviceId, { noBatteryRead: !!mc.battery })]);
       if (mc.gpu)   jobs.push(['gpu',     ADB.getGpuUsage(this.deviceId)]);
       const settled = await Promise.allSettled(jobs.map(j => j[1]));
       // 采集期间被 stop() / 被看门狗中止：结果直接丢弃，不写入 history、不 emit
@@ -459,19 +459,38 @@ class Collector extends EventEmitter {
         val[j[0]] = r.status === 'fulfilled' ? r.value : undefined;
       });
 
-      // getThermalInfo 返回 { temperature, gpuTemp }
-      const thermalVal = val.thermal || { temperature: 0, gpuTemp: null };
-      const thermalMain = thermalVal && typeof thermalVal.temperature === 'number' ? thermalVal.temperature : 0;
-      const gpuTemp = thermalVal && typeof thermalVal.gpuTemp === 'number' ? thermalVal.gpuTemp : null;
+      // getThermalInfo 返回 { temperature, tempSource, gpuTemp, cpuTemp, batteryTemp, skinTemp }
+      // temperature = 机身/电池温度；cpuTemp / gpuTemp = 芯片结温，不可混用
+      const thermalVal = val.thermal || {};
+      const batVal = val.battery || {};
+      const thermalMainRaw = typeof thermalVal.temperature === 'number' && thermalVal.temperature > 0
+        ? thermalVal.temperature : null;
+      const batTemp = typeof batVal.temperature === 'number' && batVal.temperature > 0
+        ? batVal.temperature : null;
+      // 机身温度兜底：thermal 三段（thermalservice / sysfs / 电池）都没取到时，
+      // 复用同一 tick 已经采到的电池温度 —— 旧实现让 thermal 自己再跑一遍
+      // dumpsys battery，同一条命令两次读数还可能差 0.1°C，两个字段互相矛盾。
+      // 采不到时写 null（不是 0°C），展示层显示「--」。
+      const thermalMain = thermalMainRaw != null ? thermalMainRaw : batTemp;
+      const gpuTemp = typeof thermalVal.gpuTemp === 'number' ? thermalVal.gpuTemp : null;
+      const cpuTemp = typeof thermalVal.cpuTemp === 'number' ? thermalVal.cpuTemp : null;
+      const skinTemp = typeof thermalVal.skinTemp === 'number' ? thermalVal.skinTemp : null;
+      const batteryTemp = typeof thermalVal.batteryTemp === 'number' ? thermalVal.batteryTemp : batTemp;
+      const tempSource = typeof thermalVal.tempSource === 'string'
+        ? thermalVal.tempSource
+        : (thermalMain != null && thermalMain === batTemp ? 'battery' : null);
 
-      // getFps returns { fps, jank, bigJank, smallJank, tinyJank, jankRate, method } or falls back to number 0
-      const fpsData = val.fps || { fps: 0, jank: 0, bigJank: 0, smallJank: 0, tinyJank: 0, jankRate: 0, method: 'error' };
+      // getFps 返回 { fps, jank, bigJank, smallJank, tinyJank, jankRate, method }。
+      // 用 ?? 而不是 ||：gfxinfo-delta 等通道测不到卡顿分级时返回的是 null（未测量），
+      // 旧写法 || 0 会把它折成「0 次卡顿」，把没测的事实伪装成测得零卡顿。
+      const fpsData = val.fps || { fps: null, jank: null, bigJank: null, smallJank: null,
+                                   tinyJank: null, jankRate: null, method: 'error' };
       const fps     = typeof fpsData === 'object' ? fpsData.fps     : fpsData;
-      const jank    = typeof fpsData === 'object' ? fpsData.jank    : 0;
-      const bigJank = typeof fpsData === 'object' ? fpsData.bigJank : 0;
-      const smallJank = typeof fpsData === 'object' ? (fpsData.smallJank || 0) : 0;  // PerfDog 微小卡顿（≥84ms 档）
-      const tinyJank  = typeof fpsData === 'object' ? (fpsData.tinyJank  || 0) : 0;  // PerfDog 极小卡顿（≥1.5×vsync 档）
-      const jankRate= typeof fpsData === 'object' ? fpsData.jankRate: 0;
+      const jank    = typeof fpsData === 'object' ? (fpsData.jank    ?? null) : null;
+      const bigJank = typeof fpsData === 'object' ? (fpsData.bigJank ?? null) : null;
+      const smallJank = typeof fpsData === 'object' ? (fpsData.smallJank ?? null) : null;  // PerfDog 微小卡顿（≥84ms 档）
+      const tinyJank  = typeof fpsData === 'object' ? (fpsData.tinyJank  ?? null) : null;  // PerfDog 极小卡顿（≥1.5×vsync 档）
+      const jankRate  = typeof fpsData === 'object' ? (fpsData.jankRate  ?? null) : null;
       // 没取到帧数据（加载中 / 不在前台 / 首帧未就绪）→ 写 null，不写 0
       const fpsNoData = typeof fpsData === 'object'
         ? FPS_NO_DATA_METHODS.has(String(fpsData.method || ''))
@@ -482,11 +501,13 @@ class Collector extends EventEmitter {
         time:        new Date().toLocaleTimeString(),
         pid:         this._pid,
       };
+      const cpuSnap = val.cpu || {};
       if (mc.cpu) {
-        data.cpu = val.cpu || { sysCpu: 0, procCpu: 0 };
-        data.cpuCores = val.cores || { usage: [], freq: [] };
+        data.cpu = { sysCpu: cpuSnap.sysCpu ?? null, procCpu: cpuSnap.procCpu ?? null };
+        data.cpuCores = (cpuSnap.cores && typeof cpuSnap.cores === 'object')
+          ? cpuSnap.cores : { usage: [], freq: [] };
       }
-      if (mc.mem)   data.mem = val.mem || { totalPss: 0, nativeHeap: 0, dalvikHeap: 0 };
+      if (mc.mem)   data.mem = val.mem || { totalPss: null, nativeHeap: null, dalvikHeap: null };
       if (mc.fps) {
         if (fpsNoData) {
           // 无数据 ≠ 0 帧：写成 null，让曲线断开、统计跳过
@@ -497,11 +518,15 @@ class Collector extends EventEmitter {
           data.smallJank = smallJank; data.tinyJank = tinyJank; data.jankRate = jankRate;
         }
       }
-      if (mc.net)   data.net = val.net || { rxKBps: 0, txKBps: 0 };
-      if (mc.battery) data.battery = val.battery || { level: 0, voltage: 0, temperature: 0, currentNow: 0, power: 0 };
+      if (mc.net)   data.net = val.net || { rxKBps: null, txKBps: null };
+      if (mc.battery) data.battery = val.battery || { level: null, voltage: null, temperature: null, currentNow: null, power: null };
       if (mc.temp) {
         data.temperature = thermalMain;
-        data.gpuTemp = gpuTemp;   // GPU 温度；利用率读不到时报告页用它补位
+        data.gpuTemp = gpuTemp;          // GPU 结温；利用率读不到时报告页用它补位
+        data.cpuTemp = cpuTemp;          // CPU 结温：供降频分析，不参与「机身温度」展示
+        data.batteryTemp = batteryTemp;
+        data.skinTemp = skinTemp;        // 厂商估算的外壳温度（SKIN），仅作参考
+        data.tempSource = tempSource;    // battery | skin | body | board | die | null
       }
       if (mc.gpu)   data.gpu = val.gpu ?? null; // null = 该机型未提供，报告页显示为无数据
 

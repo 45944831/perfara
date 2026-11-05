@@ -17,7 +17,7 @@ const PC_METRIC_KEYS = {
   mem:     ['mem'],
   net:     ['net'],
   gpu:     ['gpu'],
-  temp:    ['temperature'],
+  temp:    ['temperature', 'cpuTemp'],
   battery: ['battery'],
   disk:    ['pcExtra'],
 };
@@ -51,7 +51,10 @@ function nullIfUnavailable(data) {
   if (d.temperature !== undefined && !d.temperature) d.temperature = null;
   const b = d.battery;
   if (b && typeof b === 'object') {
-    const noBattery = !b.level && !b.voltage && !b.temperature && !b.currentNow && !b.power;
+    // 电池存在性只看电量/电压/电流/功耗，不能拿 temperature 当证据：
+    // 旧采集端把 CPU 结温写进 battery.temperature，台式机无电池时该值非 0，
+    // 会让 noBattery 恒为 false，把「电量 0% / 电流 0mA」当成实测值显示。
+    const noBattery = !b.level && !b.voltage && !b.currentNow && !b.power;
     if (noBattery) d.battery = null;
   }
   return d;

@@ -12,7 +12,12 @@ const { EventEmitter } = require('events');
 const APP = path.resolve(__dirname, '..', '..', '_client_src', 'app');
 const UC = require(path.join(APP, 'src', 'update-check.js'));
 const VER = require(path.join(APP, 'src', 'app-version.js'));
+const SCHEME = require(path.join(APP, 'src', 'version-scheme.js'));
 const WT = require(path.join(APP, 'src', 'window-title.js'));
+
+// 「更新的版本」不能写死：每次发版把 APP_VERSION 提上去，写死的常量就会变成
+// 同版本，用例会从「有新版本」退化成 null 直接崩溃。统一按当前版本推下一个。
+const NEWER = 'v' + SCHEME.nextVersion(VER.APP_VERSION);
 
 let pass = 0;
 let fail = 0;
@@ -40,7 +45,7 @@ check('解析结果含主/次版本', UC.parseVersion('v1.10').major === 1 && UC
 console.log('\n[B] 跳转地址白名单');
 const O = VER.GITHUB_OWNER;
 const R = VER.GITHUB_REPO;
-const GOOD = 'https://github.com/' + O + '/' + R + '/releases/tag/v1.1';
+const GOOD = 'https://github.com/' + O + '/' + R + '/releases/tag/' + NEWER;
 check('合法 Release 页', UC.sanitizeReleaseUrl(GOOD, O, R) === GOOD);
 check('去掉 query/hash', UC.sanitizeReleaseUrl(GOOD + '?a=1#x', O, R) === GOOD);
 check('拒绝 http', UC.sanitizeReleaseUrl('http://github.com/' + O + '/' + R + '/releases/tag/x', O, R) === null);
@@ -79,8 +84,8 @@ function fakeRequest(mode, payload, spy) {
 }
 function releaseBody(over) {
   return JSON.stringify(Object.assign({
-    tag_name: 'v1.1',
-    name: 'Perfara 1.1',
+    tag_name: NEWER,
+    name: 'Perfara ' + NEWER.slice(1),
     html_url: GOOD,
     published_at: '2026-11-04T10:00:00Z',
     draft: false,
@@ -95,7 +100,7 @@ const baseOpts = (impl, currentVersion) => ({
   console.log('\n[C] 拉取与判定');
   let seen = null;
   let r = await UC.fetchLatestRelease(baseOpts(fakeRequest('200', releaseBody(), (u, o) => { seen = { u, o }; })));
-  check('新版本返回 update', r.ok === true && r.update && r.update.tag === 'v1.1' && r.update.url === GOOD, r);
+  check('新版本返回 update', r.ok === true && r.update && r.update.tag === NEWER && r.update.url === GOOD, r);
   check('请求 GitHub 官方 API', seen && seen.u === 'https://api.github.com/repos/' + O + '/' + R + '/releases/latest', seen && seen.u);
   check('带 User-Agent', seen && seen.o.headers['User-Agent'] === 'Perfara-UpdateCheck');
   check('带超时配置', seen && seen.o.timeoutMs === 50);

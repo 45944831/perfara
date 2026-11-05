@@ -36,6 +36,8 @@ const SHELL_TIMEOUT_MS = 4000;
  * 用 4 s 容易误判超时、直接丢样本（表现为 FPS 曲线断点），故单独放宽。
  */
 const DUMPSYS_TIMEOUT_MS = 10000;
+/** FPS 上限：需覆盖 144 / 165 / 240Hz 高刷机；旧值 120 会把高刷帧率削平，误报掉帧 */
+const FPS_CAP = 240;
 
 // Track inflight adb child processes so we can cancel stale tasks
 const _inflight = new Set();
@@ -715,80 +717,210 @@ async function getUid(deviceId, packageName) {
 
 const _cpuState = new Map();
 
-async function getCpuStats(deviceId, pid) {
+/**
+ * 解析 /proc/<pid>/stat 的 utime + stime（累计 jiffies）。
+ *
+ * 不能按 split(/\s+/) 的固定下标 p[13]/p[14] 取：第 2 字段 comm 是用括号包住的
+ * 进程名，内核允许它含空格甚至右括号（"Render Thread"、"foo) bar"）。按空格切
+ * 会让后续字段整体右移，把 ppid / minflt 之类当成 CPU 时间，下一帧算出的增量
+ * 被 clamp 成 100%，看起来像「应用吃满 CPU」——典型的错误采集。
+ *
+ * 正确做法：找最后一个 ')'，从它之后重新编号。')' 后第 1 个字段是 state
+ * （/proc/<pid>/stat 的第 3 字段），于是 utime(第 14 字段) = rest[11]、
+ * stime(第 15 字段) = rest[12]。
+ * 抽成纯函数并导出，便于用「带空格 comm」的原始 stat 行离线锁定口径。
+ */
+function parsePidStat(raw) {
+  const s = String(raw || '');
+  const close = s.lastIndexOf(')');
+  if (close < 0) return null;
+  const rest = s.slice(close + 1).trim().split(/\s+/);
+  if (rest.length < 13) return null;
+  const utime = parseInt(rest[11], 10);
+  const stime = parseInt(rest[12], 10);
+  return (isFinite(utime) && isFinite(stime)) ? utime + stime : null;
+}
+
+/**
+ * 由两次快照算 CPU 使用率（纯函数，便于离线锁定口径）。
+ *   sysCpu  = 整机占用，0~100
+ *   procCpu = 进程占用，**按单核百分比**（单核跑满 = 100，N 核可到 N×100）
+ * 分母必须是「单核平均总时长」= 整机总增量 ÷ 在线核数；直接除以整机总增量
+ * 得到的是「占整机百分比」，8 核机上会只剩 1/8，系统性低估。
+ */
+function calcCpuPct(prevPid, currPid, totalDelta, idleDelta, coreCount) {
+  const n = Math.max(coreCount || 1, 1);
+  let sysCpu = null, procCpu = null;
+  if (!(totalDelta > 0)) return { sysCpu, procCpu };
+  sysCpu = clamp(Math.round(((totalDelta - idleDelta) / totalDelta) * 100), 0, 100);
+  const singleCoreTotal = totalDelta / n;
+  if (prevPid != null && currPid != null && singleCoreTotal > 0) {
+    procCpu = clamp(Math.round(((currPid - prevPid) / singleCoreTotal) * 100), 0, n * 100);
+  }
+  return { sysCpu, procCpu };
+}
+
+/**
+ * 一次 shell 取「整机 + 进程 + 逐核」的完整 CPU 快照。
+ *
+ * 合并原因（重复采集）：旧实现 getCpuStats 与 getCpuCoreStats 各自 `cat /proc/stat`，
+ * 同一 tick 读两次同一文件 —— 两次读数相隔几毫秒到上百毫秒，整机使用率与逐核均值
+ * 对不上（同源不同刻），而且每 tick 多起一个 adb 进程（实测 60~120 ms）。
+ * 合并后三个结果出自同一份 /proc/stat，口径与时刻都一致，还少一次往返。
+ *
+ * 进程 CPU 口径（必须对齐文档「utime+stime 差值 ÷ 间隔时长」）：
+ *   /proc/stat 的 `cpu ` 行是**所有核**的 jiffies 之和。直接拿它当分母得到的是
+ *   「占整机百分比」——8 核机上单核跑满只有 12.5%，与 PerfDog / 任务管理器的
+ *   「占单核百分比」（单核跑满 = 100%，多线程可超 100%）差一个核数倍，属系统性低估。
+ *   这里除以在线核数还原成单核口径，上限放宽到 N×100%。
+ */
+async function getCpuSnapshot(deviceId, pid) {
   const key = `${deviceId}_${pid || 'sys'}`;
-  let sysRaw = '', pidRaw = '';
+  const coreKey = `${deviceId}_cores`;
+  const now = Date.now();
+  const cmd = 'cat /proc/stat 2>/dev/null; echo "---PIDSTAT---"; '
+    + (pid ? `cat /proc/${pid}/stat 2>/dev/null; ` : '')
+    + 'echo "---FREQ---"; '
+    + 'for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do '
+    + 'n=${f#/sys/devices/system/cpu/}; n=${n%%/*}; '
+    + 'echo "$n $(cat "$f" 2>/dev/null || echo 0)"; done';
+
+  let out = '';
   try {
-    const cmd = pid ? `cat /proc/stat /proc/${pid}/stat 2>/dev/null` : 'cat /proc/stat';
-    const out = await adbShell(deviceId, cmd);
-    const lines = out.split('\n');
-    sysRaw = lines.find((l) => l.startsWith('cpu ')) || '';
-    if (pid) {
-      pidRaw = lines.find((l) => {
-        const p = l.trim().split(/\s+/);
-        return p.length > 14 && parseInt(p[0], 10) === pid;
-      }) || '';
-    }
-  } catch (_) { return { sysCpu: 0, procCpu: 0 }; }
+    out = await adbShell(deviceId, cmd, 6000);
+  } catch (_) {
+    return { sysCpu: null, procCpu: null, cores: { usage: [], freq: [] }, coreCount: 0 };
+  }
+
+  const PID_MARK = '---PIDSTAT---';
+  const FREQ_MARK = '---FREQ---';
+  const pIdx = out.indexOf(PID_MARK);
+  const fIdx = out.indexOf(FREQ_MARK);
+  const statPart = pIdx >= 0 ? out.slice(0, pIdx) : (fIdx >= 0 ? out.slice(0, fIdx) : out);
+  const pidPart  = pIdx >= 0 ? out.slice(pIdx + PID_MARK.length, fIdx >= 0 ? fIdx : out.length) : '';
+  const freqPart = fIdx >= 0 ? out.slice(fIdx + FREQ_MARK.length) : '';
 
   const parseSys = (raw) => {
     const nums = raw.trim().split(/\s+/).slice(1).map(Number);
+    if (nums.length < 5 || nums.some((n) => !isFinite(n))) return null;
     return { idle: nums[3] + (nums[4] || 0), total: nums.reduce((a, b) => a + b, 0) };
   };
-  const parsePid = (raw) => {
-    const p = raw.trim().split(/\s+/);
-    return (parseInt(p[13], 10) || 0) + (parseInt(p[14], 10) || 0);
-  };
 
-  const now = Date.now();
+  // 整机汇总行（`cpu `，注意带空格）与逐核行（`cpuN`）来自同一份输出
+  const sysLine = statPart.split('\n').find((l) => l.startsWith('cpu ')) || '';
+  const coreLines = statPart.split('\n').filter((l) => /^cpu\d+/.test(l));
+  const coreIds = coreLines.map((l) => l.trim().split(/\s+/)[0]);
+  const coreData = coreLines.map((line) => {
+    const nums = line.trim().split(/\s+/).slice(1).map(Number);
+    return { idle: nums[3] + (nums[4] || 0), total: nums.reduce((a, b) => a + b, 0) };
+  });
+  const coreCount = coreIds.length;
+
+  let pidRaw = '';
+  if (pid && pidPart) {
+    pidRaw = pidPart.split('\n').find((l) => {
+      const p = l.trim().split(/\s+/);
+      return p.length > 14 && parseInt(p[0], 10) === pid;
+    }) || '';
+  }
+
+  // 频率按 cpuN 名称配对：glob 顺序是 cpu0,cpu1,cpu10,…,cpu2，按下标硬对齐会张冠李戴
+  const freqMap = new Map();
+  for (const line of freqPart.split('\n')) {
+    const m = line.trim().match(/^(cpu\d+)\s+(-?\d+)/);
+    if (!m) continue;
+    const v = parseInt(m[2], 10);
+    freqMap.set(m[1], isFinite(v) && v > 0 ? Math.round(v / 1000) : null);
+  }
+  const freq = coreIds.map((id) => (freqMap.has(id) ? freqMap.get(id) : null));
+
+  const curr = { sys: sysLine ? parseSys(sysLine) : null,
+                 pid: (pid && pidRaw) ? parsePidStat(pidRaw) : null, ts: now };
   const prev = _cpuState.get(key);
-  const current = { sys: sysRaw ? parseSys(sysRaw) : null, pid: pid && pidRaw ? parsePid(pidRaw) : 0, ts: now };
-  _cpuState.set(key, current);
+  _cpuState.set(key, curr);
 
-  if (!prev || !prev.sys || !current.sys) return { sysCpu: 0, procCpu: 0 };
-  const totalDelta = current.sys.total - prev.sys.total;
-  const idleDelta  = current.sys.idle  - prev.sys.idle;
-  const sysCpu  = totalDelta > 0 ? Math.round(((totalDelta - idleDelta) / totalDelta) * 100) : 0;
-  const procCpu = totalDelta > 0 ? Math.round(((current.pid - prev.pid) / totalDelta) * 100) : 0;
-  return { sysCpu: clamp(sysCpu, 0, 100), procCpu: clamp(procCpu, 0, 100) };
+  const currCores = { ids: coreIds, cores: coreData, ts: now };
+  const prevCores = _coreState.get(coreKey);
+  _coreState.set(coreKey, currCores);
+  const usage = coreCount ? pairCoreUsage(prevCores, currCores) : [];
+
+  // 首帧没有基线、或本次读失败：使用率「未测量」，不是 0%
+  let pct = { sysCpu: null, procCpu: null };
+  if (prev && prev.sys && curr.sys) {
+    pct = calcCpuPct(prev.pid, curr.pid,
+      curr.sys.total - prev.sys.total,
+      curr.sys.idle - prev.sys.idle,
+      coreCount);
+  }
+  return { sysCpu: pct.sysCpu, procCpu: pct.procCpu, cores: { usage, freq }, coreCount };
+}
+
+/** 兼容包装：只取整机 / 进程两项。采集主循环请直接用 getCpuSnapshot 避免重复读。 */
+async function getCpuStats(deviceId, pid) {
+  const s = await getCpuSnapshot(deviceId, pid);
+  return { sysCpu: s.sysCpu, procCpu: s.procCpu };
 }
 
 // ─── Memory ──────────────────────────────────────────────────────────────────
 
+/**
+ * 解析 dumpsys meminfo + /proc/meminfo（纯函数，便于离线锁定分项口径）。
+ * 分项统一取 App Summary 区块（形如 "Native Heap:  1360"，带冒号、纯 Pss）；
+ * 取不到才回退明细表（"Native Heap  1901"）。两者可差数 MB，混用会让同一张表
+ * 出现两种口径（旧实现正是 nativeHeap 走明细表、其余走汇总表）。
+ */
+function parseMemInfoSections(out, mi) {
+  const text = String(out || '');
+  const mem  = String(mi || '');
+  const totalMatch = text.match(/^\s*TOTAL\s+(\d+)/m);
+  const summary = (label) => {
+    const m = text.match(new RegExp(`^\\s*${label}:\\s+(\\d+)`, 'm'));
+    return m ? Math.round(parseInt(m[1], 10) / 1024) : null;
+  };
+  const detail = (label) => {
+    const m = text.match(new RegExp(`^\\s*${label}\\s{2,}(\\d+)`, 'm'));
+    return m ? Math.round(parseInt(m[1], 10) / 1024) : null;
+  };
+  const nativeHeap = summary('Native Heap') ?? detail('Native Heap');
+  // 老 ROM 的汇总行叫 Dalvik Heap，明细表同样叫 Dalvik Heap
+  const javaHeap = summary('Java Heap') ?? summary('Dalvik Heap') ?? detail('Dalvik Heap');
+
+  let memTotalMB = null, memAvailableMB = null;
+  const mt = mem.match(/^MemTotal:\s+(\d+)/m);
+  const ma = mem.match(/^MemAvailable:\s+(\d+)/m);
+  if (mt) memTotalMB = Math.round(parseInt(mt[1], 10) / 1024);
+  if (ma) memAvailableMB = Math.round(parseInt(ma[1], 10) / 1024);
+
+  return {
+    totalPss:     totalMatch ? Math.round(parseInt(totalMatch[1], 10) / 1024) : null,
+    nativeHeap,
+    javaHeap,
+    dalvikHeap:   javaHeap,   // legacy alias
+    code:         summary('Code') ?? detail('Code'),
+    stack:        summary('Stack') ?? detail('Stack'),
+    graphics:     summary('Graphics') ?? detail('Graphics'),
+    privateOther: summary('Private Other'),
+    system:       summary('System'),
+    memTotalMB,
+    memAvailableMB,
+  };
+}
+
 async function getMemInfo(deviceId, packageName) {
+  // 一次 shell 取两段：dumpsys meminfo（进程） + /proc/meminfo（整机）。
+  // 旧实现分两次 adb，两个值来自不同时刻；合并后只解析同一份输出。
+  const cmd = `dumpsys meminfo ${shellArg(packageName)} 2>/dev/null; `
+    + 'echo "---PROCMEM---"; cat /proc/meminfo 2>/dev/null';
   try {
-    const out = await adbShell(deviceId, `dumpsys meminfo ${shellArg(packageName)} 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
-    const totalMatch = out.match(/^\s*TOTAL\s+(\d+)/m);
-    // label may appear as "Foo Bar:" or "Foo Bar" followed by whitespace and a number
-    const getLine = (label) => {
-      const m = out.match(new RegExp(`^\\s*${label}:?\\s+(\\d+)`, 'm'));
-      return m ? Math.round(parseInt(m[1], 10) / 1024) : 0;
-    };
-    const javaHeap = getLine('Java Heap') || getLine('Dalvik Heap');
-    // 整机内存（PerfDog: TotalAvailableMemorySize / TotalUsedMemorySize）——读 /proc/meminfo
-    let memTotalMB = 0, memAvailableMB = 0;
-    try {
-      const mi = await adbShell(deviceId, 'cat /proc/meminfo 2>/dev/null');
-      const mt = mi.match(/^MemTotal:\s+(\d+)/m);
-      const ma = mi.match(/^MemAvailable:\s+(\d+)/m);
-      if (mt) memTotalMB = Math.round(parseInt(mt[1], 10) / 1024);
-      if (ma) memAvailableMB = Math.round(parseInt(ma[1], 10) / 1024);
-    } catch (_) {}
-    return {
-      totalPss:     totalMatch ? Math.round(parseInt(totalMatch[1], 10) / 1024) : 0,
-      nativeHeap:   getLine('Native Heap'),
-      javaHeap,
-      dalvikHeap:   javaHeap,   // legacy alias
-      code:         getLine('Code'),
-      stack:        getLine('Stack'),
-      graphics:     getLine('Graphics'),
-      privateOther: getLine('Private Other'),
-      system:       getLine('System'),
-      memTotalMB,
-      memAvailableMB,
-    };
+    const raw = await adbShell(deviceId, cmd, DUMPSYS_TIMEOUT_MS);
+    const MARK = '---PROCMEM---';
+    const idx = raw.indexOf(MARK);
+    const out = idx >= 0 ? raw.slice(0, idx) : raw;
+    const mi  = idx >= 0 ? raw.slice(idx + MARK.length) : '';
+    return parseMemInfoSections(out, mi);
   } catch (_) {
-    return { totalPss: 0, nativeHeap: 0, javaHeap: 0, dalvikHeap: 0, code: 0, stack: 0, graphics: 0, privateOther: 0, system: 0, memTotalMB: 0, memAvailableMB: 0 };
+    return { totalPss: null, nativeHeap: null, javaHeap: null, dalvikHeap: null, code: null, stack: null,
+             graphics: null, privateOther: null, system: null, memTotalMB: null, memAvailableMB: null };
   }
 }
 
@@ -852,6 +984,8 @@ async function probeGpuLoad(deviceId, shell) {
     const out = await shell(deviceId, buildGpuProbeScript(), PREFLIGHT_GPU_TIMEOUT_MS);
     const parts = splitProbeOutput(out);
     for (const [tag] of GPU_NODE_PROBES) {
+      // gpubusy 是开机至今的累计平均，拿它判断「此刻是否被别人占满」没有意义
+      if (tag === 'kgsl_busy') continue;
       const v = interpretGpuProbe(tag, parts[tag]);
       if (v != null) return v;
     }
@@ -1060,12 +1194,48 @@ async function preflightCheck(deviceId, shellFn) {
 const _fpsState        = new Map();
 const _timestatsEnabled = new Set();
 /**
- * framestats 最新一帧的 FrameCompleted（按 device_pkg 缓存）。
- * PROFILEDATA 是「最近 N 帧」的滚动窗口：N 用满后，窗口跨度会被拉到几分钟，
- * 此时 frames/dur 算出来的是「很久以前的平均帧率」，不是这一秒的帧率。
- * 真机实测（某 Unity 游戏）：48 帧 / 190.56s → fps 恒为 0，整条曲线贴底且被当成真实掉帧。
+ * framestats 通道的上一帧快照（按 device_pkg 缓存）。
+ * PROFILEDATA 是「最近 N 帧」的**滚动窗口**，同一帧会在连续多个采样点里反复出现。
+ * 旧实现直接拿整个窗口算 frames/dur：每个点报的都是「过去 N 帧的平均值」，
+ * 旧帧被反复计入卡顿、帧率无法反映这一秒（真机 48 帧 / 190.56s → fps 恒 0）。
+ * 这里保存上次窗口末尾的 completed 时间戳与尾部帧，本帧只统计新产生的帧。
  */
 const _fsState = new Map();
+
+/** 两次采样间隔超过「采样周期 × 该系数」即认为窗口已过期（中途切通道 / tick 被跳过） */
+const FRAMESTATS_MAX_GAP_FACTOR = 2.5;
+
+/**
+ * 从 PROFILEDATA 滚动窗口里挑出「本次采样周期新产生」的帧。
+ * @param {Array<{vsync:number,completed:number}>} frames 已按 vsync 升序
+ * @param {{ts:number,lastCompleted:number,tail:Array}|undefined} prev 上次快照
+ * @param {number} now 本次采样开始时间
+ * @param {number} intervalMs 采样周期
+ * @returns {{frames:Array, dt:number|null, tail:Array, usable:boolean,
+ *            reason:string, state:Object}}
+ */
+function selectFramestatsWindow(frames, prev, now, intervalMs) {
+  const state = {
+    ts: now,
+    lastCompleted: frames.length ? frames[frames.length - 1].completed : 0,
+    tail: frames.slice(-4),          // 给下一帧的「前三帧均值」留基准
+  };
+  const dt = prev ? (now - prev.ts) / 1000 : null;
+  const maxGap = Math.max((intervalMs / 1000) * FRAMESTATS_MAX_GAP_FACTOR, 3);
+  const usableDt = dt != null && dt > 0 && dt <= maxGap;
+  const fresh = (prev && usableDt)
+    ? frames.filter(f => f.completed > prev.lastCompleted)
+    : [];
+  const reason = !prev ? 'init' : (!usableDt ? 'stale-window' : (!fresh.length ? 'no-frames' : ''));
+  return {
+    frames: fresh,
+    dt,
+    tail: prev ? (prev.tail || []) : [],
+    usable: fresh.length > 0,
+    reason,
+    state,
+  };
+}
 
 // Parse "Xms=N Yms=M …" into { X: N, Y: M, … }
 function parseHistogram(line) {
@@ -1210,7 +1380,9 @@ function parseFramestats(out) {
 }
 
 // Per-frame Jank / BigJank / SmallJank / TinyJank from gfxinfo framestats timestamps
-function calcJankFramestats(frames) {
+// minVsyncNs：只统计结束时间不早于该 vsync 的帧间隔。调用方会把上一周期尾部几帧
+// 拼在 frames 前面给 avg3 提供基准，靠这个参数避免把旧帧再数一遍。
+function calcJankFramestats(frames, minVsyncNs = 0) {
   const SMALL_JANK_MS = 84;
   let jank = 0, bigJank = 0, smallJank = 0, tinyJank = 0, evaluated = 0;
 
@@ -1242,6 +1414,9 @@ function calcJankFramestats(frames) {
   const TINY_JANK_MS = Math.max(vsyncMs, avgMs) * 1.5;
 
   for (let i = 3; i < ft.length; i++) {
+    // ft[i] 的结束时刻是 vsyncs[i + 1]；早于 minVsyncNs 的间隔属于上一周期，
+    // 只用来算 avg3 基准，不计入本周期的卡顿次数 / evaluated 分母。
+    if (minVsyncNs && vsyncs[i + 1] < minVsyncNs) continue;
     const avg3 = (ft[i - 1] + ft[i - 2] + ft[i - 3]) / 3;
     evaluated++;
     // Jank：PerfDog 双条件（> 2×前三帧均值 且 > 83.34ms）→ 取 max，与 histogram 路径同口径。
@@ -1257,7 +1432,31 @@ function calcJankFramestats(frames) {
 }
 
 // Main FPS entry point — returns { fps, jank, bigJank, jankRate, method }
-async function getFps(deviceId, packageName, logFn) {
+// intervalMs 由采集器传入：framestats 要据此判断「上次快照是否已过期」。
+/**
+ * 从 gfxinfo 输出里取 "Total frames rendered" 做增量。
+ * framestats 的输出是普通 gfxinfo 的超集，同一行就在里面 ——
+ * 帧窗口不可用时直接复用它，不必再跑一遍 `dumpsys gfxinfo`（那是重复采集）。
+ * 返回完整结果对象；无可用增量返回 null。
+ */
+function gfxTotalDelta(out, key, now, log) {
+  const m = String(out || '').match(/^\s*Total frames rendered:\s*(\d+)/m);
+  if (!m) return null;
+  const total = parseInt(m[1], 10);
+  const gKey = key + '_gfx';
+  const gPrev = _fpsState.get(gKey);
+  _fpsState.set(gKey, { total, ts: now });
+  if (!gPrev || total === gPrev.total) return null;
+  const dt = Math.max((now - gPrev.ts) / 1000, 0.5);
+  // 计数器被重置 / 应用重启时 delta 可能为负，钳到 0 而不是报负帧率
+  const fps = Math.min(Math.round(Math.max(0, total - gPrev.total) / dt), FPS_CAP);
+  log(`[FPS] gfxinfo delta ✓ fps=${fps}`);
+  // 这条通道只数得出帧，测不到卡顿分级：未测量写 null，不能报「零卡顿」
+  return { fps, jank: null, bigJank: null, smallJank: null, tinyJank: null,
+           jankRate: null, method: 'gfxinfo-delta' };
+}
+
+async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
   const log = logFn || (() => {});
   const key = `${deviceId}_${packageName}_fps`;
   const now = Date.now();
@@ -1334,7 +1533,7 @@ async function getFps(deviceId, packageName, logFn) {
           };
         }
 
-        const fps   = Math.min(Math.round(delta / dt), 120);
+        const fps   = Math.min(Math.round(delta / dt), FPS_CAP);
 
         let jank = 0, bigJank = 0, smallJank = 0, tinyJank = 0;
 
@@ -1359,15 +1558,15 @@ async function getFps(deviceId, packageName, logFn) {
           log(`[FPS] timestats (no hist) fps=${fps} dropped=${dropped} jank≈${jank} bigJank≈${bigJank} tinyJank≈${tinyJank}`);
         }
 
-        // 计数归一化到「次/秒」：histogram 增量是整个采样周期的累计值，
-        // 而 adb dump 有延迟时周期会拉长（实测可达数秒，出现 tinyJank=169 > 每秒帧数上限
-        // 这种不可能成立的数字）。必须与 fps 一样除以实际 dt，否则单位「次/s」名不副实。
-        const perSec = (n) => Math.max(0, Math.round(n / dt));
+        // Jank 家族是「本采样周期的卡顿次数（帧）」，与卡片上的「帧」、报告页
+        // Jank/10min 派生指标（累计次数 ÷ 时长）、iOS/PC 通道是同一口径。
+        // 旧实现在这里额外除以 dt 归一化成「次/秒」：adb 一慢（实测 dt 可达数秒），
+        // 同一次卡顿就被缩小 dt 倍，而 jank10 又把累计值按时长折算一次 —— 等于多除
+        // 一次，数值随设备响应速度漂移，跨机型不可比。dt 只用于 fps。
         const jankRate = delta > 0 ? Math.round((jank / delta) * 100) : 0;
         return {
           fps,
-          jank: perSec(jank), bigJank: perSec(bigJank),
-          smallJank: perSec(smallJank), tinyJank: perSec(tinyJank),
+          jank, bigJank, smallJank, tinyJank,
           jankRate, method: 'timestats',
         };
       }
@@ -1389,58 +1588,43 @@ async function getFps(deviceId, packageName, logFn) {
 
     if (frames.length >= 4) {
       frames.sort((a, b) => a.vsync - b.vsync);
-      const durSec = (frames[frames.length - 1].completed - frames[0].vsync) / 1e9;
-      const lastCompleted = frames[frames.length - 1].completed;
-      const prevFs = _fsState.get(key);
-      _fsState.set(key, lastCompleted);
-      // 窗口过期判定（两条独立信号，命中任一条都不该用它算 fps）：
-      //   ① 帧缓冲没前进 —— 两次采样之间最新帧时间戳没变，应用根本没产生新帧；
-      //   ② 窗口跨度 > 30s —— 1s 的采样周期推不出一个 30s+ 的平均帧率。
-      // 命中后**不 return**，交给 Method 3 用「Total frames rendered」做真实 1s 增量；
-      // 那边同样无变化时会落到 method:'none'（采集端写 null），而不是假的 0。
-      const frozen = prevFs !== undefined && lastCompleted <= prevFs;
-      if (frozen || durSec > 30) {
-        log(`[FPS] gfxinfo framestats 窗口过期 frames=${frames.length} 跨度=${durSec.toFixed(1)}s`
-          + `${frozen ? ' 帧缓冲未前进' : ''} → 改走 gfxinfo 增量`);
-      } else {
-        const fps = durSec > 0 ? Math.min(Math.round(frames.length / durSec), 120) : 0;
-        const { jank, bigJank, smallJank, tinyJank, evaluated } = calcJankFramestats(frames);
-        // 分母用「实际参与判定的帧数」（帧间隔序列去掉前 3 帧），不是原始行数
+      const win = selectFramestatsWindow(frames, _fsState.get(key), now, intervalMs);
+      _fsState.set(key, win.state);
+      if (win.usable) {
+        // 只统计本周期新帧：fps = 新帧数 / 真实采样间隔，不再拿滚动窗口的
+        // 「过去 N 帧平均」冒充这一秒的帧率，也不把旧帧的卡顿重复计入。
+        const fps = Math.min(Math.round(win.frames.length / win.dt), FPS_CAP);
+        // 上一周期尾部几帧只为 avg3 提供基准，calcJankFramestats 不会把它们计入。
+        const seq = win.tail.concat(win.frames);
+        const { jank, bigJank, smallJank, tinyJank, evaluated } =
+          calcJankFramestats(seq, win.frames[0].vsync);
+        // 分母用「实际参与判定的帧数」，不是原始行数
         const jankRate = evaluated > 0 ? Math.round((jank / evaluated) * 100) : 0;
-        // 同样归一化到「次/秒」：frames 是窗口内的累计帧，窗口不一定是 1 秒
-        const perSec = (n) => (durSec > 0 ? Math.max(0, Math.round(n / durSec)) : n);
-        log(`[FPS] gfxinfo framestats ✓ frames=${frames.length} dur=${durSec.toFixed(2)}s fps=${fps} jank=${jank} bigJank=${bigJank} smallJank=${smallJank} tinyJank=${tinyJank} cols=${iCompleted + 1}${sawHeader ? '(按表头)' : '(默认索引)'}`);
+        log(`[FPS] gfxinfo framestats ✓ new=${win.frames.length} dt=${win.dt.toFixed(2)}s fps=${fps} jank=${jank} bigJank=${bigJank} smallJank=${smallJank} tinyJank=${tinyJank} cols=${iCompleted + 1}${sawHeader ? '(按表头)' : '(默认索引)'}`);
         return {
-          fps,
-          jank: perSec(jank), bigJank: perSec(bigJank),
-          smallJank: perSec(smallJank), tinyJank: perSec(tinyJank),
+          fps, jank, bigJank, smallJank, tinyJank,
           jankRate, method: 'framestats',
         };
       }
+      // 首帧 / 窗口过期 / 本周期无新帧：framestats 的输出里已经带着
+      // 「Total frames rendered」，直接用它做真实增量即可。再跑一次
+      // `dumpsys gfxinfo` 只是把同一条命令重复执行一遍（framestats 是其超集）。
+      log(`[FPS] gfxinfo framestats 本周期无可用新帧（${win.reason}，窗口 ${frames.length} 帧）→ 复用同一份输出的总帧数增量`);
+      const d = gfxTotalDelta(out, key, now, log);
+      if (d) return d;
     } else {
-      log(`[FPS] gfxinfo framestats 帧数不足 (${frames.length})`);
+      log(`[FPS] gfxinfo framestats 帧数不足 (${frames.length}) → 复用同一份输出的总帧数增量`);
+      const d = gfxTotalDelta(out, key, now, log);
+      if (d) return d;
     }
   } catch (e) { log(`[FPS] gfxinfo 异常: ${e.message}`); }
 
-  // ── Method 3: gfxinfo "Total frames" delta (broad fallback) ───────────────
+  // ── Method 3: gfxinfo "Total frames" delta（framestats 本身抛异常时的兜底） ──
   try {
     const out = await adbShell(deviceId, `dumpsys gfxinfo ${shellArg(packageName)} 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
-    const m = out.match(/Total frames rendered:\s*(\d+)/);
-    if (m) {
-      const total = parseInt(m[1], 10);
-      const gKey  = key + '_gfx';
-      const gPrev = _fpsState.get(gKey);
-      _fpsState.set(gKey, { total, ts: now });
-      if (gPrev && total !== gPrev.total) {
-        const dt  = Math.max((now - gPrev.ts) / 1000, 0.5);
-        const fps = Math.min(Math.round((total - gPrev.total) / dt), 120);
-        log(`[FPS] gfxinfo delta ✓ fps=${fps}`);
-        return { fps, jank: 0, bigJank: 0, smallJank: 0, tinyJank: 0, jankRate: 0, method: 'gfxinfo-delta' };
-      }
-      log(`[FPS] gfxinfo delta 首次或无变化 total=${total}`);
-    } else {
-      log(`[FPS] gfxinfo 无渲染数据（未取到 "Total frames rendered"）`);
-    }
+    const d = gfxTotalDelta(out, key, now, log);
+    if (d) return d;
+    log(`[FPS] gfxinfo 无可用帧增量（未取到 "Total frames rendered" 或无变化）`);
   } catch (e) { log(`[FPS] gfxinfo-delta 异常: ${e.message}`); }
 
   // 所有方案都失败：明确告知用户原因，避免「FPS=0 但不知道为什么」
@@ -1450,6 +1634,25 @@ async function getFps(deviceId, packageName, logFn) {
 
 // ─── Network ─────────────────────────────────────────────────────────────────
 
+/**
+ * 该网络接口是否计入「应用流量」。
+ *
+ * 只统计真正承载被测应用流量的物理/蜂窝接口：
+ *   wlan*    Wi-Fi
+ *   rmnet*   高通 / 部分 MTK 蜂窝（rmnet_data0、rmnet0）
+ *   ccmni*   MTK 蜂窝
+ *   clat*    464xlat 的 IPv4→IPv6 转换接口（clat4）
+ *   v4-*     同上，部分 ROM 命名 v4-wlan0
+ *   eth* / rndis*   USB 共享
+ * lo / ifb / dummy / sit0 / tunl0 / ip6tnl0 是回环与隧道，计入会重复或虚高，
+ * 明确排除。漏掉 clat/v4- 会让 464xlat 机型的 IPv4 流量整段丢失（显示 0 KB/s）。
+ */
+const METERED_IFACE_RE = /^(?:wlan\d+|rmnet[\w]*|ccmni[\w-]*|clat\d*|v4-[\w.-]+|eth\d+|rndis\d+)$/;
+
+function isMeteredIface(name) {
+  return METERED_IFACE_RE.test(String(name || '').trim());
+}
+
 const _netState = new Map();
 
 async function getNetStats(deviceId) {
@@ -1458,7 +1661,10 @@ async function getNetStats(deviceId) {
     const out = await adbShell(deviceId, 'cat /proc/net/dev 2>/dev/null');
     let rx = 0, tx = 0;
     for (const line of out.split('\n')) {
-      if (!/^(wlan\d|rmnet_data\d+):/.test(line.trim())) continue;
+      // 接口白名单集中在 isMeteredIface（含 clat / v4-* 等 464xlat 接口）：
+      // 旧实现内联正则只有 wlan/rmnet_data，MTK 的 ccmni*、USB 共享的 rndis* 全被漏掉。
+      const iface = line.trim().split(':')[0];
+      if (!isMeteredIface(iface)) continue;
       const cols = line.trim().split(/\s+/);
       rx += parseInt(cols[1], 10) || 0;
       tx += parseInt(cols[9], 10) || 0;
@@ -1466,86 +1672,176 @@ async function getNetStats(deviceId) {
     const now  = Date.now();
     const prev = _netState.get(key);
     _netState.set(key, { rx, tx, ts: now });
-    if (!prev) return { rxKBps: 0, txKBps: 0 };
+    // 速率必须由两帧差值推出：首帧 / 读取失败都是「未测量」，写 0 会被读成「无流量」
+    if (!prev) return { rxKBps: null, txKBps: null };
+    // 计数器回绕或接口重置 → 本帧差值不可信，同样不编造 0 KB/s
+    if (rx < prev.rx || tx < prev.tx) return { rxKBps: null, txKBps: null };
     const dt = Math.max((now - prev.ts) / 1000, 0.1);
     return {
       rxKBps: Math.max(0, Math.round(((rx - prev.rx) / 1024) / dt)),
       txKBps: Math.max(0, Math.round(((tx - prev.tx) / 1024) / dt)),
     };
-  } catch (_) { return { rxKBps: 0, txKBps: 0 }; }
+  } catch (_) { return { rxKBps: null, txKBps: null }; }
 }
 
 // ─── Battery ─────────────────────────────────────────────────────────────────
 
+/**
+ * 电池电压统一成 mV。三种 ROM 口径：标准 mV(4200)、OPLUS V(4)、少数 µV(4200000)。
+ * 读不到 / 非法一律 null，不能写 0V 冒充实测。
+ * 抽成纯函数，让单位换算能被离线回归测试锁定（不依赖真机）。
+ */
+function normalizeBatteryVoltageMv(raw) {
+  const v = typeof raw === 'number' ? raw : parseFloat(raw);
+  if (!isFinite(v) || v <= 0) return null;
+  if (v > 100000) return Math.round(v / 1000);   // µV → mV
+  if (v < 20)     return Math.round(v * 1000);   // V  → mV
+  return Math.round(v);                          // mV
+}
+
+/**
+ * 电池电流统一成 mA，保留符号（负 = 充电 / 正 = 放电）。
+ * unitMicroAmp 由设备自报的 current_max 量级给出；为 null 时用「|v| > 10000」兜底。
+ */
+function normalizeCurrentMa(raw, unitMicroAmp) {
+  const v = typeof raw === 'number' ? raw : parseInt(raw, 10);
+  if (!isFinite(v)) return null;
+  const ua = unitMicroAmp != null ? !!unitMicroAmp : Math.abs(v) > 10000;
+  return ua ? Math.round(v / 100) / 10 : v;
+}
+
+/**
+ * 解析「dumpsys battery + 三个电流节点」的合并输出（纯函数，便于离线锁定单位换算）。
+ * 段标记由 getBatteryInfo 下发的同一条命令写入：---CMAX--- / ---CUA--- / ---CNOW---。
+ */
+function parseBatteryDump(raw) {
+  const text = String(raw || '');
+  const seg = (startMark, endMark) => {
+    const from = startMark ? text.indexOf(startMark) : 0;
+    if (from < 0) return '';
+    const begin = startMark ? from + startMark.length : 0;
+    const end = endMark ? text.indexOf(endMark, begin) : -1;
+    return text.slice(begin, end >= 0 ? end : text.length);
+  };
+  const out     = seg(null, '---CMAX---');
+  const cmaxRaw = seg('---CMAX---', '---CUA---').trim();
+  const cuaRaw  = seg('---CUA---', '---CNOW---').trim();
+  const cnowRaw = seg('---CNOW---', null).trim();
+
+  // 只匹配行首字段：部分 ROM 会先输出 "Max charging voltage: 5000000"（µV），
+  // 不加 ^ 会把它当成电池电压，进而算出荒谬的功耗。
+  const get = (k) => {
+    const m = out.match(new RegExp(`^\\s*${k}:\\s+([\\d.]+)`, 'm'));
+    return m ? parseFloat(m[1]) : null;
+  };
+  const level = get('level');
+  const voltage = normalizeBatteryVoltageMv(get('voltage'));
+  // temperature 为十分度 °C
+  const tRaw = get('temperature');
+  const temperature = (tRaw != null && tRaw > 0) ? Math.round(tRaw) / 10 : null;
+
+  // 电流统一 mA 并保留符号（负 = 充电 / 正 = 放电）。单位不能只看数值猜：
+  // 部分机型 current_now=-227、current_max=2000 是 mA，AOSP 标准是 µA。
+  // 以设备自报 current_max 的量级为主判据，数值阈值仅兜底。
+  let isMicroAmp = null;
+  const mx = Math.abs(parseInt(cmaxRaw, 10));
+  if (isFinite(mx) && mx > 0) isMicroAmp = mx >= 100000;
+  const toMa = (v) => normalizeCurrentMa(v, isMicroAmp);
+
+  let currentNow = null;
+  // ① 节点名自带单位：batt_current_ua_now 明确是 µA（三星等）
+  if (cuaRaw) {
+    const v = parseInt(cuaRaw, 10);
+    if (isFinite(v) && v !== 0) currentNow = normalizeCurrentMa(v, true);
+  }
+  // ② dumpsys battery 的 "current now:"（部分 ROM 会省略该字段）
+  if (currentNow == null) {
+    const curMatch = out.match(/^\s*current now:\s*(-?\d+)/im);
+    if (curMatch) currentNow = toMa(curMatch[1]);
+  }
+  // ③ sysfs current_now（无 dumpsys 电流字段的机型走这里）
+  if (currentNow == null && cnowRaw) currentNow = toMa(cnowRaw);
+
+  // 功耗 mW = |电流 mA| × 电压 mV / 1000；任一输入无效就不编造 0mW
+  const power = (currentNow != null && voltage != null)
+    ? Math.round(Math.abs(currentNow) * voltage / 1000) : null;
+
+  return { level, voltage, temperature, currentNow, power };
+}
+
 async function getBatteryInfo(deviceId) {
+  // 一次 shell 取全部电池源。旧实现每读一个节点起一次 adb
+  //（dumpsys battery + current_max + batt_current_ua_now + current_now，最坏 4 次
+  // 进程创建、150~350 ms），四个值还来自四个不同时刻。合并后只解析同一份快照。
+  const cmd = 'dumpsys battery 2>/dev/null; echo "---CMAX---"; '
+    + 'cat /sys/class/power_supply/battery/current_max 2>/dev/null; echo "---CUA---"; '
+    + 'cat /sys/class/power_supply/battery/batt_current_ua_now 2>/dev/null; echo "---CNOW---"; '
+    + 'cat /sys/class/power_supply/battery/current_now 2>/dev/null';
   try {
-    const out = await adbShell(deviceId, 'dumpsys battery 2>/dev/null', DUMPSYS_TIMEOUT_MS);
-    const get = (k) => { const m = out.match(new RegExp(`${k}:\\s*([\\d.]+)`)); return m ? parseFloat(m[1]) : 0; };
-    const level       = get('level');
-    const voltage     = get('voltage');           // mV
-    const temperature = Math.round((get('temperature') / 10) * 10) / 10;
-
-    let currentNow = 0;
-
-    // Primary: batt_current_ua_now (explicitly µA, Samsung-specific)
-    try {
-      const s = await adbShell(deviceId, 'cat /sys/class/power_supply/battery/batt_current_ua_now 2>/dev/null');
-      const v = parseInt(s.trim());
-      if (!isNaN(v) && v !== 0) {
-        currentNow = Math.round(Math.abs(v) / 1000); // µA → mA
-      }
-    } catch (_) {}
-
-    // Fallback: "current now:" in dumpsys battery — Samsung reports this in mA directly
-    if (currentNow === 0) {
-      const curMatch = out.match(/current now:\s*(-?\d+)/i);
-      if (curMatch) {
-        const raw = Math.abs(parseInt(curMatch[1]));
-        // If value > 10000, assume µA (standard Android); otherwise already mA (Samsung)
-        currentNow = raw > 10000 ? Math.round(raw / 1000) : raw;
-      }
-    }
-
-    // Last resort: sysfs current_now — on Samsung also in mA, not µA
-    if (currentNow === 0) {
-      try {
-        const s = await adbShell(deviceId, 'cat /sys/class/power_supply/battery/current_now 2>/dev/null');
-        const v = parseInt(s.trim());
-        if (!isNaN(v) && v !== 0) {
-          currentNow = Math.abs(v) > 10000 ? Math.round(Math.abs(v) / 1000) : Math.abs(v);
-        }
-      } catch (_) {}
-    }
-
-    // Power in mW = current_mA × voltage_mV / 1000
-    const power = (currentNow > 0 && voltage > 0)
-      ? Math.round(currentNow * voltage / 1000) : 0;
-
-    return { level, voltage, temperature, currentNow, power };
-  } catch (_) { return { level: 0, voltage: 0, temperature: 0, currentNow: 0, power: 0 }; }
+    const raw = await adbShell(deviceId, cmd, DUMPSYS_TIMEOUT_MS);
+    return parseBatteryDump(raw);
+  } catch (_) {
+    return { level: null, voltage: null, temperature: null, currentNow: null, power: null };
+  }
 }
 
 // ─── Temperature ─────────────────────────────────────────────────────────────
-// 多级兜底：很多机型（部分厂商 ROM）对 shell 关闭了 thermal_zone 读取权限，
-// 此时退回 dumpsys thermalservice（Android 10+ 免 root），最后才用电池温度。
+// 语义分层（务必区分，否则会出现「手摸不热却显示 60 多度」的假高温）：
+//   SKIN / BATTERY  = 机身（外壳）/ 电池温度，接近手感，是「温度」卡片该显示的值
+//   CPU / GPU / NPU = SoC 芯片结温（die temperature），轻载下也常年在 55~70°C，
+//                     比外壳高 20~30°C，不能冒充机身温度。
+// 采集顺序：dumpsys thermalservice（Android 10+，具名、免 root）
+//           → sysfs 具名机身/电池热区（老机型）→ dumpsys battery → 无数据。
+// 结温不丢弃，单独写入 cpuTemp / gpuTemp，供降频分析使用。
 
-/** 从 dumpsys thermalservice 里取温度；优先 CPU，其次 SKIN / BATTERY，最后取平均 */
+/** 芯片结温类传感器：不得作为主温度来源 */
+const DIE_TEMP_NAMES = new Set([
+  'CPU', 'GPU', 'NPU', 'MODEM', 'DSP', 'BSP', 'CHARGER', 'WIFI', 'WLAN',
+  'CAMERA', 'POWER_AMPLIFIER', 'USB', 'DDR', 'PMIC', 'SOC',
+]);
+/** 机身 / 电池类传感器：主温度只从这里取 */
+const BODY_TEMP_NAMES = new Set([
+  'SKIN', 'BATTERY', 'BOARD', 'SHELL', 'CASE', 'BACK', 'PANEL', 'SURFACE', 'AMBIENT',
+]);
+
+const _r1 = (v) => Math.round(v * 10) / 10;
+const _avgRows = (rows) => rows.reduce((s, r) => s + r.value, 0) / rows.length;
+
+/**
+ * sysfs 热区 temp 节点（thermal_zoneN/temp）的单位并不统一：
+ *   标准 Linux thermal sysfs 是**毫摄氏度**（36500 → 36.5°C）；
+ *   部分老 ROM / 厂商 HAL 写**十分度**（345 → 34.5°C）；
+ *   少数直接写摄氏度（36 → 36°C）。
+ * 旧实现只有 `if (v > 1000) v /= 1000`，十分度值 340 既没换算、又被随后的
+ * `v < 120` 判为非法丢弃 —— 这类机型整段机身温度都是「无数据」。
+ * 按数量级判定（与电池电压同思路），换算后仍落在 (0,120) 才接受。
+ */
+function normalizeThermalSysfsTemp(raw) {
+  const v = typeof raw === 'number' ? raw : parseFloat(raw);
+  if (!isFinite(v) || v <= 0) return null;
+  let c;
+  if (v >= 1000)      c = v / 1000;   // 毫摄氏度（标准 sysfs）
+  else if (v >= 100)  c = v / 10;     // 十分度（老 ROM）
+  else                c = v;          // 摄氏度
+  return (c > 0 && c < 120) ? _r1(c) : null;
+}
+
 /**
  * 解析 dumpsys thermalservice。
- * 返回 { main, gpu }：main = 整机温度（CPU/SKIN/BATTERY 优先），gpu = TYPE_GPU 的读数（没有则 null）。
- * GPU 利用率在多数 MTK 机型上只有 root 能读，但 GPU 温度是 shell 可读的，
- * 报告页在拿不到利用率时用温度补位，避免 GPU 区域整块空白。
+ * 返回 { main, gpu, cpu, battery, skin, source }：
+ *   main    = 机身/电池温度（BATTERY 优先，其次 SKIN），不再取 CPU 结温
+ *   source  = battery | skin | body | board | die（die 表示只有结温可读，数值偏高）
+ *   cpu/gpu/skin/battery = 各路传感器原始读数，单独返回，不与机身温度混用
  */
 function parseThermalService(out) {
   if (!out) return null;
-  // 优先用 HAL 实时值，其次用 cached
+  // HAL 是实时读数；Cached 是上一次采样（实测可低 10°C 以上），仅在无 HAL 时使用
   const halIdx = out.indexOf('Current temperatures from HAL');
   const cachedIdx = out.indexOf('Cached temperatures');
-  let section = '';
-  if (halIdx >= 0) section = out.slice(halIdx);
+  let section;
+  if (halIdx >= 0) section = out.slice(halIdx, cachedIdx > halIdx ? cachedIdx : out.length);
   else if (cachedIdx >= 0) section = out.slice(cachedIdx);
   else section = out;
-  if (halIdx >= 0 && cachedIdx > halIdx) section = out.slice(halIdx, cachedIdx);
 
   const rows = [];
   const re = /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=([A-Z_]+)/g;
@@ -1557,58 +1853,117 @@ function parseThermalService(out) {
   if (!rows.length) return null;
 
   const pick = (name) => rows.find((r) => r.name === name);
-  const preferred = pick('CPU') || pick('SKIN') || pick('BATTERY');
-  const main = preferred
-    ? preferred.value
-    : rows.reduce((s, r) => s + r.value, 0) / rows.length;
-  const gpuRow = pick('GPU');
+  const skin = pick('SKIN');
+  const battery = pick('BATTERY');
+  const bodyRows = rows.filter((r) => BODY_TEMP_NAMES.has(r.name));
+  const nonDieRows = rows.filter((r) => !DIE_TEMP_NAMES.has(r.name));
 
+  // 电池热敏电阻是真实、稳定、最贴近手感的读数，优先于厂商算法估算的 SKIN
+  let main, source;
+  if (battery)                { main = battery.value;    source = 'battery'; }
+  else if (skin)              { main = skin.value;       source = 'skin'; }
+  else if (bodyRows.length)   { main = _avgRows(bodyRows);   source = 'body'; }
+  else if (nonDieRows.length) { main = _avgRows(nonDieRows); source = 'board'; }
+  // 只有芯片结温可读时不编造「机身温度」：返回 null，交给下一级（电池）兜底，
+  // 否则又会复现「手摸不热却 60 多度」。结温仍在 cpu/gpu 字段里完整保留。
+  else                        { main = null;                 source = 'die'; }
+
+  const cpu = pick('CPU');
+  const gpu = pick('GPU');
   return {
-    main: Math.round(main * 10) / 10,
-    gpu: gpuRow ? Math.round(gpuRow.value * 10) / 10 : null,
+    main: main == null ? null : _r1(main),
+    source,
+    gpu: gpu ? _r1(gpu.value) : null,
+    cpu: cpu ? _r1(cpu.value) : null,
+    battery: battery ? _r1(battery.value) : null,
+    skin: skin ? _r1(skin.value) : null,
   };
 }
 
 /**
- * 温度采集：返回 { temperature, gpuTemp }。
- * temperature 为整机温度（0 表示没采到），gpuTemp 为 GPU 温度（null 表示该机型没暴露）。
+ * 温度采集：返回 { temperature, tempSource, gpuTemp, cpuTemp, batteryTemp, skinTemp }。
+ * temperature 为机身/电池温度（null = 采不到）；cpuTemp / gpuTemp 为芯片结温，
+ * skinTemp 为厂商估算的外壳温度，三者互不混用。
  */
-async function getThermalInfo(deviceId) {
-  // 1) /sys/class/thermal/thermal_zone*/temp（老机型 / 有 root 时可用）
-  try {
-    const out = await adbShell(deviceId,
-      "for f in /sys/class/thermal/thermal_zone*/temp; do cat \"$f\" 2>/dev/null; echo; done");
-    const temps = out.split('\n').map(l => parseInt(l.trim(), 10)).filter(t => !isNaN(t) && t > 0);
-    if (temps.length) {
-      const norm = temps.map(t => t > 1000 ? t / 1000 : t).filter(t => t > 0 && t < 150);
-      // sysfs 的分区没有名字，无法区分哪个是 GPU，只能给整机温度
-      if (norm.length) {
-        return {
-          temperature: Math.round(norm.reduce((a, b) => a + b, 0) / norm.length * 10) / 10,
-          gpuTemp: null,
-        };
-      }
-    }
-  } catch (_) {}
+async function getThermalInfo(deviceId, opts = {}) {
+  // 分项读数单独保存：即使采不到机身温度，thermalservice 已读到的 CPU/GPU 结温、
+  // SKIN 估算值也不能丢。旧实现只在 r.main > 0 时返回整个 r，die-only 机型
+  // （只有结温可读）会把 cpuTemp/gpuTemp 一起变成 null，白白丢掉可用数据。
+  const extra = { gpuTemp: null, cpuTemp: null, batteryTemp: null, skinTemp: null };
+  let dieOnlySource = null;
+  const pack = (temperature, tempSource) =>
+    Object.assign({ temperature, tempSource }, extra);
 
-  // 2) dumpsys thermalservice（Android 10+，无需 root，能拿到 GPU 分区）
+  // 1) dumpsys thermalservice：具名传感器，语义最可靠（Android 10+ 免 root）
   try {
     const out = await adbShell(deviceId, 'dumpsys thermalservice 2>/dev/null', DUMPSYS_TIMEOUT_MS);
     const r = parseThermalService(out);
-    if (r && r.main > 0) return { temperature: r.main, gpuTemp: r.gpu };
-  } catch (_) {}
-
-  // 3) 电池温度（最低兜底，几乎所有机型可读）
-  try {
-    const out = await adbShell(deviceId, 'dumpsys battery 2>/dev/null', DUMPSYS_TIMEOUT_MS);
-    const m = out.match(/temperature:\s*(\d+)/);
-    if (m) {
-      const t = parseInt(m[1], 10) / 10;
-      if (t > 0 && t < 150) return { temperature: Math.round(t * 10) / 10, gpuTemp: null };
+    if (r) {
+      extra.gpuTemp = r.gpu;
+      extra.cpuTemp = r.cpu;
+      extra.batteryTemp = r.battery;
+      extra.skinTemp = r.skin;
+      if (r.main > 0) return pack(r.main, r.source);
+      // 只有芯片结温：机身温度留空，但标记来源，卡片才会显示「仅结温」而非 0°C
+      if (r.source === 'die') dieOnlySource = 'die';
     }
   } catch (_) {}
 
-  return { temperature: 0, gpuTemp: null };
+  // 2) sysfs：老机型 / root 可读。只读「具名」机身与电池热区；
+  //    匿名 thermal_zone 大多是 CPU 各核结温，无差别求平均会系统性偏高，宁可放弃。
+  try {
+    const out = await adbShell(deviceId,
+      'for d in /sys/class/thermal/thermal_zone*; do t=$(cat "$d/type" 2>/dev/null); ' +
+      'v=$(cat "$d/temp" 2>/dev/null); if [ -n "$t" ] && [ -n "$v" ]; then echo "$t=$v"; fi; done');
+    const rows = [];
+    for (const line of out.split('\n')) {
+      const m = line.trim().match(/^([A-Za-z0-9_\- ]+)=(-?\d+(?:\.\d+)?)$/);
+      if (!m) continue;
+      const value = normalizeThermalSysfsTemp(m[2]);
+      if (value == null) continue;   // 负温 / 异常单位 / 超量程：不猜
+      const name = m[1].trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+      rows.push({ name, value });
+    }
+    const isBody = (r) => /(SKIN|SHELL|CASE|BACK|SURFACE|PANEL|BATT|BOARD|AMBIENT)/.test(r.name)
+      && !/(CPU|GPU|NPU|MODEM|DSP|CHG|WIFI|WLAN|CAM|DDR|PMIC|USB)/.test(r.name);
+    const body = rows.filter(isBody);
+    // sysfs 与 thermalservice 同为实时读数，同级覆盖；结温同样保留
+    const die = rows.find(r => /(^|_)CPU(_|$)/.test(r.name));
+    const gpuDie = rows.find(r => /(^|_)GPU(_|$)/.test(r.name));
+    if (die) extra.cpuTemp = die.value;
+    if (gpuDie) extra.gpuTemp = gpuDie.value;
+    if (body.length) {
+      const batt = body.find(r => /BATT/.test(r.name));
+      const shell = body.find(r => /SKIN|SHELL|CASE|BACK|SURFACE|PANEL/.test(r.name));
+      const main = batt || shell || body[0];
+      if (batt) extra.batteryTemp = batt.value;
+      if (shell) extra.skinTemp = shell.value;
+      return pack(main.value, /BATT/.test(main.name) ? 'battery' : 'skin');
+    }
+  } catch (_) {}
+
+  // 3) 电池温度（最低兜底，几乎所有机型可读；dumpsys battery 单位为十分度）
+  //    注意：采集主循环同一 tick 已经通过 getBatteryInfo 读过电池温度，这里再读一次
+  //    = 同一条命令跑两遍，两次读数还可能差 0.1°C，导致 temperature 与
+  //    battery.temperature 两个字段互相矛盾（典型的重复采集）。
+  //    调用方传 { noBatteryRead: true } 时跳过本段，由采集器用同一 tick 的
+  //    battery 结果合并兜底，保证只有一个来源、一个值。
+  if (!opts.noBatteryRead) {
+    try {
+      const out = await adbShell(deviceId, 'dumpsys battery 2>/dev/null', DUMPSYS_TIMEOUT_MS);
+      const m = out.match(/^\s*temperature:\s*(\d+)/m);
+      if (m) {
+        const t = _r1(parseInt(m[1], 10) / 10);
+        if (t > 0 && t < 120) {
+          extra.batteryTemp = t;
+          return pack(t, 'battery');
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 全部数据源都失败：机身温度 null（0°C 会被当成实测值计入均值），结温仍保留
+  return pack(null, dieOnlySource);
 }
 
 // ─── GPU ─────────────────────────────────────────────────────────────────────
@@ -1678,24 +2033,50 @@ function pctFromText(txt) {
   return (v >= 0 && v <= 100) ? v : null;
 }
 
+/** 每台设备上一帧的 gpubusy 累计计数，用于算区间增量 */
+const _gpuBusyState = new Map();
+
+/**
+ * kgsl-3d0/gpubusy 输出的是「busy total」两个**累计**计数（自驱动加载起）。
+ * 抽成纯函数，让区间 delta 能被离线测试锁定。
+ */
+function parseGpuBusyCounters(txt) {
+  const p = String(txt || '').trim().split(/\s+/).map(Number);
+  if (p.length < 2 || !(p[0] >= 0) || !(p[1] > 0)) return null;
+  return { busy: p[0], total: p[1] };
+}
+
+/**
+ * 两次累计计数的差值才是本采样区间的 GPU 利用率。
+ * 首帧 / 计数器重置 / 设备重启 → null（未测量），绝不编造 0% 或沿用旧的累计均值。
+ */
+function gpuBusyDeltaPct(prev, curr) {
+  if (!prev || !curr) return null;
+  const dBusy  = curr.busy  - prev.busy;
+  const dTotal = curr.total - prev.total;
+  if (!(dTotal > 0) || dBusy < 0 || dBusy > dTotal) return null;
+  return Math.round((dBusy / dTotal) * 100);
+}
+
 /** 按探针名把原始文本解释成百分比；解释不了返回 null */
 function interpretGpuProbe(tag, txt) {
   const raw = String(txt || '').trim();
   if (!raw) return null;
 
   if (tag === 'kgsl_busy') {
-    // 两个计数：busy total → 百分比
-    const p = raw.split(/\s+/).map(Number);
-    if (p.length >= 2 && p[1] > 0) {
-      const v = Math.round((p[0] / p[1]) * 100);
-      return (v >= 0 && v <= 100) ? v : null;
-    }
-    return null;
+    // 注意：这是「开机至今的累计平均占用」，只能给一次性健康检查当粗参考，
+    // 不能当实时 GPU 利用率逐帧上报（getGpuUsage 会改用区间 delta）。
+    const c = parseGpuBusyCounters(raw);
+    if (!c) return null;
+    const v = Math.round((c.busy / c.total) * 100);
+    return (v >= 0 && v <= 100) ? v : null;
   }
 
   if (tag === 'mtk_gpufreq' || tag === 'mtk_opp') {
     // 形如 "gpu_util = 37" / "loading: 37" / "utilization 37"
-    const m = raw.match(/(?:util\w*|loading)\s*[:=]?\s*(\d+(?:\.\d+)?)/i);
+    // 精确字段名 + 边界：旧写法 util\\w* 会命中 utilization_max=100 这类
+    // 「上限常量」，把 GPU 显示成假满载。
+    const m = raw.match(/(?:^|[^\w])(?:gpu_util|utilization|util|loading)\s*[:=]?\s*(\d+(?:\.\d+)?)/i);
     return m ? pctFromText(m[1]) : null;
   }
 
@@ -1746,7 +2127,23 @@ async function getGpuUsage(deviceId) {
   try {
     const out = await adbShell(deviceId, buildGpuProbeScript(), 6000);
     const parts = splitProbeOutput(out);
+
+    // gpubusy 的 busy/total 是**开机至今的累计值**：直接相除得到的是「设备启动以来
+    // 的平均 GPU 占用」，画出来是一条几乎不动的线（常见恒定 10~20%），完全不能反映
+    // 当前负载。只有两次采样的 Δbusy / Δtotal 才是本周期的利用率。
+    // 即使本帧命中了更可靠的瞬时节点也照常记录基线，保证切回 gpubusy 时立刻有值。
+    const busy = parseGpuBusyCounters(parts.kgsl_busy);
+    let busyDelta = null;
+    if (busy) {
+      busyDelta = gpuBusyDeltaPct(_gpuBusyState.get(deviceId), busy);
+      _gpuBusyState.set(deviceId, busy);
+    }
+
     for (const [tag] of GPU_NODE_PROBES) {
+      if (tag === 'kgsl_busy') {
+        if (busyDelta != null) return busyDelta;
+        continue;   // 首帧 / 计数器回绕 → 未测量，继续找别的瞬时节点
+      }
       const v = interpretGpuProbe(tag, parts[tag]);
       if (v != null) return v;
     }
@@ -1764,58 +2161,46 @@ async function getGpuUsage(deviceId) {
 
 const _coreState = new Map();
 
+/**
+ * 用 cpuN 名称把两次 /proc/stat 快照配对后算逐核使用率。
+ *
+ * 旧写法 prev.cores[i] 按下标对比：核心热插拔（关核 / 开核）时 /proc/stat 的
+ * cpuN 行集合会变化，下标 i 指向的已经不是同一个核心，算出的 delta 是
+ * 「A 核累计 tick 减 B 核累计 tick」的随机数，再 clamp 成 0~100% 的假曲线。
+ * 按名字配对后，本次新上线、上次已下线、或计数器回绕的核心一律记 null（未测量）。
+ */
+function pairCoreUsage(prev, curr) {
+  if (!prev) return curr.cores.map(() => null);       // 首帧无基线
+  const pmap = new Map(prev.ids.map((id, i) => [id, prev.cores[i]]));
+  return curr.ids.map((id, i) => {
+    const p = pmap.get(id);
+    if (!p) return null;
+    const td = curr.cores[i].total - p.total;
+    const idl = curr.cores[i].idle - p.idle;
+    return td > 0 ? clamp(Math.round(((td - idl) / td) * 100), 0, 100) : null;
+  });
+}
+
+/**
+ * 兼容包装：只取逐核使用率与频率。
+ * 采集主循环请直接用 getCpuSnapshot —— 它与整机 / 进程 CPU 共用一次 /proc/stat 读取；
+ * 这里若与 getCpuStats 同时调用，就会退回到「一个 tick 读两次」的旧行为。
+ */
 async function getCpuCoreStats(deviceId) {
-  const key = `${deviceId}_cores`;
-  const now = Date.now();
-  try {
-    // Single shell: all cpuN lines from /proc/stat + per-core frequencies
-    const cmd =
-      "cat /proc/stat; echo '---FREQ---';" +
-      "for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq;" +
-      " do cat \"$f\" 2>/dev/null || echo 0; done";
-    const out = await adbShell(deviceId, cmd, 6000);
-    const sep = out.indexOf('---FREQ---');
-    const statPart = sep >= 0 ? out.slice(0, sep) : out;
-    const freqPart = sep >= 0 ? out.slice(sep + 10)  : '';
-
-    // Parse cpu0, cpu1, … lines
-    const coreLines = statPart.split('\n').filter(l => /^cpu\d/.test(l));
-    const coreData  = coreLines.map(line => {
-      const nums = line.trim().split(/\s+/).slice(1).map(Number);
-      return {
-        idle:  nums[3] + (nums[4] || 0),
-        total: nums.reduce((a, b) => a + b, 0),
-      };
-    });
-
-    // Frequencies: kHz → MHz
-    const freq = freqPart.trim().split('\n')
-      .map(l => { const v = parseInt(l.trim(), 10); return isNaN(v) ? 0 : Math.round(v / 1000); });
-
-    const prev = _coreState.get(key);
-    _coreState.set(key, { cores: coreData, ts: now });
-
-    if (!prev) return { usage: coreData.map(() => 0), freq };
-
-    const usage = coreData.map((curr, i) => {
-      const p = prev.cores[i];
-      if (!p) return 0;
-      const td = curr.total - p.total;
-      const id = curr.idle  - p.idle;
-      return td > 0 ? clamp(Math.round(((td - id) / td) * 100), 0, 100) : 0;
-    });
-
-    return { usage, freq };
-  } catch (_) {
-    return { usage: [], freq: [] };
-  }
+  const s = await getCpuSnapshot(deviceId, null);
+  return { usage: s.cores.usage, freq: s.cores.freq };
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
 function resetDeviceState(deviceId) {
   _timestatsEnabled.delete(deviceId);
-  for (const map of [_cpuState, _netState, _fpsState, _coreState]) {
+  // _fsState 也必须清：framestats 的窗口基线若跨采集会话残留（应用重启后
+  // PROFILEDATA 窗口会重置），首帧就会被判成「无新帧 / 窗口过期」，白白丢点。
+  // _gpuBusyState 同理：不清会用上一轮结束时的累计计数算出一个跨越整段停机
+  // 时间的「平均 GPU 占用」当作本轮第一帧的利用率。
+  // _rootState 是有意的会话级缓存（清了每轮都要多探一次 su）。
+  for (const map of [_cpuState, _netState, _fpsState, _coreState, _fsState, _gpuBusyState]) {
     for (const k of map.keys()) { if (k.startsWith(deviceId)) map.delete(k); }
   }
 }
@@ -1829,8 +2214,8 @@ module.exports = {
   getDevices, getDeviceInfo, getThirdPartyPackages, getPid, getUid, ensureAppRunning,
   getDeviceLocale, getApkPath, resolveAppLabel, readApkEntry,
   resolveLauncherComponent, isAppForeground, getForegroundSnapshot,
-  getCpuStats, getMemInfo, getFps,
-  getNetStats, getBatteryInfo, getThermalInfo, getGpuUsage,
+  getCpuStats, getCpuSnapshot, getMemInfo, getFps,
+  getNetStats, getBatteryInfo, getThermalInfo, parseThermalService, getGpuUsage,
   getCpuCoreStats, captureScreen,
   preflightCheck, probeChannel,
   resetDeviceState, connectWifi, autoConnectWifi, disconnectWifi,
@@ -1839,10 +2224,17 @@ module.exports = {
   // 退出清理：只收本进程拉起的 adb server（见 ensureServerOwnership）
   killServerIfOwned, ensureServerOwnership, ADB_SERVER_PORT,
   __setServerRunner,
-  // 纯算法导出：供离线回归测试锁定 FPS/Jank 判定口径（不影响运行时行为）
+  // 纯算法导出：供离线回归测试锁定采集口径（不影响运行时行为）
   __algo: {
     parseHistogram, histDelta, detectVsync, analyseHistogram,
     parseFramestats, calcJankFramestats, vsyncMsFromRefreshRate,
+    selectFramestatsWindow, FRAMESTATS_MAX_GAP_FACTOR,
+    normalizeBatteryVoltageMv, normalizeCurrentMa,
+    normalizeThermalSysfsTemp,
+    parsePidStat, pairCoreUsage,
+    // 采集口径纯函数：整机/单核 CPU、meminfo 分项、电池单位、网络接口白名单
+    calcCpuPct, parseMemInfoSections, parseBatteryDump, isMeteredIface,
+    parseGpuBusyCounters, gpuBusyDeltaPct, interpretGpuProbe,
     MOVIE_FRAME_X2_MS, MOVIE_FRAME_X3_MS,
   },
 };

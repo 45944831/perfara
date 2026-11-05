@@ -229,6 +229,10 @@ function screenShell({ wake, thenWake, locked }) {
       getUid: async () => 10123,
       getCpuStats: async () => ({ sysCpu: 10, procCpu: 5 }),
       getCpuCoreStats: async () => ({ usage: [1, 2], freq: [1, 2] }),
+      // 采集主循环现在只调一次 getCpuSnapshot（整机 + 进程 + 逐核同源）
+      getCpuSnapshot: async () => ({
+        sysCpu: 10, procCpu: 5, cores: { usage: [1, 2], freq: [1, 2] }, coreCount: 2,
+      }),
       getMemInfo: async () => ({ totalPss: 100, memTotalMB: 8000, memAvailableMB: 3000 }),
       getFps: async () => ({ fps: 60, jank: 0, bigJank: 0, smallJank: 0, tinyJank: 0, jankRate: 0, method: 'timestats' }),
       getNetStats: async () => ({ rxKBps: 1, txKBps: 1 }),
@@ -397,7 +401,7 @@ function screenShell({ wake, thenWake, locked }) {
   {
     const dead = () => Promise.reject(new Error('模拟通道断开'));
     const { Collector } = loadCollector({
-      getCpuStats: dead, getCpuCoreStats: dead, getMemInfo: dead, getFps: dead,
+      getCpuSnapshot: dead, getCpuStats: dead, getCpuCoreStats: dead, getMemInfo: dead, getFps: dead,
       getNetStats: dead, getBatteryInfo: dead, getThermalInfo: dead, getGpuUsage: dead,
     });
     const restore = withTimings(Collector, {});
@@ -435,7 +439,7 @@ function screenShell({ wake, thenWake, locked }) {
     const { Collector: C2 } = loadCollector({
       getPid: async () => null,
       probeChannel: async () => false,
-      getCpuStats: dead, getCpuCoreStats: dead, getMemInfo: dead, getFps: dead,
+      getCpuSnapshot: dead, getCpuStats: dead, getCpuCoreStats: dead, getMemInfo: dead, getFps: dead,
       getNetStats: dead, getBatteryInfo: dead, getThermalInfo: dead, getGpuUsage: dead,
     });
     const r2 = withTimings(C2, {});

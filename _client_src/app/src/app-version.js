@@ -20,7 +20,7 @@
  */
 module.exports = {
   // 当前版本：新编号从 1.0 起。发新版请用 --app-version=next 自动递增。
-  APP_VERSION: '1.0',
+  APP_VERSION: '1.1',
   GITHUB_OWNER: '45944831',
   GITHUB_REPO: 'perfara',
 };

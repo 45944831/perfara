@@ -100,6 +100,8 @@ function check(name, ok, extra) {
     };
     chartMgr._tags = [[0, 8999], [100, 200]];
     const changed = chartMgr._decimateIfNeeded(state);
+    // 真实流程里 tag 缩放由 update() 在「本轮发生抽稀」后统一调一次（逐图调用会连除 11 次）
+    if (changed) chartMgr._halveTags();
     return {
       changed,
       len: state.times.length,
@@ -116,12 +118,12 @@ function check(name, ok, extra) {
   check('tag 下标同步减半（[0,8999]→[0,4499]）',
     dec.tags[0][0] === 0 && dec.tags[0][1] === 4499, JSON.stringify(dec.tags[0]));
 
-  // 未超阈值不应抽稀
+  // 未超阈值不应抽稀（阈值 = MAX_RENDER_POINTS × 2 = 900 × 2 = 1800）
   const noDec = await page.evaluate(() => {
-    const state = { times: Array.from({ length: 3000 }, (_, i) => String(i)), series: [[1]] };
+    const state = { times: Array.from({ length: 1700 }, (_, i) => String(i)), series: [[1]] };
     return { changed: chartMgr._decimateIfNeeded(state), len: state.times.length };
   });
-  check('未超阈值（3000）不抽稀', noDec.changed === false && noDec.len === 3000, noDec.len);
+  check('未超阈值（1700 < 1800）不抽稀', noDec.changed === false && noDec.len === 1700, noDec.len);
 
   // tag 区间在抽稀后仍能正确画出 markArea
   const area = await page.evaluate(() => {

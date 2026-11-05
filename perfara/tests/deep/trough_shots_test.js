@@ -124,7 +124,9 @@ check('截图另存小图（曲线/缩略条用）', /THUMB_WIDTH/.test(shotsSrc
 const chartsSrc = fs.readFileSync(path.join(APP, 'renderer', 'charts.js'), 'utf8');
 check('图表管理器暴露给截图条', /window\.chartMgr\s*=\s*this/.test(chartsSrc), true);
 check('图表管理器支持追加/清空截图标记', /pushTroughShot/.test(chartsSrc) && /clearTroughShots/.test(chartsSrc), true);
-check('抽稀后重新投影截图锚点', /if \(trimmed\)[\s\S]{0,200}_renderTroughMarks\(\)/.test(chartsSrc), true);
+// 抽稀分支变量名从 trimmed 演进为 decimated（_decimateIfNeeded → _halveTags + 统一重绘），
+// 断言只关心「进了抽稀分支就必须重投影截图锚点」这个语义。
+check('抽稀后重新投影截图锚点', /if \((?:trimmed|decimated)\)[\s\S]{0,600}_renderTroughMarks\(\)/.test(chartsSrc), true);
 
 const stripSrc = fs.readFileSync(path.join(APP, 'renderer', 'trough-shots.js'), 'utf8');
 check('缩略图条把截图同步到曲线', /chartMgr\.pushTroughShot/.test(stripSrc), true);

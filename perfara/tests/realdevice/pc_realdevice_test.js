@@ -97,7 +97,11 @@ function run() {
   check('cpuCores.freq 非空', rows.every(r => Array.isArray(r.cpuCores && r.cpuCores.freq) && r.cpuCores.freq.length > 0), rows[0] && rows[0].cpuCores && rows[0].cpuCores.freq);
   check('net 速率非负', rows.every(r => !r.net || (r.net.rxKBps >= 0 && r.net.txKBps >= 0)), rows.map(r => r.net).slice(0, 3));
   check('gpu 为 null 或 0..100', rows.every(r => r.gpu === null || r.gpu === undefined || (r.gpu >= 0 && r.gpu <= 100)), rows.map(r => r.gpu).slice(0, 6));
-  check('jank 家族非负', rows.every(r => [r.jank, r.bigJank, r.jankRate].every(v => v === undefined || (isNum(v) && v >= 0))), rows.map(r => [r.jank, r.bigJank, r.jankRate]).slice(0, 3));
+  // PC 侧不做卡顿分级测量：null / undefined = 未测量（不能写 0 伪装成「零卡顿」）；
+  // 有值时必须是非负数。旧断言只放行 undefined，与新口径冲突。
+  check('jank 家族为 null（未测量）或非负数',
+    rows.every(r => [r.jank, r.bigJank, r.jankRate].every(v => v == null || (isNum(v) && v >= 0))),
+    rows.map(r => [r.jank, r.bigJank, r.jankRate]).slice(0, 3));
   check('pcExtra 含 exe/name', rows.every(r => r.pcExtra && r.pcExtra.name), rows[0] && rows[0].pcExtra);
   check('pcExtra 含 fpsSource 标记', rows.every(r => r.pcExtra && typeof r.pcExtra.fpsSource === 'string'), rows.map(r => r.pcExtra && r.pcExtra.fpsSource).slice(0, 5));
 

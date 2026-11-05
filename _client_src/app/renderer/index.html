@@ -133,10 +133,11 @@
     <div class="card-value" id="val-battery">--</div>
     <div class="card-unit">%</div>
   </div>
-  <div class="card" id="card-temp" data-metric="temp">
-    <div class="card-label">温度</div>
+  <div class="card" id="card-temp" data-metric="temp" title="主数值为机身 / 电池温度（接近手感）；下方小字并列外壳估算温度与 CPU 芯片结温。芯片结温常年比外壳高 20~30°C，属正常现象，不代表机身发烫。">
+    <div class="card-label">机身温度</div>
     <div class="card-value" id="val-temp">--</div>
-    <div class="card-unit">°C</div>
+    <div class="card-unit" id="val-temp-unit">°C · 机身/电池</div>
+    <div class="card-sub" id="val-temp-extra">外壳 -- · 结温 --</div>
   </div>
 </section>
 

@@ -659,20 +659,20 @@ body { overflow-x: hidden; }
       h: '帧间隔超过 2 倍目标帧间隔的帧，累计其耗时 ÷ 总耗时 × 100%。',
       g: '比卡顿「次数」更能体现卡了多久，一般要求低于 5%。' },
 
-    jank: { t: 'Jank 卡顿帧', u: '次/s',
-      d: '明显超出正常耗时的一次掉帧，是肉眼可察觉的「顿一下」。',
+    jank: { t: 'Jank 卡顿帧', u: '帧',
+      d: '明显超出正常耗时的一次掉帧，是肉眼可察觉的「顿一下」。每个采样点统计该周期内的卡顿帧数（默认 1Hz 采集，数值上等于次/秒）。',
       h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 2 个电影帧（约 83ms）判定为 1 次 Jank。',
       g: '关键场景（战斗、切图、加载）中的 Jank 优先治理；≤2 次/分钟通常可接受。' },
-    bigjank: { t: 'BigJank 严重卡顿帧', u: '次/s',
-      d: '耗时特别长的卡顿帧，用户几乎必感知。',
+    bigjank: { t: 'BigJank 严重卡顿帧', u: '帧',
+      d: '耗时特别长的卡顿帧，用户几乎必感知。统计口径同 Jank（每采样点帧数）。',
       h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 3 个电影帧（125ms）判定为 1 次 BigJank。',
       g: '优先级最高：通常对应 GC、磁盘 IO、资源加载或布局重排。' },
-    smalljank: { t: 'SmallJank 轻卡顿帧', u: '次/s',
-      d: 'Jank 家族中较轻的一级，用于在整体已流畅时定位轻微抖动。',
+    smalljank: { t: 'SmallJank 轻卡顿帧', u: '帧',
+      d: 'Jank 家族中较轻的一级，用于在整体已流畅时定位轻微抖动。统计口径同 Jank。',
       h: '同 Jank 的相对判定逻辑，但阈值更宽松（帧耗时超过基线而尚未达到 Jank 门槛）。',
       g: '数值不大时无需处理；集中出现时说明有周期性的小开销。' },
-    tinyjank: { t: 'TinyJank 微卡顿帧', u: '次/s',
-      d: '最轻一级的卡顿，粒度最细。',
+    tinyjank: { t: 'TinyJank 微卡顿帧', u: '帧',
+      d: '最轻一级的卡顿，粒度最细。统计口径同 Jank。',
       h: '同 Jank 的相对判定逻辑，阈值最低。',
       g: '用于对标极致流畅度的专项优化。' },
     jank10: { t: 'Jank/10min', u: '次',
@@ -698,12 +698,12 @@ body { overflow-x: hidden; }
       g: '持续高于 80% 说明整机负载饱和，会放大掉帧与发热；低但进程 CPU 高则说明瓶颈在自身。' },
     cpuchart: { t: 'CPU 使用率', u: '%',
       d: '同时展示整机（系统 CPU）与被测进程（进程 CPU）的占用率，用于区分瓶颈在系统侧还是应用侧。',
-      h: '两条曲线同源：整机取系统 CPU 计数，进程取被测进程 CPU 时间差值 ÷ 采样间隔。',
+      h: '两条曲线同源，都取自 CPU 时间片：整机 = 全部核的忙碌占比（0~100%）；进程 = 进程时间片 ÷ 单核平均时间片（单核满载 = 100%，多线程可超过 100%）。',
       g: '进程 CPU 高而系统 CPU 低 = 自身代码开销大；两者都高 = 整机负载饱和。' },
     proccpu: { t: '进程 CPU', u: '%',
-      d: '被测应用进程占用的 CPU 比例。',
-      h: '读取进程 CPU 时间（utime + stime）在采样间隔内的差值 ÷ 间隔时长。',
-      g: '长期高于 60% 需排查热点函数；注意不同平台对多核的归一口径不同，跨平台对比需留意。' },
+      d: '被测应用进程占用的 CPU，按单核口径：单核跑满 = 100%，N 核同时跑满 = N×100%。',
+      h: '读取进程 CPU 时间（utime + stime）在采样间隔内的差值，除以「单核平均总时间片」（整机总时间片 ÷ 在线核数）。早期版本误用整机总时间片做分母，8 核机型会偏低约 8 倍。',
+      g: '长期高于 60% 需排查热点函数；超过 100% 说明多线程并发，属正常。' },
     cpulimit: { t: 'CPU 限频', u: '%',
       d: 'CPU 实际运行频率相对最高频率的比例。',
       h: '取各核心当前频率 ÷ 硬件最高频率。',
@@ -740,9 +740,13 @@ body { overflow-x: hidden; }
       h: '读取 GPU 温度传感器节点。',
       g: '与温度同为降频前兆；持续升高说明渲染负载偏高。' },
     temp: { t: '温度', u: '°C',
-      d: '机身 / 电池温度，反映设备热状态。',
-      h: '优先读取 thermal 温控节点，读不到时回退为电池温度。',
-      g: '超过 45°C 通常会开始降频，超过 50°C 会明显影响帧率与手感。' },
+      d: '机身 / 电池温度（贴近手持体感），不是 CPU 芯片结温。',
+      h: '优先读取 thermalservice 的 BATTERY 热敏电阻，缺失时取 SKIN 外壳估算，最后回退 dumpsys battery；CPU / GPU / NPU 结温单独记录，不与机身温度混用。',
+      g: '超过 45°C 通常会开始降频，超过 50°C 会明显影响帧率与手感。芯片结温轻载也常在 55~70°C，属正常现象，不能据此判断机身发烫。' },
+    cputemp: { t: 'CPU 结温', u: '°C',
+      d: 'SoC 芯片内部温度，用于判断是否触发温控降频；不是机身 / 环境温度。',
+      h: 'Android 读取 thermalservice 的 TYPE_CPU 传感器；PC 读取 psutil.sensors_temperatures() 的最大值（同为芯片结温）。在温度图中与机身温度并列展示。',
+      g: '通常比机身 / 外壳温度高 20~30°C，属正常现象，不代表机身发烫。PC 没有外壳热敏电阻时只有这一路结温可读，机身温度留空。' },
 
     battery: { t: '电池', u: '%',
       d: '设备剩余电量百分比。',
@@ -1079,7 +1083,7 @@ body { overflow-x: hidden; }
   <div class="chart-wrap" data-metric="fps"><div class="chart-title" data-info="fps">FPS (帧/s)</div><div id="chart-fps" class="chart"></div></div>
   <div class="chart-wrap" data-metric="net"><div class="chart-title" data-info="net">网络流量 (KB/s)</div><div id="chart-net" class="chart"></div></div>
   <div class="chart-wrap" data-metric="gpu"><div class="chart-title" data-info="gpu">GPU 使用率 (%)</div><div id="chart-gpu" class="chart"></div></div>
-  <div class="chart-wrap" data-metric="temp"><div class="chart-title" data-info="temp">温度 (°C)</div><div id="chart-temp" class="chart"></div></div>
+  <div class="chart-wrap" data-metric="temp"><div class="chart-title" data-info="temp">温度 (°C) · 机身 / CPU 结温</div><div id="chart-temp" class="chart"></div></div>
   <div class="chart-wrap" data-metric="battery"><div class="chart-title" data-info="current">电流 (mA)</div><div id="chart-current" class="chart"></div></div>
   <div class="chart-wrap" data-metric="battery"><div class="chart-title" data-info="power">功耗 (mW)</div><div id="chart-power" class="chart"></div></div>
   <div class="chart-wrap" data-metric="cpu"><div class="chart-title" data-info="cpucores">各核心 CPU 使用率 (%)</div><div id="chart-cpu-cores" class="chart"></div></div>
@@ -1135,8 +1139,8 @@ body { overflow-x: hidden; }
 
 <section class="cards">
   <div class="card" id="card-fps" data-metric="fps"><div class="card-label" data-info="fps">FPS</div><div class="card-value" id="val-fps">--</div><div class="card-unit">帧/s</div></div>
-  <div class="card" id="card-jank" data-metric="fps"><div class="card-label" data-info="jank">Jank</div><div class="card-value" id="val-jank">--</div><div class="card-unit">次/s</div></div>
-  <div class="card" id="card-big-jank" data-metric="fps"><div class="card-label" data-info="bigjank">大 Jank</div><div class="card-value" id="val-big-jank">--</div><div class="card-unit">次/s</div></div>
+  <div class="card" id="card-jank" data-metric="fps"><div class="card-label" data-info="jank">Jank</div><div class="card-value" id="val-jank">--</div><div class="card-unit">帧</div></div>
+  <div class="card" id="card-big-jank" data-metric="fps"><div class="card-label" data-info="bigjank">大 Jank</div><div class="card-value" id="val-big-jank">--</div><div class="card-unit">帧</div></div>
   <div class="card" id="card-stutter" data-metric="fps"><div class="card-label" data-info="stutter">Stutter</div><div class="card-value" id="val-stutter">--</div><div class="card-unit">ratio</div></div>
   <div class="card" id="card-cpu" data-metric="cpu"><div class="card-label" data-info="proccpu">进程 CPU</div><div class="card-value" id="val-cpu">--</div><div class="card-unit">%</div></div>
   <div class="card" id="card-syscpu" data-metric="cpu"><div class="card-label" data-info="syscpu">系统 CPU</div><div class="card-value" id="val-syscpu">--</div><div class="card-unit">%</div></div>
@@ -1329,7 +1333,18 @@ body { overflow-x: hidden; }
     const b = a_temp(batteryRaw);
     return (b != null && b > 0) ? b : t;
   }
-  function a_ua_to_ma(v){ return (typeof v === 'number' && !isNaN(v)) ? (v / 1000) : null; }
+  /**
+   * 电流归一化为 mA，并保留符号（负 = 充电）。
+   * 采集端自 v2026.10 起统一输出 mA（CSV 列名 currentNow_mA、客户端图表同口径），
+   * 老报告里可能仍是 µA（典型值几十万）。旧实现无条件 /1000，会把新报告的
+   * 500mA 显示成 0.5mA，整整小 1000 倍。这里按量级自适应：
+   *   |v| >= 10000 → 判为 µA，除 1000；否则原样当 mA。
+   * 注：µA 机型极低电流（< 10000µA）无法与 mA 区分，属历史数据固有限制。
+   */
+  function a_cur_to_ma(v){
+    if(typeof v !== 'number' || isNaN(v)) return null;
+    return Math.abs(v) >= 10000 ? v / 1000 : v;
+  }
   function a_freq(v){ if(typeof v!=='number'||isNaN(v)) return null; return v>=10000 ? v/1000 : v; }
 
   function i_mem(v){ return (typeof v === 'number' && !isNaN(v)) ? (v / MB_BYTES) : null; }
@@ -1363,7 +1378,7 @@ body { overflow-x: hidden; }
     fps:       ['#f5d020', '#f5a623', '#f85151'],
     net:       ['#c77dff', '#ff79a8'],
     gpu:       ['#f5a623'],
-    temp:      ['#f85151'],
+    temp:      ['#f85151', '#f5a623'],  // 机身温度（红）/ CPU 结温（橙）：两条线必须异色可辨
     current:   ['#79d4f7'],
     power:     ['#f5a623'],
     cpuCores:  ['#4f8ef7','#79d4f7','#3ecf8e','#a8e6cf','#f5a623','#f5d020','#f85151','#c77dff',
@@ -1850,9 +1865,11 @@ body { overflow-x: hidden; }
         ], yMax:120, fmt:v=>v, mixed:true },
         net: { el:'chart-net', series:[{name:'下行',key:d=>d.net.rxKBps},{name:'上行',key:d=>d.net.txKBps}], type:'line', yMax:null, fmt:v=>v+' KB/s' },
         gpu: gpuChartCfg(),
-        temp: { el:'chart-temp', series:[{name:'温度',key:d=>d.temperature}], type:'line', yMax:null, fmt:v=>v+'°C' },
-        current: { el:'chart-current', series:[{name:'电流',key:d=>d.battery.currentNow ?? 0}], type:'line', yMax:null, fmt:v=>v+' mA' },
-        power: { el:'chart-power', series:[{name:'功耗',key:d=>d.battery.power ?? 0}], type:'line', yMax:null, fmt:v=>v+' mW' },
+        // 机身温度与 CPU 结温并列成两条序列，明确区分口径；老报告无 cpuTemp 时该线断开
+        temp: { el:'chart-temp', series:[{name:'机身温度',key:d=>d.temperature},{name:'CPU 结温',key:d=>d.cpuTemp ?? null}], type:'line', yMax:null, fmt:v=>v+'°C' },
+        // 无电池 / 读不到电流时断线，不画 0 线（会被读成「实测 0mA / 0mW」）
+        current: { el:'chart-current', series:[{name:'电流',key:d=>d.battery.currentNow ?? null}], type:'line', yMax:null, fmt:v=>v+' mA' },
+        power: { el:'chart-power', series:[{name:'功耗',key:d=>d.battery.power ?? null}], type:'line', yMax:null, fmt:v=>v+' mW' },
         disk: { el:'chart-disk', series:[
           { name:'读 KB/s', key:d=>d._diskReadKBps ?? null },
           { name:'写 KB/s', key:d=>d._diskWriteKBps ?? null },
@@ -1863,7 +1880,8 @@ body { overflow-x: hidden; }
       });
     } else {
       Object.assign(CHART_CONFIGS, {
-        cpu: { el:'chart-cpu', series:[{name:'系统CPU',key:d=>d.cpu.sysCpu},{name:'进程CPU',key:d=>d.cpu.procCpu}], type:'line', yMax:100, fmt:v=>v+'%' },
+        // 进程 CPU 按单核口径，多线程应用可超过 100%，不再钉死 yMax=100（否则被截顶）
+        cpu: { el:'chart-cpu', series:[{name:'系统CPU',key:d=>d.cpu.sysCpu},{name:'进程CPU',key:d=>d.cpu.procCpu}], type:'line', yMax:null, fmt:v=>v+'%' },
         mem: { el:'chart-mem', series:[{name:'PSS',key:d=>d.mem.totalPss}], type:'line', yMax:null, fmt:v=>v+' MB' },
         memDetail: { el:'chart-memdetail', series:[
           { name:'NativeHeap', key:d=>d.mem.nativeHeap },
@@ -1883,9 +1901,11 @@ body { overflow-x: hidden; }
         ], yMax:120, fmt:v=>v, mixed:true },
         net: { el:'chart-net', series:[{name:'下行',key:d=>d.net.rxKBps},{name:'上行',key:d=>d.net.txKBps}], type:'line', yMax:null, fmt:v=>v+' KB/s' },
         gpu: gpuChartCfg(),
-        temp: { el:'chart-temp', series:[{name:'温度',key:d=>d.temperature}], type:'line', yMax:null, fmt:v=>v+'°C' },
-        current: { el:'chart-current', series:[{name:'电流',key:d=>d.battery.currentNow ?? 0}], type:'line', yMax:null, fmt:v=>v+' mA' },
-        power: { el:'chart-power', series:[{name:'功耗',key:d=>d.battery.power ?? 0}], type:'line', yMax:null, fmt:v=>v+' mW' },
+        // 机身温度与 CPU 结温并列成两条序列，明确区分口径；老报告无 cpuTemp 时该线断开
+        temp: { el:'chart-temp', series:[{name:'机身温度',key:d=>d.temperature},{name:'CPU 结温',key:d=>d.cpuTemp ?? null}], type:'line', yMax:null, fmt:v=>v+'°C' },
+        // 无电池 / 读不到电流时断线，不画 0 线（会被读成「实测 0mA / 0mW」）
+        current: { el:'chart-current', series:[{name:'电流',key:d=>d.battery.currentNow ?? null}], type:'line', yMax:null, fmt:v=>v+' mA' },
+        power: { el:'chart-power', series:[{name:'功耗',key:d=>d.battery.power ?? null}], type:'line', yMax:null, fmt:v=>v+' mW' },
         cpuCores: { el:'chart-cpu-cores', series:[], dynamic:true, keyFn:d=>d.cpuCores?d.cpuCores.usage:[], yMax:100, fmt:v=>v+'%' },
         cpuFreq: { el:'chart-cpu-freq', series:[], dynamic:true, keyFn:d=>d.cpuCores?d.cpuCores.freq:[], yMax:null, fmt:v=>v+' MHz' },
         cswitch: { el:'chart-cswitch', series:[{name:'上下文切换',key:d=>d.cswitch}], type:'bar', yMax:null, fmt:v=>v+' 次/s' },
@@ -2731,8 +2751,23 @@ body { overflow-x: hidden; }
         }
       }
       if (seriesNoData(pts.map(p => p.temperature), true)) {
-        setUnit('card-temp', '无数据');
-        setValue('val-temp', '--');
+        const ct = pts.map(p => p.cpuTemp).filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
+        if (ct.length) {
+          // 无机身/电池热敏电阻（PC，或 die-only 机型）：只把 CPU 结温展示出来，
+          // 并把卡片标签一起改成「CPU 结温」，绝不冒充机身温度。
+          const avg = ct.reduce((a, b) => a + b, 0) / ct.length;
+          setValue('val-temp', avg.toFixed(1));
+          setUnit('card-temp', '\u00b0C \u00b7 \u82af\u7247\u7ed3\u6e29');
+          const tLab = document.querySelector('#card-temp .card-label');
+          if (tLab) {
+            tLab.textContent = 'CPU \u7ed3\u6e29';
+            tLab.setAttribute('data-info', 'cputemp');
+            if (window.MetricInfo) MetricInfo.decorate(tLab);
+          }
+        } else {
+          setUnit('card-temp', '无数据');
+          setValue('val-temp', '--');
+        }
       }
       const bj = pts.map(p => p.bigJank).filter(v => typeof v === 'number' && !isNaN(v));
       if (bj.length && bj.every(v => v === 0)) {
@@ -3832,7 +3867,9 @@ body { overflow-x: hidden; }
         const net = it.net || {};
         const bat = it.battery || {};
         const cores = it.cpuCores || {};
-        const tempRaw = (it.temperature != null) ? it.temperature : (bat.temperature != null ? bat.temperature : null);
+        // Android 的 battery.temperature 来自 dumpsys battery，同样是机身/电池温度，
+        // 可作为老报告的回退；pickTemp 顺带把老数据里的十分度值换算成 °C。
+        const tempRaw = pickTemp(it.temperature, bat.temperature);
         return {
           time: it.time || new Date(it.timestamp).toLocaleTimeString(),
           cpu: { sysCpu: cpu.sysCpu ?? null, procCpu: cpu.procCpu ?? null },
@@ -3856,11 +3893,14 @@ body { overflow-x: hidden; }
           net: { rxKBps: net.rxKBps ?? null, txKBps: net.txKBps ?? null },
           gpu: it.gpu ?? null,
           gpuTemp: it.gpuTemp ?? null,
-          temperature: pickTemp(tempRaw, bat.temperature),
-          battery: { currentNow: a_ua_to_ma(bat.currentNow), power: bat.power ?? null, temperature: a_temp(bat.temperature), level: bat.level ?? null },
+          // CPU 结温单独成序列，绝不并进「机身温度」；老报告无此字段 → 全 null 断线
+          cpuTemp: it.cpuTemp ?? null,
+          temperature: tempRaw,
+          battery: { currentNow: a_cur_to_ma(bat.currentNow), power: bat.power ?? null, temperature: a_temp(bat.temperature), level: bat.level ?? null },
           cpuCores: {
-            usage: Array.isArray(cores.usage) ? cores.usage.map(v => (typeof v === 'number' ? v : 0)) : [],
-            freq: Array.isArray(cores.freq) ? cores.freq.map(a_freq).map(v => v == null ? 0 : v) : [],
+            // 未采集 / offline 核保持 null 断线，不要折成 0MHz / 0%（会被读成实测值）
+            usage: Array.isArray(cores.usage) ? cores.usage.map(v => (typeof v === 'number' ? v : null)) : [],
+            freq: Array.isArray(cores.freq) ? cores.freq.map(a_freq) : [],
           }
         };
       });
@@ -3907,7 +3947,10 @@ body { overflow-x: hidden; }
         const bat = it.battery || {};
         const cores = it.cpuCores || {};
         const px = it.pcExtra || {};
-        const tempRaw = (it.temperature != null) ? it.temperature : (bat.temperature != null ? bat.temperature : null);
+        // PC 的 battery.temperature 在旧采集端是 CPU 结温、新采集端恒 null：
+        // 绝不能回退到它，否则「温度」卡片与曲线会把结温当成机身温度（复现假高温）。
+        // PC 也没有十分度整数值，不做 a_temp 换算。
+        const tempRaw = (typeof it.temperature === 'number' && !isNaN(it.temperature)) ? it.temperature : null;
         return {
           time: it.time || new Date(it.timestamp).toLocaleTimeString(),
           cpu: { sysCpu: cpu.sysCpu ?? null, procCpu: cpu.procCpu ?? null },
@@ -3931,11 +3974,14 @@ body { overflow-x: hidden; }
           net: { rxKBps: net.rxKBps ?? null, txKBps: net.txKBps ?? null },
           gpu: it.gpu ?? null,
           gpuTemp: it.gpuTemp ?? null,
-          temperature: pickTemp(tempRaw, bat.temperature),
-          battery: { currentNow: a_ua_to_ma(bat.currentNow), power: bat.power ?? null, temperature: a_temp(bat.temperature), level: bat.level ?? null },
+          // CPU 结温单独成序列，绝不并进「机身温度」；老报告无此字段 → 全 null 断线
+          cpuTemp: it.cpuTemp ?? null,
+          temperature: tempRaw,
+          battery: { currentNow: a_cur_to_ma(bat.currentNow), power: bat.power ?? null, temperature: a_temp(bat.temperature), level: bat.level ?? null },
           cpuCores: {
-            usage: Array.isArray(cores.usage) ? cores.usage.map(v => (typeof v === 'number' ? v : 0)) : [],
-            freq: Array.isArray(cores.freq) ? cores.freq.map(a_freq).map(v => v == null ? 0 : v) : [],
+            // 未采集 / offline 核保持 null 断线，不要折成 0MHz / 0%（会被读成实测值）
+            usage: Array.isArray(cores.usage) ? cores.usage.map(v => (typeof v === 'number' ? v : null)) : [],
+            freq: Array.isArray(cores.freq) ? cores.freq.map(a_freq) : [],
           },
           _diskReadKBps: (typeof px.diskReadKBps === 'number' && !isNaN(px.diskReadKBps)) ? px.diskReadKBps : null,
           _diskWriteKBps: (typeof px.diskWriteKBps === 'number' && !isNaN(px.diskWriteKBps)) ? px.diskWriteKBps : null,

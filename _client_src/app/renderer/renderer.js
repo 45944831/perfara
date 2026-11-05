@@ -764,13 +764,46 @@ function updateCards(d) {
   valProcCpu.textContent = cpu.procCpu ?? '--';
   valMem.textContent     = mem.totalPss ?? '--';
   valFps.textContent     = d.fps ?? '--';
-  valJank.textContent    = d.jank ?? 0;
-  valBigJank.textContent = d.bigJank ?? 0;
+  // gfxinfo-delta 等通道只数得出帧、测不到卡顿分级，此时 jank 是 null（未测量）。
+  // 折成 0 会把「没测」伪装成「零卡顿」，与整条数据可信度口径冲突，必须显示 --。
+  valJank.textContent    = d.jank ?? '--';
+  valBigJank.textContent = d.bigJank ?? '--';
   if (valJankRate) valJankRate.textContent = d.jankRate ? `${d.jankRate}%` : '';
   valNet.textContent     = (net.rxKBps != null && net.txKBps != null) ? `${net.rxKBps} / ${net.txKBps}` : '--';
   valGpu.textContent     = d.gpu ?? '--';
   valBattery.textContent = bat.level ?? '--';
-  valTemp.textContent    = d.temperature || bat.temperature || '--';
+  // 温度卡片主数值 = 机身/电池温度；0 = 没采到，不能当成 0°C 显示
+  const shownTemp = (typeof d.temperature === 'number' && d.temperature > 0)
+    ? d.temperature
+    : (typeof bat.temperature === 'number' && bat.temperature > 0 ? bat.temperature : null);
+  valTemp.textContent = shownTemp != null ? shownTemp : '--';
+
+  // 并列展示外壳估算与芯片结温，三者物理含义不同，不能混为一个数
+  const dieTemp = typeof d.cpuTemp === 'number' ? d.cpuTemp
+    : (typeof d.gpuTemp === 'number' ? d.gpuTemp : null);
+  const srcShort = { battery: '电池', skin: '外壳', body: '机身', board: '板载', die: '仅结温' };
+  const tempUnit = document.getElementById('val-temp-unit');
+  if (tempUnit) tempUnit.textContent = '°C · ' + (srcShort[d.tempSource] || '机身/电池');
+  const tempExtra = document.getElementById('val-temp-extra');
+  if (tempExtra) {
+    const shell = typeof d.skinTemp === 'number' ? d.skinTemp + '°' : '--';
+    const die = dieTemp != null ? dieTemp + '°' : '--';
+    tempExtra.textContent = '外壳 ' + shell + ' · 结温 ' + die;
+  }
+
+  // 悬浮说明解释三路读数，避免把芯片结温误读成「机身发烫」
+  const tempCard = document.getElementById('card-temp');
+  if (tempCard) {
+    const sourceLabel = { battery: '电池热敏电阻', skin: '外壳估算 (SKIN)',
+      body: '机身传感器', board: '板载传感器', die: '仅芯片结温可读（偏高）' };
+    const tip = ['主数值 = 机身 / 电池温度，接近手持体感'];
+    if (d.tempSource) tip.push('来源: ' + (sourceLabel[d.tempSource] || d.tempSource));
+    if (typeof d.skinTemp === 'number') tip.push('外壳估算 (SKIN): ' + d.skinTemp + '°C（厂商算法值，波动较大）');
+    if (typeof d.cpuTemp === 'number') tip.push('CPU 结温: ' + d.cpuTemp + '°C');
+    if (typeof d.gpuTemp === 'number') tip.push('GPU 结温: ' + d.gpuTemp + '°C');
+    tip.push('芯片结温轻载也常在 55~70°C，比外壳高 20~30°C，属正常现象，不代表机身发烫');
+    tempCard.title = tip.join('\n');
+  }
 
   // Color warnings（无数据的项跳过着色）
   if (cpu.sysCpu != null)   colorWarn('card-cpu',     cpu.sysCpu,  80, 95);
@@ -778,7 +811,7 @@ function updateCards(d) {
   if (d.fps != null)        colorWarn('card-fps',     60 - d.fps,    15, 30);
   if (d.jank != null)       colorWarn('card-jank',    d.jank,        3,  10);
   if (d.bigJank != null)    colorWarn('card-bigjank', d.bigJank,     1,  3);
-  if (d.temperature != null) colorWarn('card-temp',   d.temperature, 50, 65);
+  if (shownTemp != null) colorWarn('card-temp', shownTemp, 45, 50);
   if (d.gpu != null)        colorWarn('card-gpu',     d.gpu,         80, 95);
 }
 

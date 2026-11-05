@@ -416,7 +416,10 @@ function updateCards(d) {
   const rx = net.rxKBps;
   const tx = net.txKBps;
   const gpu = d.gpu;
-  const temp = d.temperature != null ? d.temperature : bat.temperature;
+  // PC 没有机身 / 外壳热敏电阻，新采集端 temperature 恒为 null；这里展示 CPU 结温，
+  // 卡片标签也已写明「CPU 结温」。旧采集端曾把 CPU 结温塞进 battery.temperature，
+  // 所以不再回退该字段 —— 否则老数据会以含糊的「温度」名义混入结温。
+  const temp = (typeof d.cpuTemp === 'number') ? d.cpuTemp : null;
 
   if (valSysCpu) valSysCpu.textContent = sys != null ? String(sys) : '--';
   if (valProcCpu) valProcCpu.textContent = proc != null ? String(proc) : '--';
@@ -440,7 +443,10 @@ function updateCards(d) {
   else colorWarn('card-jank', -Infinity, 3, 10);
   if (bjk != null) colorWarn('card-bigjank', Number(bjk), 1, 3);
   else colorWarn('card-bigjank', -Infinity, 1, 3);
-  colorWarn('card-temp', Number(temp) || 0, 50, 65);
+  // CPU 结温的警戒线高于机身温度（55~70°C 属常态）；无传感器时不着色，
+  // 旧写法 Number(temp) || 0 会把「无数据」当成有效读数参与判断。
+  if (temp != null) colorWarn('card-temp', Number(temp), 75, 90);
+  else colorWarn('card-temp', -Infinity, 75, 90);
   colorWarn('card-gpu', Number(gpu) || 0, 80, 95);
 }
 

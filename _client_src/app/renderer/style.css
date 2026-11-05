@@ -407,6 +407,10 @@ select:focus, input:focus {
 .card-label { font-size: 11px; color: var(--text2); }
 .card-value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .card-unit  { font-size: 10px; color: var(--text2); }
+/* 温度卡片并列展示机身/外壳/结温三路读数，需要比普通卡片宽一些 */
+.card-sub   { font-size: 10px; color: var(--text2); line-height: 1.3; white-space: nowrap;
+              font-variant-numeric: tabular-nums; opacity: .9; }
+#card-temp  { flex-grow: 1.7; min-width: 156px; }
 
 /* Card color states */
 #card-cpu     .card-value { color: #4f8ef7; }
@@ -444,6 +448,10 @@ select:focus, input:focus {
   flex-shrink: 0;
   height: 230px;
 }
+
+/* metric-settings.js 用 el.hidden 关闭未勾选的指标。display:flex 会压过 UA 的
+   [hidden]{display:none}，被关掉的图表仍占位、仍参与采集期重绘（既误导又费性能）。 */
+.chart-wrap[hidden], .card[hidden] { display: none !important; }
 
 .chart-title {
   padding: 6px 12px 0;

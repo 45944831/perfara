@@ -8,7 +8,8 @@ function toCSV(history) {
     'fps', 'jank', 'bigJank', 'jankRate_%',
     'rxKBps', 'txKBps',
     'batteryLevel', 'batteryVoltage', 'batteryTemp', 'currentNow_mA', 'power_mW',
-    'deviceTemp', 'gpu',
+    'deviceTemp', 'deviceTempSource', 'gpu',
+    'skinTemp_est', 'cpuTemp_die', 'gpuTemp_die',
     'pid',
   ];
 
@@ -27,7 +28,8 @@ function toCSV(history) {
       v(d.fps), v(d.jank), v(d.bigJank), v(d.jankRate),
       v(net.rxKBps), v(net.txKBps),
       v(bat.level), v(bat.voltage), v(bat.temperature), v(bat.currentNow), v(bat.power),
-      v(d.temperature), v(d.gpu),
+      v(d.temperature), v(d.tempSource), v(d.gpu),
+      v(d.skinTemp), v(d.cpuTemp), v(d.gpuTemp),
       d.pid || '',
     ].join(',');
   });

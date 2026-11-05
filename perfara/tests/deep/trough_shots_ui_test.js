@@ -376,7 +376,7 @@ async function collectorCurveMarks(browser, port) {
   check('清空采集后曲线标记一起清空', cleared.n === 0, cleared);
 
   // 长跑抽稀：被删掉的锚点要投影到最近保留点，而不是整张消失
-  const decimated = await page.evaluate((url) => {
+  const decimated = await page.evaluate(async (url) => {
     const mgr = window.chartMgr;
     const st = mgr._data.fps;
     st.times = [];
@@ -390,6 +390,9 @@ async function collectorCurveMarks(browser, port) {
     const droppedTime = st.times[3999];
     mgr._decimateIfNeeded(st);
     mgr.pushTroughShot({ id: 'c', time: droppedTime, fps: 10, target: 60, thumb: url });
+    // pushTroughShot 采集期走防抖批刷（RENDER_IDLE_MS=120ms），必须等它画完再读，
+    // 否则 getOption 拿到的是上一次 flush 的旧 markPoint。
+    await new Promise(r => setTimeout(r, 600));
     const mp = mgr._charts.fps.getOption().series[0].markPoint.data;
     return {
       droppedTime,

@@ -29,7 +29,7 @@
     mem:     { label: '内存',       hint: 'PSS / 物理内存、内存详情分项' },
     net:     { label: '网络',       hint: '网络流量 下行 / 上行' },
     gpu:     { label: 'GPU',        hint: 'GPU 利用率（部分机型需 root）与 GPU 温度' },
-    temp:    { label: '温度',       hint: 'CPU / 电池温度' },
+    temp:    { label: '温度',       hint: 'Android 取机身 / 电池温度；PC 无机身传感器，取 CPU 结温。结温常年 55~70°C，不代表机身发烫' },
     battery: { label: '电池',       hint: '电量、电流、功耗' },
     disk:    { label: '磁盘 I/O',   hint: '磁盘读 / 写速率' },
     events:  { label: '系统事件',   hint: '上下文切换、中断唤醒、缺页中断' },
