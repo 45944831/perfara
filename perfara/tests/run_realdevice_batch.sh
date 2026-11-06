@@ -15,7 +15,11 @@ P="${2:-com.android.chrome}"
 OUT=perfara/tests/_run_out
 mkdir -p "$OUT"
 LOG="$OUT/realdevice_$(date +%Y%m%d-%H%M%S).log"
-TMP="$(mktemp)"
+# ⚠️ 变量名不能叫 TMP：系统已导出 TMP=<用户 Temp 目录>，bash 给「已导出的同名变量」
+#    重新赋值会保留 export 属性，子进程 adb 会把 TMP 当成目录在里面建 adb.log，
+#    而 mktemp 建的是文件 → `cannot open ...\adb.log` → adb server 起不来。
+#    之前没暴露，是因为 server 一直在跑；被 kill 后测试才触发。
+RUNLOG="$(mktemp)"
 
 # 直接取 node 的退出码：走 `node | tail` 管道时 $? 是 tail 的状态，永远 0
 run() {
@@ -25,9 +29,9 @@ run() {
     echo ">>> [$name]"
     echo "============================================================"
   } | tee -a "$LOG"
-  ( cd perfara/tests/realdevice && "$NODE" "$@" > "$TMP" 2>&1 )
+  ( cd perfara/tests/realdevice && "$NODE" "$@" > "$RUNLOG" 2>&1 )
   local code=$?
-  tail -30 "$TMP" | tee -a "$LOG"
+  tail -30 "$RUNLOG" | tee -a "$LOG"
   echo "    [exit=$code]" | tee -a "$LOG"
   sleep 1
 }
@@ -48,5 +52,5 @@ else
   echo "    [skip] e2e_game：未设置 GAME_PKG（游戏包名不入库，需现场指定）"
 fi
 
-rm -f "$TMP"
+rm -f "$RUNLOG"
 echo "ALL_REALDEVICE_DONE  log=$LOG"

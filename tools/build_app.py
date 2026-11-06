@@ -35,6 +35,10 @@ EXCLUDE_SUFFIXES = {
     '.zip',   # perfara.zip / code.zip，历史归档
     '.dmg',
     '.mp4',
+    # 开发态报告目录是 _client_src/app/reports/，停止采集会在那里自动生成
+    # Perfara_<应用>_<时间>.xlsx（含真机型号、包名与全部采样值）。
+    # 打包态才走 resources/reports/；这里不排除就会把开发机的数据打进 asar。
+    '.xlsx', '.xls',
 }
 # 3) 精确相对路径
 EXCLUDE_FILES = {
@@ -63,6 +67,9 @@ EXCLUDE_PREFIXES = (
     'reports/history/',
     # 截图缓存（跑报告时生成），同理属运行期产物
     'reports/shots/',
+    # 开发态「停止采集」写出的本轮数据（打包态不读 asar 内 reports/）
+    'reports/data.js',
+    'reports/data.json',
 )
 
 

@@ -125,8 +125,13 @@ function parseFs(line) {
   const after = await shell(`dumpsys gfxinfo '${PKG}'`);
   const afterTotal = (after.match(/Total frames rendered:\s*(\d+)/) || [])[1];
   console.log(`   Total frames: ${beforeTotal} → ${afterTotal}`);
-  check('reset 后帧计数归零（缓冲区已清）', afterTotal === '0' || afterTotal === undefined,
-    { beforeTotal, afterTotal });
+  // reset 之后设备仍在出帧：60Hz 下 300ms 正常就该累积十几帧，要求绝对 0 是错误判据
+  // （只有页面完全静止、连光标都不闪时才碰巧为 0）。判据改为「相对回落」。
+  const beforeNum = Number(beforeTotal) || 0;
+  const afterNum = afterTotal === undefined ? 0 : Number(afterTotal);
+  check('reset 后帧计数回落（缓冲区已清）',
+    afterTotal === undefined || afterNum <= Math.max(30, Math.floor(beforeNum * 0.5)),
+    { beforeTotal, afterTotal, afterNum });
 
   // ---- 3. 驱动渲染后直接取 framestats 原始 dump 验算 ----
   // 不走 getFps 是为了绕开通道优先级（timestats 命中时根本到不了 Method 2）；

@@ -28,7 +28,7 @@
     stripEl.innerHTML = [
       '<div class="trough-head">',
       '  <span class="trough-title">低谷截图 <span id="trough-count">0</span></span>',
-      '  <span class="trough-hint">FPS 低于目标 80% 时自动截取，点击图片放大</span>',
+      '  <span class="trough-hint">从正常帧率跌落时自动截取（已排除静置 / 加载限帧），点击图片放大</span>',
       '  <button type="button" class="btn btn-sm" data-act="toggle">收起</button>',
       '</div>',
       '<div class="trough-list"></div>',

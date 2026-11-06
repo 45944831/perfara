@@ -56,6 +56,8 @@ run_py   "upload_edge"          perfara/tests/deep/upload_edge_test.py
 run_node "compare_lanes"        ../deep/compare_lanes_test.js
 run_node "trough_shots"         ../deep/trough_shots_test.js
 run_node "trough_shots_ui"      ../deep/trough_shots_ui_test.js
+# 采集结束自动生成 Excel：分组标签页 / 标记区间 / 空值语义 / OOXML 结构（Python zipfile 独立复核）
+run_node "xlsx_export"          ../deep/xlsx_export_test.js
 # 弱网总结分析：段状态机 + 接线静态检查；再用合成 data.weaknet 渲染报告页核对数值
 run_node "weaknet_report"       ../deep/weaknet_report_test.js
 run_node "weaknet_report_ui"    ../deep/weaknet_report_ui_test.js

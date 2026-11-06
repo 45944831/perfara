@@ -58,12 +58,13 @@ function resetAll() {
  * @param {number} ts 采样时间戳（ms）
  * @param {number|null} fps
  * @param {() => Promise<Buffer>} capture 返回 PNG 字节
+ * @param {object|null} [ctx] 本拍卡顿证据（jank/bigJank/jankRate），用于排除静置/加载限帧
  * @returns {Promise<{meta?:object, hit:boolean, error?:Error}>}
  */
-async function feed(category, ts, fps, capture) {
+async function feed(category, ts, fps, capture, ctx) {
   const run = _runs.get(category);
   if (!run || run.busy) return { hit: false };
-  const hit = run.detector.push(fps, ts);
+  const hit = run.detector.push(fps, ts, ctx);
   if (!hit) return { hit: false };
 
   run.busy = true;

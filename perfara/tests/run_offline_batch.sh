@@ -7,7 +7,9 @@ NODE="C:/Users/user/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
 PY="C:/Users/user/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 OUT=perfara/tests/_run_out
 mkdir -p "$OUT"
-TMP="$(mktemp)"
+# ⚠️ 变量名不能叫 TMP：系统已导出 TMP=<用户 Temp 目录>，重新赋值会保留 export 属性，
+#    子进程（尤其 adb）会把 TMP 当目录用而失败。用全新名字。
+RUNLOG="$(mktemp)"
 FAILED=()
 
 # ⚠️ 退出码必须直接取被测进程的：写成 `cmd | tail` 再取 $? 拿到的是 tail 的状态，
@@ -24,9 +26,9 @@ run_node() {
   echo "============================================================"
   echo ">>> [$name]"
   echo "============================================================"
-  ( cd perfara/tests && "$NODE" "$@" > "$TMP" 2>&1 )
+  ( cd perfara/tests && "$NODE" "$@" > "$RUNLOG" 2>&1 )
   local code=$?
-  tail -25 "$TMP"
+  tail -25 "$RUNLOG"
   _emit "$name" "$code"
   sleep 1
 }
@@ -36,9 +38,9 @@ run_py() {
   echo "============================================================"
   echo ">>> [$name]"
   echo "============================================================"
-  "$PY" "$@" > "$TMP" 2>&1
+  "$PY" "$@" > "$RUNLOG" 2>&1
   local code=$?
-  tail -25 "$TMP"
+  tail -25 "$RUNLOG"
   _emit "$name" "$code"
   sleep 1
 }
@@ -49,9 +51,9 @@ run_bundled() {
   echo "============================================================"
   echo ">>> [$name] (bundled python)"
   echo "============================================================"
-  "perfara/collector/resources/ios-tools/python/python/python.exe" "$@" > "$TMP" 2>&1
+  "perfara/collector/resources/ios-tools/python/python/python.exe" "$@" > "$RUNLOG" 2>&1
   local code=$?
-  tail -30 "$TMP"
+  tail -30 "$RUNLOG"
   _emit "$name" "$code"
   sleep 1
 }
@@ -88,7 +90,7 @@ run_node "metric_info"          e2e_metric_config/run_metric_info_test.js
 run_node "open_location"        e2e_metric_config/run_open_location_test.js
 run_node "check_readability"    e2e_metric_config/check_readability.js
 
-rm -f "$TMP"
+rm -f "$RUNLOG"
 if [ ${#FAILED[@]} -gt 0 ]; then
   echo "ALL_OFFLINE_DONE  但有失败: ${FAILED[*]}"
   exit 1

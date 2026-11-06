@@ -75,6 +75,20 @@ function stopStress(pids) {
 (async () => {
   console.log(`\n===== 真机端到端测试  device=${DEVICE}  pkg=${PKG} =====\n`);
 
+  // adb server 冷启动要 1~3s（首条命令还要拉起 fork-server），会直接吃掉 preflight 的
+  // 2.5s 超时，start() 报「设备无响应」→ 后续全链路采不到数据。
+  // 生产里 main.js 启动时已 ensureServerOwnership 预热，测试环境没有这一步，先自己热身。
+  for (let i = 0; i < 20; i++) {
+    try {
+      execFileSync('adb', ['-s', DEVICE, 'shell', 'echo ok'],
+        { encoding: 'utf8', timeout: 10000, stdio: 'pipe' });
+      break;
+    } catch (_) {
+      console.log(`  adb 未就绪，1s 后重试（${i + 1}/20）`);
+      await sleep(1000);
+    }
+  }
+
   // ───── 阶段 A：全参数采集（中途加压） ─────────────────────────────────────
   console.log('-- A. 全参数连续采集 --');
   const c = new Collector(DEVICE, PKG, 1000);
@@ -131,7 +145,16 @@ function stopStress(pids) {
   const flaky = need.filter(k => rows.some(r => r[k] === undefined) && !rows.every(r => r[k] === undefined));
   check('无偶发缺失字段', flaky.length === 0, flaky);
 
-  check('cpu.procCpu 为数值', rows.every(r => !r.cpu || isNum(r.cpu.procCpu)), rows[0] && rows[0].cpu);
+  // 首拍没有上一样本做差，procCpu 刻意返回 null —— 表示「未测量」，不是 0%
+  // （见 adb.js calcCpuPct / getCpuSnapshot 的「首帧没有基线」分支）。
+  // 所以判据不是「每行都得是数值」，而是：至少采到一次数值，且为空只许出现在首拍。
+  const procCpuVals = rows.map(r => (r.cpu ? r.cpu.procCpu : undefined));
+  const procNullAt = procCpuVals.map((v, i) => (v == null ? i : -1)).filter(i => i >= 0);
+  check('cpu.procCpu 采到数值（至少一次）', procCpuVals.some(isNum), procCpuVals.slice(0, 5));
+  check('cpu.procCpu 为空仅限首拍（缺基线）', procNullAt.every(i => i === 0),
+    { nullAt: procNullAt, samples: rows.length });
+  check('cpu.procCpu 数值在 0..核心数×100', procCpuVals.filter(isNum).every(v => v >= 0 && v <= 800),
+    procCpuVals.filter(isNum).slice(0, 5));
   check('mem.totalPss > 0', rows.some(r => r.mem && r.mem.totalPss > 0), rows.map(r => r.mem && r.mem.totalPss).slice(0, 5));
   check('temperature 在合理区间', rows.every(r => r.temperature === undefined || (r.temperature > -20 && r.temperature < 120)), rows.map(r => r.temperature).slice(0, 5));
   check('battery.level 在 0..100', rows.every(r => !r.battery || (r.battery.level >= 0 && r.battery.level <= 100)), rows.map(r => r.battery && r.battery.level).slice(0, 5));
@@ -162,7 +185,25 @@ function stopStress(pids) {
       : rows.every(r => r.fps === null || r.fps === undefined),
     hasFrames ? fpsVals.slice(0, 10) : rows.slice(0, 3).map(r => r.fps));
   const maxFps = hasFrames ? Math.max(...fpsVals) : 0;
-  check('fps 上限合理(≤120)', maxFps <= 120, maxFps);
+  // 上限跟着设备实际刷新率走：帧率由「窗口内帧数 ÷ 窗口时长」得出，窗口边界与帧
+  // 不对齐时会有几个百分点抖动（120Hz 机型实测算出 125）。写死 120 会把高刷机
+  // 的正常采集误判成缺陷；反过来也不能无脑放宽，否则 1000+ 的解析错误就漏了。
+  let rrHz = 0;
+  try {
+    rrHz = parseFloat(execFileSync('adb', ['-s', DEVICE, 'shell',
+      'settings get system peak_refresh_rate'], { encoding: 'utf8', timeout: 8000 }).trim()) || 0;
+  } catch (_) {}
+  if (!(rrHz > 0)) {
+    try {
+      const disp = execFileSync('adb', ['-s', DEVICE, 'shell', 'dumpsys display'],
+        { encoding: 'utf8', timeout: 8000 });
+      const rates = [...disp.matchAll(/refreshRate=([0-9.]+)/g)].map(m => parseFloat(m[1]));
+      rrHz = rates.length ? Math.max(...rates) : 0;
+    } catch (_) {}
+  }
+  const fpsCap = rrHz > 0 ? Math.round(rrHz * 1.1) : 260;
+  check(`fps 上限合理(≤${fpsCap}${rrHz > 0 ? `，屏幕 ${Math.round(rrHz)}Hz` : '，刷新率未知'})`,
+    maxFps <= fpsCap, maxFps);
 
   console.log(`  FPS 序列: ${fpsVals.slice(0, 20).join(', ')}${fpsVals.length > 20 ? ' …' : ''}`);
   console.log(`  Jank 序列: ${rows.map(r => r.jank).slice(0, 20).join(', ')}`);

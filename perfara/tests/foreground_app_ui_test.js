@@ -27,6 +27,7 @@ function mockScript(opts) {
   return `
 window.__fgOpts = ${JSON.stringify(opts)};
 window.__startCalls = [];
+window.__fgDone = false;
 window.perfAPI = new Proxy({}, { get: (t, k) => {
   if (k === 'then') return undefined;
   if (k === 'getWindowTitle') return async () => ({ title: 'Perfara - 移动端性能工具  v1.0', version: '1.0' });
@@ -39,6 +40,7 @@ window.perfAPI = new Proxy({}, { get: (t, k) => {
   if (k === 'onAppLabels') return () => {};
   if (k === 'getForegroundApp') return async () => {
     if (window.__fgOpts.delay) await new Promise(r => setTimeout(r, window.__fgOpts.delay));
+    window.__fgDone = true;
     return window.__fgOpts.fg;
   };
   if (k === 'getForegroundAppLabel') return async () => window.__fgOpts.label || '';
@@ -70,12 +72,19 @@ async function main() {
     else { fail++; console.log('  FAIL', name, extra === undefined ? '' : JSON.stringify(extra)); }
   };
 
+  // 等「前台查询真的返回 + 渲染回调链跑完」，而不是赌一个固定毫秒数：
+  // 批量回归时浏览器冷启动 + CPU 争用会让固定 700ms 不够，曾偶发整片 FAIL。
+  async function waitFgDone(page) {
+    await page.waitForFunction(() => window.__fgDone === true, { timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(120);
+  }
+
   async function open(opts) {
     const ctx = await browser.newContext();
     await ctx.addInitScript(mockScript({ packages: PACKAGES, fg: null, label: '', delay: 0, ...opts }));
     const page = await ctx.newPage();
     await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'load' });
-    await page.waitForTimeout(700);
+    await waitFgDone(page);
     return { ctx, page };
   }
   const readSel = (page) => page.$eval('#sel-app', el => ({
@@ -98,7 +107,7 @@ async function main() {
       check('A5 没有多补选项', s.options === PACKAGES.length + 1, s);
 
       await page.click('#btn-start');
-      await page.waitForTimeout(250);
+      await page.waitForFunction(() => window.__startCalls.length >= 1, { timeout: 10000 }).catch(() => {});
       const calls = await page.evaluate(() => window.__startCalls);
       check('A6 点开始把选中包名传出去', calls.length === 1 && calls[0][1] === 'com.example.game', calls);
       await ctx.close();
@@ -129,7 +138,11 @@ async function main() {
         fg: { pkg: 'com.example.browser', isDesktop: false },
         label: '示例浏览器',
       });
-      await page.waitForTimeout(400);
+      await page.waitForFunction(() => {
+        const el = document.getElementById('sel-app');
+        const o = el && el.options[el.selectedIndex];
+        return !!(o && o.textContent.indexOf('示例浏览器') !== -1);
+      }, { timeout: 10000 }).catch(() => {});
       const s = await readSel(page);
       check('C1 补全系统应用可选项', s.options === PACKAGES.length + 2, s);
       check('C2 自动选中系统应用', s.value === 'com.example.browser', s);
@@ -138,15 +151,22 @@ async function main() {
     }
 
     // D) 用户已手动选过：晚到的检测结果不得覆盖
+    //    用长延迟 + 等条件，确保「用户先选、前台结果后到」这个顺序在慢机器上也成立
     {
       const ctx = await browser.newContext();
-      await ctx.addInitScript(mockScript({ packages: PACKAGES, fg: { pkg: 'com.example.game', isDesktop: false }, label: '', delay: 500 }));
+      await ctx.addInitScript(mockScript({ packages: PACKAGES, fg: { pkg: 'com.example.game', isDesktop: false }, label: '', delay: 2000 }));
       const page = await ctx.newPage();
       await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'load' });
-      await page.waitForTimeout(120);
+      // 先等应用列表到位（值必须存在于 options 里才设得上），此时前台结果还没返回
+      await page.waitForFunction(
+        () => document.getElementById('sel-app').options.length > 1,
+        { timeout: 20000 },
+      ).catch(() => {});
+      const beforeDone = await page.evaluate(() => window.__fgDone === true);
       await page.evaluate(() => { document.getElementById('sel-app').value = 'com.example.other'; });
-      await page.waitForTimeout(900);
+      await waitFgDone(page);
       const s = await readSel(page);
+      check('D0 设值时前台结果尚未返回（顺序确定）', beforeDone === false, beforeDone);
       check('D1 不覆盖用户手动选择', s.value === 'com.example.other', s);
       check('D2 不追加自动选中提示', (await readLog(page)).indexOf('已自动选中') === -1);
       await ctx.close();

@@ -3,11 +3,14 @@
  *
  * 判定口径：FPS 低于本轮 P95 目标的 80%，连续 2 拍才算低谷；两次截图冷却 10s；
  * 单轮上限 30 张；fps=null/0（无帧数据）不参与判定，并打断「连续低帧」计数。
+ *
+ * 另外验证「静置 / 加载 / 主动限帧不误判」：低谷必须是从正常帧率跌落出来的，
+ * 一次跌落只截一张，稳态低帧停止截图，半帧平台且明确零卡顿不截图。
  */
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { TroughDetector, percentile } = require(path.resolve(__dirname, '../../../_client_src/app/src/trough-detector'));
+const { TroughDetector, percentile, jankSignal } = require(path.resolve(__dirname, '../../../_client_src/app/src/trough-detector'));
 
 const PROJ = path.resolve(__dirname, '..', '..', '..');
 const APP = path.join(PROJ, '_client_src', 'app');
@@ -28,6 +31,20 @@ function feedMany(d, fpsList, startTs, step) {
   });
   return hits;
 }
+
+/** 每项是 [fps, ctx]；ctx 为本拍 jank 分级，用于验证静置/加载过滤 */
+function feedManyCtx(d, list, startTs, step) {
+  const hits = [];
+  list.forEach((item, i) => {
+    const hit = d.push(item[0], startTs + i * (step || 1000), item[1]);
+    if (hit) hits.push(hit);
+  });
+  return hits;
+}
+
+const ZERO = { jank: 0, bigJank: 0, smallJank: 0, tinyJank: 0, jankRate: 0 };
+const JAM  = { jank: 3, bigJank: 1, smallJank: 2, tinyJank: 4, jankRate: 0.2 };
+const pair = (fps, ctx) => [fps, ctx];
 
 // ── 算法 ────────────────────────────────────────────────────────────────────
 check('percentile 近秩取值', percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0.95) === 10, percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0.95));
@@ -96,12 +113,86 @@ check('percentile 空数组为 0', percentile([], 0.95) === 0, percentile([], 0.
   check('reset 后重新积累样本', hits.length === 0 && d.shots === 0, { hits, shots: d.shots });
 }
 
+// ── 静置 / 加载 / 主动限帧不误判 ────────────────────────────────────────────
+check('jankSignal：未提供为未知', jankSignal(null) === null, jankSignal(null));
+check('jankSignal：全 null 为未知', jankSignal({ jank: null, bigJank: null }) === null, true);
+check('jankSignal：明确零卡顿', jankSignal(ZERO) === false, jankSignal(ZERO));
+check('jankSignal：任一分级有卡顿', jankSignal({ jank: 0, bigJank: 2 }) === true, true);
+check('jankSignal：直接传数字 0', jankSignal(0) === false, true);
+
+{
+  // 用户反馈的场景：不操作 / loading 时游戏稳定限到 30fps，jank 全 0，
+  // 旧逻辑每过一次冷却就截一张，一轮能刷出 20+ 张几乎一样的图。
+  const d = new TroughDetector({ cooldownMs: 500 });
+  const series = [];
+  for (let k = 0; k < 8; k++) {
+    for (let i = 0; i < 3; i++) series.push(pair(60, ZERO));
+    for (let i = 0; i < 10; i++) series.push(pair(30, ZERO));
+  }
+  const hits = feedManyCtx(d, series, 1_000_000);
+  check('静置/加载的 30fps 半帧平台零卡顿不截图', hits.length === 0, hits.length);
+}
+
+{
+  // 对照：同样跌到 30fps，但这一拍确实测到卡顿 → 必须照常截图
+  const d = new TroughDetector({ cooldownMs: 500 });
+  const series = [];
+  for (let k = 0; k < 5; k++) {
+    for (let i = 0; i < 4; i++) series.push(pair(60, ZERO));
+    for (let i = 0; i < 4; i++) series.push(pair(30, JAM));
+  }
+  const hits = feedManyCtx(d, series, 1_000_000);
+  check('同样的跌落伴随卡顿仍截图', hits.length === 4, hits.map(h => h.ts));
+}
+
+{
+  const d = new TroughDetector();
+  const hits = feedManyCtx(d, [
+    ...Array(10).fill(pair(60, ZERO)), pair(10, ZERO), pair(10, ZERO),
+  ], 1_000_000);
+  check('10fps 深谷即使零卡顿仍截图', hits.length === 1, hits.length);
+}
+
+{
+  const d = new TroughDetector({ cooldownMs: 500 });
+  const hits = feedMany(d, [...Array(10).fill(60), ...Array(60).fill(10)], 1_000_000);
+  check('一次跌落只截一张（长时间低帧不刷屏）', hits.length === 1, hits.length);
+}
+
+{
+  const UNKNOWN = { jank: null, bigJank: null, jankRate: null };
+  const d = new TroughDetector();
+  const hits = feedManyCtx(d, [
+    ...Array(10).fill(pair(60, UNKNOWN)), pair(20, UNKNOWN), pair(20, UNKNOWN),
+  ], 1_000_000);
+  check('jank 未测量时不误杀真跌落', hits.length === 1, hits.length);
+}
+
+{
+  const d = new TroughDetector({ minSamples: 2 });
+  const hits = feedManyCtx(d, [pair(60, ZERO), ...Array(20).fill(pair(30, ZERO))], 1_000_000);
+  check('一上来就在加载、从未到过正常帧率不截图', hits.length === 0, hits.length);
+}
+
+{
+  const d = new TroughDetector({ cooldownMs: 500 });
+  const hits = feedManyCtx(d, [
+    ...Array(10).fill(pair(60, ZERO)),
+    ...Array(20).fill(pair(30, ZERO)),
+    ...Array(4).fill(pair(60, ZERO)),
+    pair(10, ZERO), pair(10, ZERO),
+  ], 1_000_000);
+  check('稳态限帧结束后恢复正常帧率，再次跌落仍截图', hits.length === 1, hits.map(h => h.ts));
+}
+
 // ── 接线 / 模板（防止打包漏文件或漏接线）────────────────────────────────────
 const mainSrc = fs.readFileSync(path.join(APP, 'main.js'), 'utf8');
 check('main 向渲染进程推送 trough-shot', /sendToRenderer\('trough-shot'/.test(mainSrc), true);
 check('main 写报告时带 shots 字段', (mainSrc.match(/shots:\s*troughShots\.getShots\(/g) || []).length === 2, true);
 check('main 在开始采集时重置判定', (mainSrc.match(/troughShots\.beginRun\(/g) || []).length === 2, true);
 check('切换应用清空截图状态', /troughShots\.resetAll\(\)/.test(mainSrc), true);
+check('main 把 jank 分级传给低谷判定', /bigJank:\s*data\.bigJank/.test(mainSrc)
+  && /troughShots\.feed\([^)]*\bctx\b/.test(mainSrc), true);
 
 const preloadSrc = fs.readFileSync(path.join(APP, 'preload.js'), 'utf8');
 check('preload 暴露 onTroughShot', /onTroughShot/.test(preloadSrc), true);
@@ -120,6 +211,12 @@ check('perf.html 标记优先用小图', /s\.thumbUrl\s*\|\|\s*s\.thumb/.test(pe
 
 const shotsSrc = fs.readFileSync(path.join(APP, 'src', 'trough-shots.js'), 'utf8');
 check('截图另存小图（曲线/缩略条用）', /THUMB_WIDTH/.test(shotsSrc) && /thumbUrl/.test(shotsSrc), true);
+check('feed 把 jank 上下文透传给判定器', /detector\.push\(fps,\s*ts,\s*ctx\)/.test(shotsSrc), true);
+
+const detectorSrc = fs.readFileSync(path.join(APP, 'src', 'trough-detector.js'), 'utf8');
+check('判定器含跌落武装与稳态抑制', /_armed/.test(detectorSrc)
+  && /steadyAfter/.test(detectorSrc) && /recoveryStreak/.test(detectorSrc), true);
+check('报告画廊说明已排除静置/加载限帧', /静置/.test(perfHtml), true);
 
 const chartsSrc = fs.readFileSync(path.join(APP, 'renderer', 'charts.js'), 'utf8');
 check('图表管理器暴露给截图条', /window\.chartMgr\s*=\s*this/.test(chartsSrc), true);
@@ -129,6 +226,7 @@ check('图表管理器支持追加/清空截图标记', /pushTroughShot/.test(ch
 check('抽稀后重新投影截图锚点', /if \((?:trimmed|decimated)\)[\s\S]{0,600}_renderTroughMarks\(\)/.test(chartsSrc), true);
 
 const stripSrc = fs.readFileSync(path.join(APP, 'renderer', 'trough-shots.js'), 'utf8');
+check('缩略图条说明已排除静置/加载限帧', /静置/.test(stripSrc), true);
 check('缩略图条把截图同步到曲线', /chartMgr\.pushTroughShot/.test(stripSrc), true);
 check('缩略图条点击标记打开大图', /onTroughShotClick\(openOverlay\)/.test(stripSrc), true);
 

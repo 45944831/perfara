@@ -74,6 +74,7 @@ PRUNE_PREFIXES = (
     # S0-④：报告目录里的运行期产物（最近一次 data.js、本地报告库、低谷截图）。
     # 这些文件带着打包机上的绝对路径（截图 url=file:///E:/...）和自测数据；
     # 用户端由「停止采集」自己生成，首次打开时缺失是正常状态。
+    # 采集结束生成的 Excel 由下方 PRUNE_FLAT_DIRS 按扩展名整体剔除。
     'collector/resources/reports/data.js',
     'collector/resources/reports/data.json',
     'collector/resources/reports/shots/',
@@ -126,6 +127,10 @@ _SCRIPTS = _PY + '/python/Scripts/'
 # 那样会把 python/python/python.exe 一起剔掉，iOS 采集直接失效。
 PRUNE_FLAT_DIRS = {
     _PY + '/': ('.exe',),
+    # S0-④：采集结束自动生成的 Excel 落在报告目录，含真实设备/应用名与全部采样值。
+    # 与 data.js / shots / history 同理，属于运行期产物，绝不能随发布包分发；
+    # 用户端每次停止采集自行生成。
+    'collector/resources/reports/': ('.xlsx', '.xls'),
 }
 
 # 保守起见不动的东西（写在这里是为了让后来人知道「不是漏了」）：
@@ -147,7 +152,7 @@ def pruned(rel):
                 continue          # 只处理该目录下的直接子文件，不跨层
             for ext in exts:
                 if tail.lower().endswith(ext):
-                    return 'S2 WinPython 启动器'
+                    return '运行期产物 / WinPython 启动器剔除'
     # site-packages 下被剔包的包体 + 同名 dist-info（版本号不写死）
     if rel.startswith(_SP):
         tail = rel[len(_SP):]

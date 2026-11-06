@@ -13,6 +13,7 @@ const IosCollector    = lazy('./src/ios-collector');
 const IosGpuCollector = lazy('./src/ios-gpu-collector');
 const Exporter        = lazy('./src/exporter');
 const reportsDataJs = require('./src/reports-data-js');
+const RunXlsx       = require('./src/run-xlsx');
 const {
   readAppNameFromReports,
   readConfigOut,
@@ -152,7 +153,13 @@ function _pushTroughShot(category, data, capture, logChannel) {
   const fps = data ? data.fps : null;
   if (typeof fps !== 'number' || !isFinite(fps) || fps <= 0) return;
   const ts = Number.isFinite(data.timestamp) ? data.timestamp : Date.now();
-  troughShots.feed(category, ts, fps, capture).then((r) => {
+  // 卡顿分级用于区分「真掉帧」与「静置/加载时的主动限帧」；iOS 无此字段时为 undefined，
+  // 判定器按「未测量」处理，不因缺证据而拒绝截图。
+  const ctx = {
+    jank: data.jank, bigJank: data.bigJank, smallJank: data.smallJank,
+    tinyJank: data.tinyJank, jankRate: data.jankRate,
+  };
+  troughShots.feed(category, ts, fps, capture, ctx).then((r) => {
     if (r.meta) {
       sendToRenderer('trough-shot', r.meta);
       sendToRenderer(logChannel, `已截取低谷截图 ${r.meta.time}（FPS ${r.meta.fps} / 目标 ${r.meta.target}）`);
@@ -161,6 +168,25 @@ function _pushTroughShot(category, data, capture, logChannel) {
       sendToRenderer(logChannel, `[warn] 低谷截图失败：${r.error.message}（本轮不再提示）`);
     }
   }).catch(() => {});
+}
+
+/**
+ * 采集结束后在报告目录生成 Excel（每个性能组一个标签页 + 标记区间 + 原始采样）。
+ * 写 data.js 成功才调用：传进来的路径就是实际落盘目录，自动跟随 userData fallback。
+ * Excel 属于附加产物，失败只记日志，绝不影响停止采集与报告生成。
+ */
+function _writeRunXlsxSafe(payload, dataJsPath, logChannel) {
+  try {
+    const r = RunXlsx.writeRunXlsx(payload, dataJsPath);
+    if (logChannel) {
+      sendToRenderer(logChannel, `已生成 Excel：${r.file}（${r.sheets.length} 个标签页）`);
+    }
+    return r;
+  } catch (e) {
+    console.error('[reports/xlsx]', e && e.message ? e.message : e);
+    if (logChannel) sendToRenderer(logChannel, `[warn] Excel 生成失败：${e && e.message ? e.message : e}`);
+    return null;
+  }
 }
 
 /**
@@ -724,7 +750,7 @@ ipcMain.handle('stop-collect', async () => {
         androidSession.packageName,
         androidSession.appLabel,
       );
-      reportsDataJs.writeDataJs({
+      const payload = {
         device: {
           name: androidSession.deviceLabel,
           bundleId: disp,
@@ -741,7 +767,9 @@ ipcMain.handle('stop-collect', async () => {
         shots: troughShots.getShots('android'),
         // 采集期间开过弱网才带这一段，报告页据此追加「弱网总结分析」
         weaknet: weaknet || undefined,
-      });
+      };
+      const dataJsPath = reportsDataJs.writeDataJs(payload);
+      _writeRunXlsxSafe(payload, dataJsPath, 'collect-log');
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);
@@ -865,7 +893,8 @@ ipcMain.handle('pc-stop-collect', async () => {
         pcSession, pcPerfHistory, pcTags, getMachineUid(), pcSession.metricConfig,
       );
       payload.weaknet = weaknet || undefined;
-      reportsDataJs.writeDataJs(payload);
+      const dataJsPath = reportsDataJs.writeDataJs(payload);
+      _writeRunXlsxSafe(payload, dataJsPath, 'pc-collect-log');
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);
@@ -1340,7 +1369,7 @@ ipcMain.handle('ios-stop-collect', async () => {
         iosSession.bundleId,
         iosSession.appName,
       );
-      reportsDataJs.writeDataJs({
+      const payload = {
         device: {
           name: 'iPhone',
           bundleId: disp,
@@ -1355,7 +1384,9 @@ ipcMain.handle('ios-stop-collect', async () => {
         metricOrder: iosSession.metricOrder || null,
         shots: troughShots.getShots('ios'),
         weaknet: weaknet || undefined,
-      });
+      };
+      const dataJsPath = reportsDataJs.writeDataJs(payload);
+      _writeRunXlsxSafe(payload, dataJsPath, 'ios-collect-log');
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);
@@ -1470,7 +1501,7 @@ ipcMain.handle('ios-gpu-stop-collect', async () => {
         iosGpuSession.bundleId,
         iosGpuSession.appName,
       );
-      reportsDataJs.writeDataJs({
+      const payload = {
         device: {
           name: 'iPhone',
           bundleId: disp,
@@ -1484,7 +1515,9 @@ ipcMain.handle('ios-gpu-stop-collect', async () => {
         metricConfig: iosGpuSession.metricConfig || null,
         metricOrder: iosGpuSession.metricOrder || null,
         weaknet: weaknet || undefined,
-      });
+      };
+      const dataJsPath = reportsDataJs.writeDataJs(payload);
+      _writeRunXlsxSafe(payload, dataJsPath, 'ios-collect-log');
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);
