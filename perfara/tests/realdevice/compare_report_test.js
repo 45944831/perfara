@@ -94,9 +94,12 @@ function prepareHistory() {
     idA = realFiles[0].replace(/\.js$/, '');
     payloadA = readPayloadFile(path.join(REAL_HISTORY, realFiles[0]));
   } else {
-    const fx = path.join(PROJ, 'perfara', 'tests', 'e2e_metric_config', 'fixtures_history', 'repA.js');
-    if (!fs.existsSync(fx)) throw new Error('既没有真实报告也没有测试夹具');
-    idA = 'repA';
+    // 夹具必须自带 kpi：对比表的指标行完全由 index 条目的 kpi 决定，
+    // 用 e2e_metric_config 里那份「只有 perf 没有 kpi」的 repA 时，
+    // 表里只剩「采样数 / 时长 / 设备」三行，FPS 断言会假失败（报告库被清空时必现）。
+    const fx = path.join(__dirname, 'fixtures', 'compare_rep.js');
+    if (!fs.existsSync(fx)) throw new Error('既没有真实报告也没有测试夹具：' + fx);
+    idA = 'compare_rep';
     payloadA = readPayloadFile(fx);
   }
   const idB = idA + '-copy';
@@ -112,7 +115,11 @@ function prepareHistory() {
   // 否则对比表取不到值会被整行跳过，测不出真实效果。
   const first = (base && base[0]) || {
     id: idA, platform: 'android', deviceName: (payloadA.device && payloadA.device.name) || '真机A',
-    app: '', samples: (payloadA.perf || []).length, kpi: {},
+    app: '', samples: (payloadA.perf || []).length,
+    // 夹具路径没有真实 index 条目，kpi 从载荷里取（夹具生成时已算好），
+    // 否则对比表整行跳过、指标断言全落空。
+    kpi: payloadA.kpi || {},
+    durationSec: payloadA.durationSec != null ? payloadA.durationSec : null,
   };
   const idx = [
     Object.assign({}, first, { id: idA, file: 'history/' + idA + '.js' }),

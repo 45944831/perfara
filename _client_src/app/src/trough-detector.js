@@ -13,6 +13,10 @@
  *   3) 连续低帧过久视为进入稳态（加载 / 静置 / 限帧平台），此后不再截图；
  *   4) 有 jank 数据时，半帧平台且明确零卡顿 → 判为静置/加载，不截图；
  *      深谷（低于目标 45%）即使 jank=0 也保留，避免漏报真的掉帧。
+ *   5) 帧耗时分位数（overrunP99）作为**补充证据**：偶发一次 200ms 长帧会被
+ *      1 秒窗口的平均帧率抹平（60→50fps 仍在中间地带），只看 FPS 会漏掉。
+ *      但 overrun 不能单独当卡顿证据 —— 锁 30fps 的应用在 60Hz 上每帧天然
+ *      超时 16.7ms，那是主动限帧而非卡顿，故阈值取 100ms 量级。
  *
  * jank 为 null（无权限 / iOS / gfxinfo-delta 未测分级）时视为「未知」，
  * 不因缺证据而拒绝截图，仅靠 1~3 条规则兜底。
@@ -63,6 +67,27 @@ function mergeJank(prev, cur) {
   if (prev === true || cur === true) return true;
   if (prev === false || cur === false) return false;
   return null;
+}
+
+/**
+ * 帧耗时超时严重度（0=无证据，1=值得注意，2=确认长帧）。
+ *
+ * overrunP99 是「本拍最差 1% 的帧超出 vsync 多少毫秒」，overrunMax 是「最差单帧超时」。
+ * 后者比 FPS 敏感得多：一次 200ms 长帧在 1 秒窗口里只把平均帧率从 60 拉到 50，
+ * 仍高于低帧线，但 overrunMax 会直接报到 180ms 以上。
+ *
+ * 阈值刻意取 100ms：锁 30fps 的应用在 60Hz 上每帧天然超时 16.7ms、
+ * 在 120Hz 上 25ms，都属于「主动限帧」，不能被当成卡顿刷图。
+ */
+function overrunSeverity(ctx) {
+  if (!ctx || typeof ctx !== 'object') return 0;
+  // 旧数据没有 overrunMax 时退回 overrunP99（同一物理含义，只是统计位置不同）
+  const raw = (ctx.overrunMax != null) ? ctx.overrunMax : ctx.overrunP99;
+  const over = Number(raw);
+  if (!Number.isFinite(over)) return 0;
+  if (over >= 100) return 2;
+  if (over >= 50) return 1;
+  return 0;
 }
 
 class TroughDetector {
@@ -134,17 +159,34 @@ class TroughDetector {
       return null;
     }
 
-    // 中间地带（介于低帧线和恢复线之间）：既不算低谷也不算恢复
+    // 中间地带（介于低帧线和恢复线之间）：既不算低谷也不算恢复。
+    // 例外：帧耗时出现成片长帧（overrunP99 ≥ 100ms）。此时平均帧率被拉回
+    // 中间地带，但画面确实卡了 —— 这是只看 FPS 抓不到的一类。
     if (fps >= target * this.lowRatio) {
       this._lowStreak = 0;
       this._highStreak = 0;
+      if (this._armed && overrunSeverity(ctx) >= 2
+          && this.shots < this.maxShots
+          && t - this._lastShotTs >= this.cooldownMs) {
+        this._armed = false;
+        this._lastShotTs = t;
+        this.shots += 1;
+        this._jankSeen = null;
+        // 证据值要跟判定用同一个回退口径：旧数据只有 overrunP99 时，
+        // 不能把 overrunMax 写成 NaN（JSON 序列化后变 null，证据就丢了）。
+        const evidence = (ctx.overrunMax != null) ? ctx.overrunMax : ctx.overrunP99;
+        return { fps, target, ts: t, reason: 'overrun', overrunMax: Number(evidence) };
+      }
       this._jankSeen = null;
       return null;
     }
 
     this._lowStreak += 1;
     this._highStreak = 0;
-    this._jankSeen = mergeJank(this._jankSeen, jankSignal(ctx));
+    // 帧耗时证据与 jank 分级证据并列：任一为真即视为「确实卡了」
+    const jank = jankSignal(ctx);
+    this._jankSeen = mergeJank(this._jankSeen, jank === true ? true
+      : (overrunSeverity(ctx) >= 1 ? true : jank));
 
     // 1) 从未到过正常帧率，或上次截图后尚未恢复 → 不截
     if (!this._armed) return null;
@@ -165,8 +207,8 @@ class TroughDetector {
     this._lowStreak = 0;
     this._lastShotTs = t;
     this.shots += 1;
-    return { fps, target, ts: t };
+    return { fps, target, ts: t, reason: 'fps-drop' };
   }
 }
 
-module.exports = { TroughDetector, percentile, jankSignal, DEFAULTS };
+module.exports = { TroughDetector, percentile, jankSignal, overrunSeverity, DEFAULTS };

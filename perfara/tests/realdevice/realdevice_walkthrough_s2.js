@@ -99,8 +99,12 @@ async function collectWith(mc, seconds, label) {
   check('全关仍采到样本（时间戳骨架）', none.samples.length >= 3, { count: none.samples.length });
   if (none.samples.length) {
     const s = none.samples[none.samples.length - 1];
-    check('全关仅保留 timestamp/time/pid',
-      Object.keys(s).every(k => ['timestamp', 'time', 'pid'].includes(k)), Object.keys(s));
+    // 诊断元数据（meta / shellMs / tickMs）不属于任何指标组，必须随样本保留：
+    // 关闭全部指标组时它们仍在，是 1.3/1.4 的刻意设计，不是漏过滤。
+    const DIAG_KEYS = ['meta', 'shellMs', 'tickMs', 'tickStartTs', 'dtMs']; // FIX-05/13：窗口起点与拍间隔
+    check('全关只保留时间戳骨架与诊断元数据',
+      Object.keys(s).every(k => ['timestamp', 'time', 'pid'].concat(DIAG_KEYS).includes(k)),
+      Object.keys(s));
   }
 
   // ---- 2.4 filterDataByConfig 纯函数 ----

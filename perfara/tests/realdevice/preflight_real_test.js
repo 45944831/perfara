@@ -165,7 +165,7 @@ async function wakeAndUnlock() {
   //    v1.1 合并重复采集源后 CPU 走 getCpuSnapshot，旧的 getCpuStats / getCpuCoreStats
   //    已退化成兼容包装、主循环不再调用。名字对不上就会「注入故障但采集照常成功」，
   //    熔断永远不触发，测试反而假绿（真实断线时所有通道都失败，产品逻辑本身没问题）。
-  const CHANNEL_FNS = ['getPid', 'probeChannel', 'getCpuSnapshot', 'getMemInfo', 'getFps',
+  const CHANNEL_FNS = ['getPid', 'probeChannel', 'getCpuSnapshot', 'getMemInfo', 'getMemInfoLite', 'getFps',
     'getNetStats', 'getBatteryInfo', 'getThermalInfo', 'getGpuUsage'];
   const orig = {};
   const c2 = new Collector(DEVICE, PKG, 1000, null);

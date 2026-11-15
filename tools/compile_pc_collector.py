@@ -25,6 +25,13 @@ def main():
     py_compile.compile(SRC, cfile=DST, dfile='collect_pc_perf.py', doraise=True)
     print('dst:', DST, old, '->', os.path.getsize(DST), 'B')
     print('magic ok:', open(DST, 'rb').read(4).hex())
+    # FIX-15：把 .py 也复制到 DST 同目录 —— pyc 一旦 magic 错配 / 损坏，
+    # pickNewerScript 仍有源码可回退（此前发布形态 Scripts/ 只有 pyc，无路可退）。
+    # 体积 +18KB，可忽略。
+    import shutil
+    py_dst = os.path.splitext(DST)[0] + '.py'
+    shutil.copyfile(SRC, py_dst)
+    print('py fallback:', py_dst, os.path.getsize(py_dst), 'B')
     return 0
 
 

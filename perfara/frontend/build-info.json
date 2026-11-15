@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "generated_at": "2026-11-13T08:06:19Z",
+  "mode": "record-existing-artifacts",
+  "note": "SPA 源码不在本仓库；本次仅记录现有 dist/ 产物快照，未从源码构建、未改动任何产物。",
+  "source_doc": "BUILD.md",
+  "spa_src_env": "PERFARA_SPA_SRC",
+  "build_command": "npm ci && npm run build",
+  "toolchain": {
+    "node": "v22.22.2",
+    "npm": "10.9.7"
+  },
+  "patch_application_order": [
+    "patch-spa-favicon.js",
+    "patch-spa-offline-fonts.js",
+    "patch-spa-attribution.js",
+    "patch-spa-metric-config.js"
+  ],
+  "patches": [
+    {
+      "file": "patch-spa-favicon.js",
+      "bytes": 1314,
+      "sha256": "4cbbd6e08d9fc2ff86e340303d28e7c32772490b7851891b43f599b39754736d"
+    },
+    {
+      "file": "patch-spa-offline-fonts.js",
+      "bytes": 3298,
+      "sha256": "bfa6caecfd9c1b835dd9abe72cff3a52013ff6d835f0907fca3b1727bb7d653e"
+    },
+    {
+      "file": "patch-spa-attribution.js",
+      "bytes": 3331,
+      "sha256": "a60dbaf5c32105e4e314b6591bdadd625072a2fc4c0dd023c99b545560ab8585"
+    },
+    {
+      "file": "patch-spa-metric-config.js",
+      "bytes": 10126,
+      "sha256": "b6a5e3f70a5d77066af44791f9b855a3a69c4edf90c5f08607c45c4a74674c7a"
+    }
+  ],
+  "artifact_count": 15,
+  "artifact_bytes_total": 1455729,
+  "artifacts": [
+    {
+      "path": "dist/apple-touch-icon.png",
+      "bytes": 29599,
+      "sha256": "1a491e161c72d225cab591426869408f01ffc8c24c23de39e3863eb7fa1c31da"
+    },
+    {
+      "path": "dist/favicon-32.png",
+      "bytes": 2440,
+      "sha256": "2aac9cc55547af89800418c77587598c670987556ee62fa9bdf5f43b621343c1"
+    },
+    {
+      "path": "dist/favicon.ico",
+      "bytes": 7785,
+      "sha256": "2d8b66c5c6dcbf810e85dd84ad3da9612b34986a5d9dc395529ed0d1c09aa069"
+    },
+    {
+      "path": "dist/index.html",
+      "bytes": 1629,
+      "sha256": "6a66ed563db273e0ab16724e825d1dad2bf73dfdcce8aec889c6275b4bc3d302"
+    },
+    {
+      "path": "dist/perf-hero.svg",
+      "bytes": 2401,
+      "sha256": "555f31c0744b5e4283db5e397460ae4c197a2c5257648ea1d7aadd33dce2bb56"
+    },
+    {
+      "path": "dist/assets/Compare-CqE700DJ.js",
+      "bytes": 22391,
+      "sha256": "d391a2dc100e92278a5dc96c301165e2b07d017e096084b831e02922cb80cd97"
+    },
+    {
+      "path": "dist/assets/Compare-JOMDh5Kc.css",
+      "bytes": 2950,
+      "sha256": "0e628901e6e96c4dacbcb91410d7b22b71c8ec3ec955cad94ed2d36ff7a54021"
+    },
+    {
+      "path": "dist/assets/DashboardHero-6pUcU_Uv.js",
+      "bytes": 1015,
+      "sha256": "33606ca0301123ffd612187d792a7e528b31b8be939202686e5808935e389106"
+    },
+    {
+      "path": "dist/assets/DashboardHero-CkHb-kDi.css",
+      "bytes": 1923,
+      "sha256": "93766bf4c41279a6037ba5903986a4638651b764884aade5d0b404e27df88a60"
+    },
+    {
+      "path": "dist/assets/TestShare-DX8D9Vx9.js",
+      "bytes": 1879,
+      "sha256": "0529b5ea636f0adb493dbfc0e9d080373e96d61276a9e15b30ebf96467a472d3"
+    },
+    {
+      "path": "dist/assets/TestShare-Du3SO-N6.css",
+      "bytes": 146,
+      "sha256": "9784f71109341a55d7a2acb9103ef944c429464deef3f4e2e599f5ee22d49a4b"
+    },
+    {
+      "path": "dist/assets/Trend-D1yYXFi4.js",
+      "bytes": 9281,
+      "sha256": "515341500cb5a7852c732a169c0cbaa2c3ef559ae9b46c544f3b79ec27dd0e2f"
+    },
+    {
+      "path": "dist/assets/Trend-DFkORnl2.css",
+      "bytes": 1837,
+      "sha256": "31979046d147f052729483060cc3a890100e4903c60572b37a756753724fa518"
+    },
+    {
+      "path": "dist/assets/index-CX8C-b2E.js",
+      "bytes": 1347770,
+      "sha256": "1abc46f44f39ee7915388e2e9bd61203f8267fb382a538c77e2e40c10971d4a8"
+    },
+    {
+      "path": "dist/assets/index-omIWT2Z0.css",
+      "bytes": 22683,
+      "sha256": "c1f8026d201a9c568f8e9b4bbadcb6e1b7c70c224a2d6a14781a029bfdaabdcf"
+    }
+  ]
+}

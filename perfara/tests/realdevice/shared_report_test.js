@@ -97,8 +97,16 @@ async function main() {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const errs = [];
   const external = [];
+  const missRes = [];
   page.on('pageerror', e => errs.push(e.message));
-  page.on('console', m => { if (m.type() === 'error') errs.push('console: ' + m.text()); });
+  page.on('requestfailed', r => missRes.push(r.url()));
+  page.on('console', m => {
+    if (m.type() !== 'error') return;
+    // 单文件报告里也可能带低谷截图引用；截图是可选产物，用户清掉后报告仍要能看，
+    // 所以资源 404 单独归类，不算 JS 报错（下面另有一条「除截图外无缺失」的断言）。
+    if (/Failed to load resource/.test(m.text())) return;
+    errs.push('console: ' + m.text());
+  });
   page.on('request', r => { if (!/^file:/.test(r.url())) external.push(r.url()); });
   await page.goto('file:///' + outFile.replace(/\\/g, '/'), { waitUntil: 'load' });
   await page.waitForTimeout(3000);
@@ -121,6 +129,8 @@ async function main() {
   check('统计表有数据行', r.statRows >= 5, r.statRows);
   check('离线无外部资源请求（无依赖）', external.length === 0, external.slice(0, 5));
   check('无 JS 报错', errs.length === 0, errs.slice(0, 3));
+  const badRes = missRes.filter(u => !/\/shots\//i.test(u));
+  check('无缺失资源（低谷截图除外）', badRes.length === 0, badRes.slice(0, 3));
 
   await page.screenshot({ path: path.join(OUT, 'shared-report-top.png') });
   await page.evaluate(() => window.scrollTo(0, 900));

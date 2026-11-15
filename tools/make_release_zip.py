@@ -45,7 +45,15 @@ SKIP_SUFFIX = {
     # 全是运行期数据，绝不能打进发布包（否则等于把别人的数据发出去）。
     # 便携版首次启动会自建空库，无需预置。
     '.db', '.db-wal', '.db-shm', '.db-journal',
+    # 2.1 Perfetto 旁路取证的采集产物：capture.perfetto-trace 的
+    # os.path.splitext 结果就是 '.perfetto-trace'，后缀匹配可直接命中。
+    '.perfetto-trace',
 }
+# perf.data 不是「扩展名」而是 perf 工具的默认输出文件名：
+# os.path.splitext('perf.data') 得到 '.data'，若放进 SKIP_SUFFIX 写成 '.data'
+# 会误杀任意 .data 文件；写成整串 'perf.data' 又永远匹配不到（ext 不会等于它）。
+# 因此按精确文件名单独剔除，稳妥且不误伤。取证产物一律不进发布包。
+SKIP_FILENAMES = {'perf.data'}
 SKIP_DIR = {'logs', 'crashDumps', '__pycache__'}
 # 只在源目录**顶层**跳过的目录。
 # 注意不能放进 SKIP_DIR：`frontend/dist` 是前端构建产物，必须保留。
@@ -105,6 +113,12 @@ PRUNE_PREFIXES = (
     _PY + '/python/Lib/venv/',
     _PY + '/python/Lib/test/',
     _PY + '/notebooks/',
+    # S2-⑤：内置 Python 随包携带的 psets/pdm 开发期副本里，demo/ 与 tests/
+    # 是纯示例与测试，运行期零引用，可安全剔除。
+    # ⚠️ 同目录的 ios_device/ 是 collect_ios.py 通过 sys.path.insert 引用的
+    # 运行期依赖（51 个 .py），绝不能裁 —— 详见 tools/inventory_package.py 的清点。
+    _PY + '/python/Scripts/psets/pdm/demo/',
+    _PY + '/python/Scripts/psets/pdm/tests/',
 )
 
 # S2-③ / S2-④：按**包名**剔除，而不是写死 `site-packages/uncompyle6/` 这种完整路径。
@@ -127,10 +141,26 @@ _SCRIPTS = _PY + '/python/Scripts/'
 # 那样会把 python/python/python.exe 一起剔掉，iOS 采集直接失效。
 PRUNE_FLAT_DIRS = {
     _PY + '/': ('.exe',),
-    # S0-④：采集结束自动生成的 Excel 落在报告目录，含真实设备/应用名与全部采样值。
-    # 与 data.js / shots / history 同理，属于运行期产物，绝不能随发布包分发；
-    # 用户端每次停止采集自行生成。
-    'collector/resources/reports/': ('.xlsx', '.xls'),
+    # 报告目录不在这里 —— 它已改成白名单（见下方 REPORTS_ALLOW）。
+    # 原来写的是 ('.xlsx', '.xls')，属「扩展名黑名单」：将来新增产物类型
+    # （.csv 导出 / .png 低谷截图 / .json 诊断包）不会被拦住，会直接进包。
+}
+
+# ── S-04：报告目录改成白名单放行 ───────────────────────────────────────────
+# `collector/resources/reports/` 同时是「交付资源目录」和「运行期输出目录」：
+# 交付资源只有下面这几个文件，其余全是采集过程写出来的东西（data.js 带真实
+# 设备序列号、history/ 是本地报告库、shots/ 是低谷截图、*.xlsx 是导出的表）。
+#
+# 原来靠三条排除规则（data.js / history/ / *.xlsx）挡住，方向是「黑名单」——
+# 只要将来多出一种产物就漏。这里反转成白名单：**只放行下面这几个文件**，
+# 其余一律剔除并在打包日志里打一行告警，让「多出来的文件」当场显形。
+REPORTS_DIR = 'collector/resources/reports/'
+REPORTS_ALLOW = {
+    'perf.html',        # 报告页
+    'library.html',     # 报告库 / 多报告对比
+    'echarts.min.js',   # build_app.py 从 node_modules/echarts/dist 拷入
+    # perf2.html 不在列：源码保留（schema_version_test.js 仍在守卫它的口径版本），
+    # 但已停用，不再随包分发（S-03）。
 }
 
 # 保守起见不动的东西（写在这里是为了让后来人知道「不是漏了」）：
@@ -145,6 +175,12 @@ def pruned(rel):
     for pref in PRUNE_PREFIXES:
         if rel == pref or rel.startswith(pref):
             return 'S1/S2 体积剔除'
+    # S-04：报告目录走白名单（只放行 REPORTS_ALLOW），必须先于通用规则判断。
+    # 只看该层直接子文件：history/ shots/ 已在上面的 PRUNE_PREFIXES 里整目录剔除。
+    if rel.startswith(REPORTS_DIR):
+        tail = rel[len(REPORTS_DIR):]
+        if '/' not in tail and tail not in REPORTS_ALLOW:
+            return 'S-04 报告目录非白名单文件'
     for base, exts in PRUNE_FLAT_DIRS.items():
         if rel.startswith(base):
             tail = rel[len(base):]
@@ -187,14 +223,19 @@ def add(zf, src, mode):
             rel = os.path.relpath(full, src).replace('\\', '/')
             if mode == 'full':
                 ext = os.path.splitext(f)[1].lower()
-                if ext in SKIP_SUFFIX:
+                if ext in SKIP_SUFFIX or f.lower() in SKIP_FILENAMES:
                     continue
-                if pruned(rel):
+                reason = pruned(rel)
+                if reason:
                     try:
                         skipped_bytes += os.path.getsize(full)
                     except OSError:
                         pass
                     skipped += 1
+                    if reason.startswith('S-04'):
+                        # 白名单剔除必须看得见：这里每多一条，要么是「交付资源忘了
+                        # 加进白名单」，要么是「新增了一种运行期产物」——都得有人确认。
+                        print(f'  ⚠ 报告目录剔除（不在白名单）: {rel}')
                     continue
             try:
                 zf.write(full, rel, zipfile.ZIP_DEFLATED)
@@ -230,6 +271,15 @@ def write_source_app_version(ver):
         f.write(new_text)
 
 
+def check_reports_assets(src):
+    """白名单是「放行清单」，名字写错就会把交付资源一起挡掉（页面直接 404）。
+    打包前先确认这几个文件真的在，缺一个就中止，别等用户打开报告页才发现。"""
+    miss = sorted(n for n in REPORTS_ALLOW
+                  if not os.path.exists(os.path.join(src, REPORTS_DIR, n)))
+    if miss:
+        sys.exit('  错误：报告目录白名单里的文件不存在: ' + ', '.join(miss))
+
+
 def main():
     mode = sys.argv[1]
     src = sys.argv[2]
@@ -260,6 +310,8 @@ def main():
         app_ver = read_source_app_version()
 
     t0 = time.time()
+    if mode == 'full':
+        check_reports_assets(src)      # S-04：白名单里的交付资源必须真的存在
     os.makedirs(os.path.dirname(out), exist_ok=True)
     if app_ver:
         vf = os.path.join(src, 'collector', 'resources', 'version.txt')

@@ -9,6 +9,10 @@
  *
  * 页面是覆盖式的：返回采集不会停引擎、也不会停限速，采集可以照常进行；
  * 顶栏按钮在限速期间变成绿色「≈ 限速中」，回到主界面也知道现在还被限着。
+ *
+ * 空 catch 约定（S-05）：本文件的 `catch (_) {}` 全是页面初始化与本地偏好的
+ * 读取（localStorage、下拉框数据、日志追加）。缺项就按默认值继续，页面不该因为
+ * 一个次要接口没返回而整块空白；接口真出错时由 api() 自己弹提示。
  */
 (function initWeaknetPage() {
   const btn = document.getElementById('btn-weaknet');

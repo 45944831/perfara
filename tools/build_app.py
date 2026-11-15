@@ -173,12 +173,32 @@ def human(n):
         n /= 1024.0
 
 
+def sync_pc_bytecode():
+    """构建时统一重编 PC 采集脚本的 .pyc。
+
+    pyc 在 asar 之外（collector/resources/ios-tools/.../Scripts/），所以这一步
+    不影响 asar 内容，只是保证「源码 → 运行期字节码」不会漂移。
+    重编失败不中断打包：pc-collector.js 仍会按 mtime 回退到 .py 并提示。
+    """
+    try:
+        import compile_pc_collector as cpc
+        rc = cpc.main()
+        if rc != 0:
+            print('[warn] PC 采集脚本重编失败，运行期将按 mtime 回退到 .py')
+    except Exception as e:  # 缺源文件 / 无写权限都只告警
+        print(f'[warn] PC 采集脚本重编跳过：{e}')
+
+
 def main():
     args = sys.argv[1:]
     dry = '--dry-run' in args
     out = None
     if '--out' in args:
         out = args[args.index('--out') + 1]
+
+    # 统一重编放在 collect() 之前：pyc 不在源码树内，但必须与本次源码同步
+    if not dry:
+        sync_pc_bytecode()
 
     kept, dropped = collect()
     ksize = sum(s for _, s, _ in kept)

@@ -2,6 +2,9 @@
  * perf.html 无头验证（playwright-core + Edge）：
  *  A) android + metricConfig(fps/cpu 移除) → 图表与卡片按配置隐藏，其余正常
  *  B) android 无 metricConfig（旧报告） → 全部显示，行为不回退
+ *  C) 全 0 帧 → 帧率质量给提示行，不输出无意义的达帧率
+ *  D) FIX-16：low-activity / no-frames 两种空值语义在解读里分开说清
+ *  E) ADPF 热节流信号真的渲染（字段未归一化会静默消失）
  */
 'use strict';
 const http = require('http');
@@ -53,6 +56,8 @@ async function runCase(browser, port, dataJs, label) {
       cardFps: vis(q('#card-fps')), cardCpu: vis(q('#card-cpu')),
       cardMem: vis(q('#card-mem')), cardNet: vis(q('#card-net')),
       valMem: (q('#val-mem') || {}).textContent,
+      // FIX-16：两种「帧分布为空」的语义写在解读框里，这里取全文供断言
+      insight: (q('#insight-box') || {}).textContent || '',
     };
   });
   await page.close();
@@ -125,6 +130,43 @@ async function main() {
   check('全 0 帧时出现「帧率质量」提示行', hasNote, '行数=' + zRows.length);
   check('全 0 帧时不再输出无意义的达帧率数值', hasReach === false);
   check('全 0 帧时无 JS 报错', zErr.length === 0, zErr.join(';'));
+
+  console.log('[D] FIX-16：low-activity 与 no-frames 两种空值语义要在解读里说清');
+  // 回归背景：两种「帧分布为空」此前都只显示裸 `--`，用户分不清「帧太少没统计」
+  // 与「本周期没有渲染帧」。round2_fixes_test 自注「由人工验收覆盖」，这里补自动化。
+  const mix = mkAndroid(null);
+  mix.perf = mix.perf.map((s, i) => {
+    if (i < 3) {
+      return { ...s, fps: 2, fpsMethod: 'low-activity', ftP50: null,
+        jankyRatio: null, hitchMsPerSec: null, overrunP99: null, overrunMax: null };
+    }
+    if (i < 5) return { ...s, fps: null, fpsMethod: 'no-frames' };
+    return { ...s, fps: 60, fpsMethod: 'timestats' };
+  });
+  const d = await runCase(browser, port, mix, 'D');
+  check('解读出现「帧数不足」（不是裸 --）', d.r.insight.includes('帧数不足'),
+    d.r.insight.slice(0, 160));
+  check('解读出现「无渲染帧」', d.r.insight.includes('无渲染帧'),
+    d.r.insight.slice(0, 160));
+  check('两种语义分开计数（3 拍 / 2 拍）',
+    /3\s*拍帧数不足/.test(d.r.insight) && /2\s*拍无渲染帧/.test(d.r.insight),
+    d.r.insight.slice(0, 200));
+  check('D 无 JS 报错', d.errors.length === 0, d.errors.join(';'));
+
+  console.log('[E] ADPF 热节流信号要真的渲染出来（字段没进归一化就会静默消失）');
+  // 回归背景：buildInsight 的「热节流」条目读 pts 里的 thermalStatus / coolingValue，
+  // 但 Android 归一化对象没保留这两个字段 → 采集端写了、报告页永远读不到，
+  // 整条解读静默消失。perf_source_audit 只验证了「采集端写入」，覆盖不到这里。
+  const th = mkAndroid(null);
+  th.perf = th.perf.map((s, i) => (i < 4
+    ? { ...s, thermalStatus: 3, coolingValue: 12 }
+    : { ...s, thermalStatus: 0, coolingValue: 0 }));
+  const e = await runCase(browser, port, th, 'E');
+  check('解读出现「热节流」条目', e.r.insight.includes('热节流'), e.r.insight.slice(0, 200));
+  check('节流等级与命中拍数正确（峰值 3 级，4/8 拍）',
+    /峰值等级\s*3\s*级/.test(e.r.insight) && /4\/8\s*拍节流中/.test(e.r.insight),
+    e.r.insight.slice(0, 240));
+  check('E 无 JS 报错', e.errors.length === 0, e.errors.join(';'));
 
   console.log(`RESULT: ${pass} passed, ${fail} failed`);
   await browser.close();

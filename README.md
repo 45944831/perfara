@@ -32,10 +32,10 @@
 | 模块 | 能力 |
 | --- | --- |
 | **Android 采集** | USB 直连或无线 adb，Android 6.0+；应用列表走 `pm list packages -3`，**不在手机上装任何 APK**；下拉框显示桌面应用名（解析 APK 的 `AndroidManifest.xml` + `resources.arsc`） |
-| **iOS 采集** | 真机 CPU / 内存 / FPS / 网络 / 电量 / 温度；便携版自带 `ios.exe` + Python + `pymobiledevice3`，无需自行安装 |
+| **iOS 采集** | 真机 FPS / CPU / 内存 / 磁盘 I/O / 进程事件 / 进程信息（6 组）；**不采集网络、电量、温度**——`sysmon` 不提供这三类实时数据，MetricKit 是天级聚合、模拟器不可用，不能当实时源。便携版自带 `ios.exe` + Python + `pymobiledevice3`，无需自行安装 |
 | **iOS GPU 专项** | 渲染管线细分：GPU 占用、带宽、纹理、着色器、缓存、ALU 等 |
 | **PC 采集** | 按进程采集本机 CPU / 内存 / GPU / 磁盘 / 线程 |
-| **帧率与流畅度** | FPS / Jank 分级、达帧率、均帧、1%Low、Drop、稳帧范围、Stutter 等 PerfDog 口径指标；目标帧率由 P95 自动吸附 30–165 Hz |
+| **帧率与流畅度** | FPS / Jank 分级、达帧率、均帧、1%Low、Drop、稳帧范围、Stutter 等 PerfDog 口径指标；另附跨刷新率可比的帧耗时 P50/P90/P95/P99、卡顿帧占比、Hitch（ms/s）、超帧时限 P99；目标帧率由 P95 自动吸附 30–165 Hz |
 | **系统指标** | CPU（系统 / 进程 / 核心频率 / 限频）、内存分项、网络上下行、GPU 使用率与温度、机身温度、电池、磁盘 I/O、上下文切换、线程数 |
 | **弱网测试** | 随包内置 WeakNet 引擎：17 个内置场景 + 出厂 5 支自定义场景 + 13 项自定义参数 + 弱网组合；可限本机、USB 接管手机或同 Wi-Fi 手机 |
 | **报告与看板** | 单文件离线 HTML（echarts 与数据全内联）、报告库、最多 6 份对比、框选区间重算、指标口径内置 |

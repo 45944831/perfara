@@ -1,27 +1,27 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
+# perfara/ 目录局部忽略规则 —— 与仓库根 .gitignore 的分工见下。
+#
+# 「是否入库」的唯一真值源是仓库根 .gitignore：通用规则（__pycache__、
+# *.py[cod]、.venv/、venv/、logs/、*.log、.env、.DS_Store、Thumbs.db、
+# .idea/、.vscode/、*.manifest 等）统一在根定义，本文件**不再重复声明**；
+# 删掉这里的副本不会改变任何路径的忽略结果（已用 git check-ignore 核对）。
+#
+# 本文件只保留「perfara 目录特有、根规则未覆盖」的项：
+#   · build/、dist/ —— 匹配 perfara 下**任意层级**的 build/ 与 dist/。
+#     其中 dist/ 是 perfara/frontend/dist/（SPA 构建产物，见 frontend/BUILD.md）
+#     不入库的原因；根 .gitignore 只写了 perfara/build/、perfara/dist/ 等具体
+#     路径，覆盖不到 frontend/dist/，故这两行必须留在这里，不能当重复删掉。
+#   · *.egg-info/ —— Python 打包元数据，根未声明。
+#   · data/*.db-journal / -wal / -shm —— 运行期数据库副产物，根只忽略 *.db 本体。
+#
+# perfara/.gitattributes 与忽略规则不是一回事：它只声明「入库文件如何存储/diff」
+# （*.db / *.pyc 标 binary），不决定「是否入库」，别把它当重复规则。
 
-# Runtime artifacts
-logs/
-*.log
-.env
-
-# OS / editor
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-
-# PyInstaller
+# 构建产物（任意层级；根的具体路径覆盖不到 frontend/dist）
 build/
 dist/
-*.manifest
+*.egg-info/
 
-# Local DB overrides (data/webperf.db 为演示数据，按需保留)
+# 本地 DB 覆盖（运行期 WAL / journal）
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm

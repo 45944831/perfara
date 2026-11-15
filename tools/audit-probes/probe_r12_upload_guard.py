@@ -10,6 +10,15 @@ proc = subprocess.Popen([str(EXE), "--port", str(PORT), "--host", "127.0.0.1", "
                          "--data-dir", str(PKG)], cwd=str(PKG),
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+def stop():
+    """onefile 是两层：proc.kill() 只收 bootloader，真正的服务子进程会留成孤儿。"""
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        proc.wait(timeout=10)
+    except Exception:
+        pass
+
 def health():
     try:
         with urllib.request.urlopen("http://127.0.0.1:%d/api/health" % PORT, timeout=1) as r:
@@ -24,7 +33,7 @@ for _ in range(120):
     time.sleep(0.3)
 print("health:", ok)
 if not ok:
-    proc.kill(); sys.exit(1)
+    stop(); sys.exit(1)
 
 def post(ctype, origin=None, body=b'{"uid":"probe-r12"}'):
     req = urllib.request.Request("http://127.0.0.1:%d/api/upload" % PORT, data=body, method="POST")
@@ -53,5 +62,5 @@ for ctype, origin, want, name in cases:
     fails += 0 if good else 1
     print("  %-32s want=%s got=%s %s" % (name, want, got, "OK" if good else "FAIL"))
 
-proc.kill(); proc.wait()
+stop()
 print("RESULT:", "PASS" if fails == 0 else "FAIL(%d)" % fails)

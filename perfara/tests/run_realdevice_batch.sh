@@ -7,9 +7,8 @@
 #
 # 注意：默认包名用 com.android.chrome —— 脱敏后部分用例的默认值曾是占位包名
 # com.example.game，设备上不存在，默认跑法必然「应用未安装」失败。
-cd /e/WorkBuddy1/2026-10-19-13-59-27
-export NODE_PATH="C:/Users/user/.workbuddy-ai/binaries/node/workspace/node_modules"
-NODE="C:/Users/user/.workbuddy-ai/binaries/node/versions/22.22.2-6/node.exe"
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_HERE/env.sh"          # S-09：项目根 / NODE / PY 统一在此解析（原来三套脚本各写一份）
 D="${1:?用法: run_realdevice_batch.sh <deviceId> [packageName]}"
 P="${2:-com.android.chrome}"
 OUT=perfara/tests/_run_out
@@ -45,7 +44,30 @@ run "fps_render"        fps_render_test.js "$D"
 run "tinyjank"          tinyjank_framestats_test.js "$D"
 run "preflight_real"    preflight_real_test.js "$D"
 run "preflight_breaker" preflight_breaker_test.js
+run "trace_capture"     trace_capture_realdevice.js "$D"
+run "new_metrics"       new_metrics_realdevice.js "$D" "$P"
+run "net_scope"         net_scope_realdevice.js "$D" "$P"
+run "trough_overrun"    trough_overrun_realdevice.js "$D" "$P"
+run "trough_shot"       trough_shot_realdevice.js "$D" "$P" 45
 run "e2e_browser"       e2e_realdevice.js "$D" com.android.chrome
+# S-07：第二轮修复（FIX-11/13/14）的真机验收，此前没登记进任何批处理。
+# 它直接驱动**源码**的 adb.js（不是 app.asar），所以能证明修复在真机上真的生效。
+run "round2_realdevice" round2_realdevice.js "$D" "$P"
+# 弱网 USB 接管专项：会真的改手机系统代理并起拔线守护，串号只从环境变量进。
+# 未设置 PERFARA_TEST_SERIAL 时跳过（不能拿本机序列号当默认值，本文件会进公开仓库）。
+if [ -n "${PERFARA_TEST_SERIAL:-}" ]; then
+  run "weaknet_phone"   weaknet_phone_realdevice.js
+else
+  echo "    [skip] weaknet_phone：未设置 PERFARA_TEST_SERIAL（串号不入库，需现场指定）"
+fi
+# 真包参数准确性：启动解包后的 collector，用 adb 独立基准核对 FPS/CPU/PSS/刷新率。
+# 需要先解包发布包并指定 PERFARA_PKG_ROOT（未指定时跳过，默认批处理仍只跑源码侧）。
+# 2026-11-15 首次跑出 2 项红：D-19 刷新率取错字段、D-20 data.js 缺 loading 段。
+if [ -n "${PERFARA_PKG_ROOT:-}" ]; then
+  run "param_accuracy_pkg" param_accuracy_pkg.js "$D" "$P" 60
+else
+  echo "    [skip] param_accuracy_pkg：未设置 PERFARA_PKG_ROOT（先解包发布包再跑）"
+fi
 if [ -n "${GAME_PKG:-}" ]; then
   run "e2e_game"        e2e_realdevice.js "$D" "$GAME_PKG"
 else

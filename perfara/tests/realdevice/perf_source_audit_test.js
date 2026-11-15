@@ -109,6 +109,23 @@ check('无 App Summary 时回退明细表（nativeHeap=2 / javaHeap=11）',
 check('整机内存读不到时是 null，不写 0 MB',
   memOld.memTotalMB === null && memOld.memAvailableMB === null);
 
+// 只有 App Summary、没有明细表的 ROM：三个 TOTAL 挤在同一行。
+// 同步 WeakNet v1.1.16 的口径 —— 只认 key 后紧跟的第一个数字，
+// 绝不能取行内最后一个（那是 TOTAL SWAP PSS，会把 142988 KB 写成 271 KB）。
+const MEM_SUMMARY_ONLY = `
+ App Summary
+                       Pss(KB)
+           Java Heap:    12345                          28256
+         Native Heap:     1360                           2336
+           TOTAL PSS:   142988       TOTAL RSS:   171234       TOTAL SWAP PSS:    271
+`;
+const memS = algo.parseMemInfoSections(MEM_SUMMARY_ONLY, '');
+check('只有汇总行时 totalPss 兜底取 TOTAL PSS → 140 MB（不是 SWAP 的 0 MB）',
+  memS.totalPss === 140, memS.totalPss);
+check('同一行的 TOTAL RSS / SWAP PSS 不干扰分项解析',
+  memS.nativeHeap === 1 && memS.javaHeap === 12,
+  { nativeHeap: memS.nativeHeap, javaHeap: memS.javaHeap });
+
 // ─── ③ 电池：一次命令解析 + 单位三态 ─────────────────────────────────────────
 console.log('\n-- ③ 电池：合并输出解析与单位判定 --');
 const bat = algo.parseBatteryDump;
@@ -220,6 +237,84 @@ check('parseThermalService 的 main 取 BATTERY → SKIN → body，不给 CPU',
   && /else\s*\{\s*main = null;\s*source = 'die';/.test(adbSrc.replace(/\n/g, ' ')));
 check('采集器写入的 temperature 只来自 thermalMain（或电池兜底）',
   /data\.temperature = thermalMain;/.test(collectorSrc));
+
+// ─── ⑦ 网络口径：三级降级链 + 回退整机必须带 scope ────────────────────────────
+console.log('\n-- ⑦ 网络按 UID 统计与整机回退标注 --');
+check('导出 parseNetstatsUid 供离线断言', typeof algo.parseNetstatsUid === 'function');
+{
+  const dump = [
+    'Dev stats:',
+    '  ident=[{type=3}], uid=10123, set=DEFAULT, tag=0x0, rxBytes=4000, rxPackets=4, txBytes=2000, txPackets=2',
+    '  ident=[{type=3}], uid=10999, set=DEFAULT, tag=0x0, rxBytes=99999, txBytes=99999',
+    '  ident=[{type=3}], uid=10123, set=FOREGROUND, tag=0x0, rxBytes=77777, txBytes=77777',
+    'Xt stats:',
+    '  ident=[{type=3}], uid=10123, set=DEFAULT, tag=0x0, rxBytes=100, txBytes=50',
+  ].join('\n');
+  const hit = algo.parseNetstatsUid(dump, 10123);
+  // set 口径（真机 Android 13 实测修正）：DEFAULT 是「非前台流量」、
+  // FOREGROUND 是「前台流量」，两者**互斥**不是包含。只取 DEFAULT 会漏掉
+  // 前台大头 —— 实测某前台应用 DEFAULT 仅 18 KB、FOREGROUND 达 22 MB。
+  // 因此有 ALL 用 ALL，否则 DEFAULT + FOREGROUND + BACKGROUND 相加。
+  check('netstats 按 set 互斥相加（DEFAULT+FOREGROUND，不能只取 DEFAULT）',
+    !!hit && hit.rx === 4100 + 77777 && hit.tx === 2050 + 77777, hit);
+  check('netstats 忽略其它 UID',
+    !!hit && hit.rx !== 4100 + 77777 + 99999, hit);
+  check('netstats 找不到目标 UID 时返回 null（交给下一级降级）',
+    algo.parseNetstatsUid(dump, 10777) === null);
+  check('netstats 没有 rxBytes/txBytes 时不臆造数值',
+    algo.parseNetstatsUid('uid=10123 no counters here', 10123) === null);
+  check('netstats 非法 uid 直接返回 null', algo.parseNetstatsUid(dump, 0) === null);
+}
+check('getNetStats 三级链里 netstats 排在 /proc/net/dev 之前', (() => {
+  const i1 = adbSrc.indexOf("parseQtaguidStats(out, uidNum)");
+  const i2 = adbSrc.indexOf("parseNetstatsUid(out, uidNum)");
+  const i3 = adbSrc.indexOf("cat /proc/net/dev 2>/dev/null");
+  return i1 > 0 && i2 > i1 && i3 > i2;
+})(), '源码顺序');
+check('qtaguid / netstats 命中一律标 netScope=app',
+  /scope: 'app', source: 'qtaguid'/.test(adbSrc) && /scope: 'app', source: 'netstats'/.test(adbSrc));
+check('整机回退标 netScope=device，绝不冒充 app',
+  /scope: 'device', source: 'proc-net-dev'/.test(adbSrc));
+check('采样点带 netSource，报告可回溯具体通道',
+  /netScope: null, netSource: null/.test(collectorSrc) || /netSource/.test(collectorSrc));
+check('回退整机的说明文案明确「不等于被测应用流量」',
+  /不等于被测应用流量/.test(readSrc('_client_src/app/src/metric-schema.js')));
+
+// ─── ⑦b ADPF 热节流信号（v3 新增：Thermal Status + Cooling devices）──────────
+console.log('\n-- ⑦b thermalservice 节流信号解析 --');
+{
+  // 形状对齐真机 ColorOS 13 实测输出（Thermal Status 在温度段之外、Cooling 在 HAL 段后）
+  const ts = [
+    'IsStatusOverride: false',
+    'Thermal Status: 2',
+    'Cached temperatures:',
+    '	Temperature{mValue=63.226, mType=0, mName=CPU, mStatus=0}',
+    'Current temperatures from HAL:',
+    '	Temperature{mValue=33.143, mType=0, mName=CPU, mStatus=0}',
+    '	Temperature{mValue=28.0, mType=2, mName=BATTERY, mStatus=0}',
+    'Current cooling devices from HAL:',
+    '	CoolingDevice{mValue=0, mType=2, mName=cpu_adaptive_0}',
+    '	CoolingDevice{mValue=12.5, mType=2, mName=cpu_adaptive_1}',
+  ].join('\n');
+  const r = ADB.parseThermalService(ts);
+  check('Thermal Status 等级被解析（0~6）', r && r.thermalStatus === 2, r && r.thermalStatus);
+  check('冷却设备取动作量最大者', r && r.coolingName === 'cpu_adaptive_1'
+    && r.coolingValue === 12.5, r && [r.coolingName, r.coolingValue]);
+  check('温度解析不受节流信号影响', r && r.main === 28.0 && r.source === 'battery', r && [r.main, r.source]);
+  const r0 = ADB.parseThermalService(ts.replace('Thermal Status: 2', 'Thermal Status: 0'));
+  check('Status=0 也如实返回（不写 null 冒充未测）',
+    r0 && r0.thermalStatus === 0, r0 && r0.thermalStatus);
+  const rBad = ADB.parseThermalService('Thermal Status: 9\nTemperature{mValue=99.0, mType=3, mName=SKIN, mStatus=0}');
+  check('越界等级（>6）拒绝并写 null', rBad && rBad.thermalStatus === null, rBad && rBad.thermalStatus);
+  const rOnly = ADB.parseThermalService('Thermal Status: 1');
+  check('只有 Status 无温度行也返回节流信号', rOnly && rOnly.thermalStatus === 1
+    && rOnly.main === null, rOnly);
+  check('getThermalInfo 透传节流信号', /extra\.thermalStatus = r\.thermalStatus/.test(adbSrc)
+    && /extra\.coolingName = r\.coolingName/.test(adbSrc));
+  check('采集点写入 thermalStatus / coolingXxx',
+    /data\.thermalStatus = thermalStatus;/.test(collectorSrc)
+    && /data\.coolingName = coolingName;/.test(collectorSrc));
+}
 
 console.log('\n──────────────────────────────────────────');
 console.log(`  ${pass} PASS / ${fail} FAIL`);

@@ -122,6 +122,8 @@ function savePng(run, png, hit) {
     bytes: jpeg.length,
     thumb,
     thumbUrl,
+    // 触发原因（fps-drop / overrun）：回溯「为什么截这张」时不用猜
+    ...(hit.reason ? { reason: hit.reason } : {}),
   };
   run.shots.push(meta);
   return meta;

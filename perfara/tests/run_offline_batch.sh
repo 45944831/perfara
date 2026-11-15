@@ -1,10 +1,7 @@
 #!/bin/bash
 # 批量运行离线测试套件（不含真机、不含需外部服务的）
-cd /e/WorkBuddy1/2026-10-19-13-59-27
-export NODE_PATH="C:/Users/user/.workbuddy/binaries/node/workspace/node_modules"
-export PYTHONIOENCODING=utf-8
-NODE="C:/Users/user/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
-PY="C:/Users/user/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_HERE/env.sh"          # S-09：项目根 / NODE / PY 统一在此解析（原来三套脚本各写一份）
 OUT=perfara/tests/_run_out
 mkdir -p "$OUT"
 # ⚠️ 变量名不能叫 TMP：系统已导出 TMP=<用户 Temp 目录>，重新赋值会保留 export 属性，
@@ -84,11 +81,25 @@ run_node "perf_param_audit"     realdevice/perf_param_audit_test.js
 run_node "perf_source_audit"    realdevice/perf_source_audit_test.js
 run_node "chart_scroll_perf"    realdevice/chart_scroll_perf_test.js
 run_node "version_scheme"       version_scheme_test.js
+run_node "metric_schema"        metric_schema_test.js
+run_node "pc_script_source"     pc_script_source_test.js
+run_node "frame_metrics"        frame_metrics_test.js
+run_node "accuracy_fixes"       accuracy_fixes_test.js
+# 时间基准守卫：速率类 dt 必须走单调时钟（墙钟回拨会把读数放大 2~10 倍）。
+# 漏登记过一次，导致这批断言只在手工跑时生效。
+run_node "clock_base"           clock_base_test.js
+run_node "round2_fixes"         round2_fixes_test.js
+run_node "overhead_history"     overhead_history_test.js
 run_node "update_check"         update_check_test.js
 run_node "update_notice_ui"     update_notice_ui_test.js
 run_node "metric_info"          e2e_metric_config/run_metric_info_test.js
 run_node "open_location"        e2e_metric_config/run_open_location_test.js
 run_node "check_readability"    e2e_metric_config/check_readability.js
+# S-07：这两个此前没登记进任何批处理，等于「写了永远不会被跑」。
+# android_start_ux：渲染端「点开始」之后的三类「点了没反应」（playwright + Edge，不需要真机）
+run_node "android_start_ux"     e2e_metric_config/run_android_start_ux_test.js
+# pc_realdevice：直接驱动内置 Python 采本机进程（12 秒），验字段完整性与「读不到折成 null」
+run_node "pc_realdevice"        realdevice/pc_realdevice_test.js
 
 rm -f "$RUNLOG"
 if [ ${#FAILED[@]} -gt 0 ]; then

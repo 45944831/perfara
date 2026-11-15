@@ -4,13 +4,10 @@
 # 退出码是这个脚本过去最大的坑：`"$PY" … | tail -25` 之后 `echo "[exit=$?]"` 读到的
 # 是 tail 的状态，tail 永远成功，于是所有套件都打印 exit=0，「deep 全绿」并不成立。
 # 现在统一开 pipefail、用 rc 变量接住真实退出码，末尾汇总并以非零码收尾。
-cd /e/WorkBuddy1/2026-10-19-13-59-27 || exit 2
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_HERE/env.sh"          # S-09：项目根 / NODE / PY 统一在此解析（原来三套脚本各写一份）
 set -o pipefail
-export NODE_PATH="C:/Users/user/.workbuddy/binaries/node/workspace/node_modules"
-export no_proxy="127.0.0.1,localhost" NO_PROXY="127.0.0.1,localhost"
-export PYTHONIOENCODING=utf-8
-NODE="C:/Users/user/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
-PY="E:/WorkBuddy1/2026-10-19-13-59-27/tools/.venv/Scripts/python.exe"   # 带 sqlalchemy/uvicorn
+PY="$PY_VENV"              # 深度测试要 sqlalchemy/uvicorn，用项目内 venv
 OUT=perfara/tests/_run_out
 mkdir -p "$OUT"
 
@@ -50,14 +47,29 @@ run_py() {
 run_py   "version_scheme"       perfara/tests/deep/version_scheme_py_test.py
 run_py   "launcher_process"     perfara/tests/deep/launcher_process_test.py
 run_py   "launcher_port"        perfara/tests/deep/launcher_port_test.py
+# 祖先进程存活守卫：杀掉「启动器」层、留住「bootloader」层，带守卫的服务进程必须自行退出
+# （PerfaraServer.exe 残留的根治项，见 docs/更新日志.md）
+run_py   "launcher_parent_watch" perfara/tests/deep/launcher_parent_watch_test.py
 run_py   "loading_algo"         perfara/tests/deep/loading_algo_consistency.py
+# 空 catch 预算棘轮（S-05）：203 处是 2026-11-14 的实测基线，只许减不许增。
+# 新增空 catch 必须显式改预算，让「这里吞了个错误」出现在 review 里。
+run_py   "empty_catch_budget"   perfara/tests/deep/empty_catch_budget_test.py
+# 发布包报告目录白名单（S-04）：直接调 pruned() 验「该留的留、该剔的剔」，
+# 不只 grep 常量名——黑名单改白名单这类方向性改动，只有行为测试才拦得住回归。
+run_py   "package_whitelist"    perfara/tests/deep/package_whitelist_test.py
 run_node "report_edge"          ../deep/report_edge_test.js
 run_py   "upload_edge"          perfara/tests/deep/upload_edge_test.py
 run_node "compare_lanes"        ../deep/compare_lanes_test.js
 run_node "trough_shots"         ../deep/trough_shots_test.js
 run_node "trough_shots_ui"      ../deep/trough_shots_ui_test.js
+# 主界面每张参数卡的「!」口径说明：说明条目 ↔ 卡片一一对应、展开/切换/收起、不出视口、不撑高卡片
+run_node "metric_help_ui"       ../deep/metric_help_ui_test.js
 # 采集结束自动生成 Excel：分组标签页 / 标记区间 / 空值语义 / OOXML 结构（Python zipfile 独立复核）
 run_node "xlsx_export"          ../deep/xlsx_export_test.js
+# 批次 1.3/1.6/2.1：口径版本守卫、Perfetto 旁路取证核心模块
+run_node "schema_version"       ../deep/schema_version_test.js
+run_node "trace_capture"        ../deep/trace_capture_test.js
+run_node "direct_shell"        ../deep/direct_shell_test.js
 # 弱网总结分析：段状态机 + 接线静态检查；再用合成 data.weaknet 渲染报告页核对数值
 run_node "weaknet_report"       ../deep/weaknet_report_test.js
 run_node "weaknet_report_ui"    ../deep/weaknet_report_ui_test.js

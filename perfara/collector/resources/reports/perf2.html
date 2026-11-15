@@ -1,4 +1,16 @@
 <!DOCTYPE html>
+<!--
+  【已停用 · 不要再用这个文件】
+  ------------------------------------------------------------------
+  这是「单份报告」的旧版页面，1.6 起已被 perf.html（报告页）+ library.html
+  （报告库 / 多报告对比）取代：
+    · 全项目生产代码 0 处引用（grep 'perf2' 只命中本文件与 schema_version_test）；
+    · 采集器不再生成指向它的链接。
+  保留原因：perfara/tests/deep/schema_version_test.js 仍在用它做「页面内置口径
+  版本 == metric-schema.js 的 SCHEMA_VERSION」的守卫。删文件必须同步删该用例，
+  否则守卫会静默消失。
+  发布包已不再分发本文件（tools/make_release_zip.py 的 REPORTS_ALLOW 白名单）。
+-->
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -169,7 +181,7 @@
   <script>
 (function () {
   const CONFIG = {
-    android: {"cpu":["cpu.sysCpu","cpu.procCpu"],"mem":["mem.totalPss"],"memDetail":["mem.nativeHeap","mem.javaHeap","mem.code","mem.stack","mem.graphics","mem.privateOther","mem.system"],"fps":["fps","jank","bigJank"],"net":["net.rxKBps","net.txKBps"],"gpu":["gpu"],"temp":["temperature","battery.temperature"],"current":["battery.currentNow"],"power":["battery.power"],"cpuCores":["cpuCores.usage[*]"],"cpuFreq":["cpuCores.freq[*]"]},
+    android: {"cpu":["cpu.sysCpu","cpu.procCpu"],"mem":["mem.totalPss"],"memDetail":["mem.nativeHeap","mem.javaHeap","mem.code","mem.stack","mem.graphics","mem.privateOther","mem.system"],"fps":["fps","jank","bigJank"],"net":["net.rxKBps","net.txKBps"],"gpu":["gpu"],"temp":["temperature"],"current":["battery.currentNow"],"power":["battery.power"],"cpuCores":["cpuCores.usage[*]"],"cpuFreq":["cpuCores.freq[*]"]},
     ios: {"cpu":["cpuUsage","cpuTotalSystem","cpuTotalUser"],"fps":["fps","jank","bigjank"],"mem":["physFootprint","memResidentSize"],"memdetail":["memRPrvt","memRShrd","memAnon","memCompressed","memPurgeable"],"disk":["_diskReadKBps","_diskWriteKBps"],"events":["_ctxSwitchPs","_intWakeupsPs","_vmPageInsPs"]},
     ios_gpu: {
       groups: {"occupancy":["Vertex Occupancy","Fragment Occupancy","Compute Occupancy"],"aluPerf":["ALU Utilization","F32 Utilization","F16 Utilization","ALU Limiter"],"texture":["Texture Sample Utilization","Texture Filtering Limiter","Texture Sample Limiter","Texture Cache Limiter"],"bandwidth":["GPU Read Bandwidth","GPU Write Bandwidth"],"cache":["GPU Last Level Cache Utilization","GPU Last Level Cache Limiter","MMU Utilization","MMU Limiter"],"shader":["Fragment Input Interpolation Limiter","Fragment Input Interpolation Utilization","Threadgroup/Imageblock Load Utilization","Threadgroup/Imageblock Store Utilization"]},
@@ -186,6 +198,22 @@
     cache: '缓存 & MMU', shader: '着色器 / 插值 / Threadgroup', compute: 'Compute（LowGPU）',
     buffer: 'Buffer（LowGPU）', threadgroup: 'Threadgroup（LowGPU）', fragment: 'Fragment（LowGPU）'
   };
+
+  /** 温度口径与 perf.html 现行实现对齐：
+   *  优先 thermal 实测值，为 0/缺失时回退电池温度；老数据的十分度整数换算成 °C；
+   *  两者都取不到时写 null，绝不补 0（避免把「没采到」画成 0°C 假低温、拉低均值）。 */
+  function a_temp(v) {
+    if (typeof v !== 'number' || isNaN(v)) return null;
+    if (v >= 200 && v <= 900 && Number.isInteger(v)) return v / 10;
+    return v;
+  }
+  function pickTemp(thermalRaw, batteryRaw) {
+    const t = a_temp(thermalRaw);
+    if (t != null && t > 0) return t;
+    const b = a_temp(batteryRaw);
+    if (b != null && b > 0) return b;
+    return null;
+  }
 
   function avg(arr) {
     const nums = (arr || []).filter(function (v) { return typeof v === 'number' && !isNaN(v); });
@@ -342,7 +370,7 @@
         series['net.rxKBps'].push(net.rxKBps);
         series['net.txKBps'].push(net.txKBps);
         series['gpu'].push(it.gpu);
-        series['temperature'].push(it.temperature != null ? it.temperature : battery.temperature);
+        series['temperature'].push(pickTemp(it.temperature, battery.temperature));
         series['battery.currentNow'].push(battery.currentNow);
         series['battery.power'].push(battery.power);
         const usage = cores.usage || [];
@@ -827,6 +855,39 @@
   } else {
     init();
   }
+})();
+  </script>
+  <script>
+/* 口径版本提示（与 perf.html 同款）：读 data.js 的 schemaVersion。
+   无版本 / 版本与当前不一致时，在页面最上方说明「跨版本不可直接对比」；
+   整段用 try/catch 包住，旧报告缺字段也不报错、不白屏。 */
+(function () {
+  try {
+    if (typeof data === 'undefined' || !data) return;
+    var CUR = '2';
+    var items = [];
+    var sv = data.schemaVersion;
+    if (!sv) {
+      items.push('本报告由旧版本生成（无口径版本），跨版本不可直接对比。');
+    } else if (String(sv) !== CUR) {
+      items.push('本报告口径版本为 ' + sv + '，当前为 ' + CUR
+        + '；指标定义或单位已变化，跨版本不可直接对比。');
+    }
+    if (!items.length) return;
+    var esc = function (t) {
+      return t.replace(/[<>&]/g, function (c) {
+        return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c];
+      });
+    };
+    var el = document.createElement('div');
+    el.id = 'data-notice';
+    el.setAttribute('role', 'note');
+    el.style.cssText = 'position:sticky;top:0;z-index:9999;background:#fff8e6;color:#7a4b00;'
+      + 'border-bottom:1px solid #f2d29b;padding:8px 16px;'
+      + 'font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;';
+    el.innerHTML = items.map(function (t) { return '<div>· ' + esc(t) + '</div>'; }).join('');
+    document.body.insertBefore(el, document.body.firstChild);
+  } catch (_) {}
 })();
   </script>
 </body>

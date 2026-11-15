@@ -1,5 +1,9 @@
 'use strict';
 
+// 空 catch 约定（S-05）：本文件的 `catch (_) {}` 都是「界面联动」的装饰性同步
+// （图表跟随、场景标签回填、上次配置回显）。某个面板没刷新不该让采集流程报错；
+// 影响数据的失败由 perfAPI 的返回值和日志面板呈现，不靠这里抛。
+
 // ─── DOM refs ────────────────────────────────────────────────────────────────
 const selDevice    = document.getElementById('sel-device');
 const selApp = document.getElementById('sel-app');
@@ -822,6 +826,33 @@ function colorWarn(cardId, value, warnThresh, critThresh) {
   if (value >= critThresh) card.classList.add('critical');
   else if (value >= warnThresh) card.classList.add('warn');
 }
+
+// ─── 2.1 旁路取证开关 ────────────────────────────────────────────────────────
+// 默认关闭；开启时把「低谷命中自动抓 trace」一并打开。能力探测结果直接写日志，
+// 设备不支持（无 perfetto / simpleperf）时提示但不阻断采集。
+(function bindTraceCapture() {
+  const chk = document.getElementById('chk-trace-capture');
+  if (!chk || !window.perfAPI || !window.perfAPI.traceCaptureConfig) return;
+  chk.addEventListener('change', async () => {
+    try {
+      const r = await window.perfAPI.traceCaptureConfig({
+        enabled: chk.checked,
+        autoOnTrough: chk.checked,
+        deviceId: selDevice ? selDevice.value : '',
+      });
+      if (chk.checked && r && !r.supported) {
+        log('[旁路取证] 设备不支持 Perfetto / simpleperf，已开启但不会产出片段', 'warn');
+      } else if (chk.checked) {
+        log(`[旁路取证] 已开启（后端 ${r.backend || 'perfetto'}）；低谷命中时自动抓 10s 片段`, 'info');
+      } else {
+        log('[旁路取证] 已关闭，零开销', 'info');
+      }
+    } catch (e) {
+      chk.checked = false;
+      log(`[旁路取证] 开启失败：${e && e.message ? e.message : e}`, 'warn');
+    }
+  });
+})();
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 refreshDevices();

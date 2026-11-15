@@ -1,3 +1,13 @@
+# 与忽略规则的分工（批次 3.4 收敛）：
+#   · 「是否入库」由仓库根 .gitignore（唯一真值源）+ perfara/.gitignore 决定；
+#   · 本文件只声明「已入库文件如何存储 / diff」，不产生任何忽略效果。
+#     *.db binary / *.pyc binary 与 .gitignore 里的 *.db / *.py[cod] 不是重复规则，
+#     而是同一批文件的两种不同职责，别再把它们当成互相冲突的副本。
+#   · *.pyc binary 是防御性声明：根 .gitignore 的 *.py[cod] 已忽略所有 .pyc，
+#     正常不会入库；保留它是防止将来 git add -f 强推时把 .pyc 当文本做行尾转换/diff。
+#   · *.db binary 实际只对根 .gitignore 放行的 perfara/_seed/*.db 生效，
+#     其余 .db 由 *.db 忽略规则挡在库外。
+#
 # 2026-10-28 重写（原文件由 UGit 自动生成）
 #
 # 原来这两行把**所有** *.db / *.pyc 交给 Git LFS：

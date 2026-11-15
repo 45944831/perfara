@@ -133,9 +133,15 @@ function pos(v) { return isNum(v) && v > 0; }
   const okFps = fpsSamples.filter(f => f && !f.error);
   check('getFps 返回对象', okFps.length > 0 && okFps.every(f => typeof f === 'object'), fpsSamples);
   check('getFps.fps 为数值', okFps.every(f => isNum(f.fps)), fpsSamples);
-  check('getFps 含 jank 字段', okFps.every(f => isNum(f.jank)), fpsSamples);
-  check('getFps 含 bigJank 字段', okFps.every(f => isNum(f.bigJank)), fpsSamples);
-  check('getFps 含 jankRate 字段', okFps.every(f => isNum(f.jankRate)), fpsSamples);
+  // jank 家族「键必须在、值可为 null」：gfxinfo-delta 通道测不到卡顿分级时
+  // 返回 null（未测量，不编 0），这是产品语义——见 FPS_NO_DATA_METHODS / 更新日志。
+  const jankValOk = (v) => v === null || isNum(v);
+  check('getFps 含 jank 字段（数值或 null=未测量）',
+    okFps.every(f => 'jank' in f && jankValOk(f.jank)), fpsSamples);
+  check('getFps 含 bigJank 字段（数值或 null=未测量）',
+    okFps.every(f => 'bigJank' in f && jankValOk(f.bigJank)), fpsSamples);
+  check('getFps 含 jankRate 字段（数值或 null=未测量）',
+    okFps.every(f => 'jankRate' in f && jankValOk(f.jankRate)), fpsSamples);
   // 有无帧取决于被测应用是否在渲染：游戏停在静态登录页 / 应用在后台时，
   // 三条取帧通道都取不到新帧，此时全 null + method='none' 才是正确结果。
   // 旧断言「至少一帧 fps>0」在静态页面上必然假失败，改为按有无帧分支。
@@ -144,7 +150,7 @@ function pos(v) { return isNum(v) && v > 0; }
     hasFrame
       ? true
       // adb 层约定：无数据时 fps=0 + method='none'（采集层据此转 null）
-      : fpsSamples.every(f => f && (f.fps === 0 || f.fps === null || f.fps === undefined) && f.method === 'none'),
+      : fpsSamples.every(f => f && (f.fps === 0 || f.fps === null || f.fps === undefined) && ['none', 'timestats-init', 'no-frames', 'error', 'low-activity'].includes(f.method)),
     fpsSamples.map(f => f && ({ fps: f.fps, method: f.method })));
   check('getFps 有 method 标识', okFps.every(f => typeof f.method === 'string'), fpsSamples.map(f => f && f.method));
 

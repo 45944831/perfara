@@ -56,6 +56,7 @@ function _writeReg(values) {
   for (const n of NAMES) {
     const item = values[n];
     if (!item) {
+      // 快照里没有这个值 = 原来就没设过；删无可删不算错
       try { _reg(['delete', KEY, '/v', n, '/f']); } catch (_) {}
       continue;
     }
@@ -76,7 +77,7 @@ function _notify() {
       { windowsHide: true, stdio: 'ignore', detached: true });
     p.on('error', () => {});
     p.unref();
-  } catch (_) {}
+  } catch (_) {}          // 通知只是加速生效；起不来 powershell 时，下一次网络请求也会重读设置
 }
 
 /** 测试注入：默认走真注册表；单测换成内存对象，不碰本机设置 */
@@ -150,7 +151,7 @@ function restoreStale(file) {
     return { ok: false, msg: _short(e) };
   }
   clearBackup(file);
-  try { h.notify(); } catch (_) {}
+  try { h.notify(); } catch (_) {}   // 同上：通知失败不影响已经写入注册表的设置
   return { ok: true, port: backup.port };
 }
 

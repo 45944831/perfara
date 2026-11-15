@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const loading = require('./fps-loading');
+const Schema = require('./metric-schema');
 
 /**
  * 写入 reports/data.js、data.json 时：若有应用显示名且与包名/bundle 不同，则使用「名称(包名或 bundle_id)」；
@@ -51,7 +52,7 @@ function findDataJsPureJson() {
       const jsonText = raw.slice(i, j + 1);
       JSON.parse(jsonText);
       return { jsonText, dataJsPath };
-    } catch (_) {}
+    } catch (_) {}          // 这段文本不是完整 JSON（data.js 里还有别的 {}），继续往后找
   }
   return null;
 }
@@ -62,9 +63,10 @@ function findDataJsPureJson() {
  * 每次写入都会顺带归档一份到 history/，作为本地报告库的一条记录。
  */
 function writeDataJs(payload) {
+  const prepared = preparePayload(payload);
   // 不缩进：data.js 供报告页 <script> 加载，缩进会让体积膨胀 2~3 倍，
   // 拖慢「写入 + 报告页解析」两头（长时采集可达数十 MB）。人读请用同目录 data.json。
-  const content = `var data = ${JSON.stringify(payload)};\n`;
+  const content = `var data = ${JSON.stringify(prepared)};\n`;
   const primary = getReportsDataJsPath();
   let written = primary;
   try {
@@ -81,8 +83,66 @@ function writeDataJs(payload) {
     }
   }
   // 归档失败不能影响主流程（data.js 已经写好）
-  try { archiveReport(payload, written); } catch (_) {}
+  try { archiveReport(prepared, written); } catch (_) {}
   return written;
+}
+
+/**
+ * 给 payload 补口径元数据（schemaVersion / metricDefinitions / provenance）。
+ *
+ * 这三样是「数据能不能用」的说明书：
+ *   - schemaVersion：跨版本对比前先看它，不一致就不该直接比；
+ *   - metricDefinitions：每个指标的单位与期望口径，报告页/Excel 共用；
+ *   - provenance：本次实际来源、覆盖率、降级项（例如网络回退成整机流量）。
+ * 全部由采样点推导，幂等 —— 重复调用不会叠加字段。
+ */
+function preparePayload(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const perf = Array.isArray(payload.perf) ? payload.perf : [];
+  const dev = payload.device || {};
+  const platform = dev.category || payload.category || '';
+  const diag = payload.diagnostics || null;
+  let provenance;
+  try {
+    provenance = Schema.buildProvenance(perf, platform, {
+      tickMs: diag && diag.tickMs,
+      truncated: diag && diag.droppedSamples,
+      spilled: diag && diag.segments && diag.segments.spilledPoints,
+    });
+  } catch (_) {
+    provenance = undefined;
+  }
+  // D-20（2026-11-15 真机）：报告页 `deviceTargetHz()` 读的是 data.loading.targetHz，
+  // 但这一段此前只存在于 summarizePerf 的返回值里，data.js 从来没写过 —— 报告侧
+  // 「设备自报刷新率优先」整条链静默失效，目标帧率退回 P95 推断（历史 4 份报告全部如此）。
+  // 这里只写报告页真正会用的字段，体积可忽略。
+  let loadingMeta;
+  try {
+    const fpsSeries = perf.map(r => (r && typeof r.fps === 'number') ? r.fps : null);
+    const hz = payload.displayProfile && Number(payload.displayProfile.refreshRateHz);
+    const L = loading.analyseLoading(fpsSeries, undefined, hz);
+    loadingMeta = {
+      target: L.target,
+      targetSource: L.targetSource,
+      targetHz: L.targetHz,
+      inferredTarget: L.inferredTarget,
+      segments: L.segments,
+      excludedSamples: L.excludedSamples,
+      excludedRatio: _round(L.excludedRatio, 4),
+    };
+  } catch (err) {
+    // 分析失败不能拖垮落盘（data.js 写不出去比少一个字段严重得多）。但也不静默：
+    // 把原因写进 loading 段，报告页 deviceTargetHz() 会因 targetHz 缺失退回 P95 吸附
+    // —— 与完全没有这段时行为一致，区别只是降级有迹可循，不再重演 D-20 那种无声失效。
+    loadingMeta = { targetSource: 'unavailable', error: String((err && err.message) || err) };
+  }
+
+  return Object.assign({}, payload, {
+    schemaVersion: Schema.SCHEMA_VERSION,
+    metricDefinitions: Schema.metricDefinitions(),
+    provenance: provenance || undefined,
+    loading: loadingMeta || payload.loading,
+  });
 }
 
 /**
@@ -207,6 +267,8 @@ const KPI_GROUP = {
   fpsTarget: 'fps', fpsReach: 'fps', fpsFrameTime: 'fps', fpsLowPct: 'fps', fps1Low: 'fps',
   fpsGeTarget: 'fps', fpsMedRange: 'fps', fpsStd: 'fps', fpsStutter: 'fps', fpsDrop: 'fps',
   jank10: 'fps', bigJank10: 'fps', smallJank10: 'fps', tinyJank10: 'fps',
+  ftP50: 'fps', ftP90: 'fps', ftP95: 'fps', ftP99: 'fps',
+  jankyRatio: 'fps', hitchMsPerSec: 'fps', overrunP99: 'fps',
   cpu: 'cpu', mem: 'mem', temp: 'temp', gpu: 'gpu', gpuTemp: 'gpu',
 };
 
@@ -232,15 +294,31 @@ function normalizeMetricConfig(cfg) {
  * @param {Array} perf 采样数组
  * @param {Object} [metricConfig] 采集参数配置；被移除组的 KPI 不输出
  */
-function summarizePerf(perf, metricConfig) {
+// 新口径帧指标是「有才写」的序列集合：放模块级，避免每次 summarizePerf 重建
+const OPTIONAL_SERIES_SET = new Set(['ftP50', 'ftP90', 'ftP95', 'ftP99',
+  'jankyRatio', 'hitchMsPerSec', 'overrunP99']);
+
+function summarizePerf(perf, metricConfig, displayProfile) {
+  // 模块级常量（见文件尾部）：构造 Set / 闭包放进每行循环是实测过的纯浪费
+  const OPTIONAL_SERIES = OPTIONAL_SERIES_SET;
   const rows = Array.isArray(perf) ? perf : [];
   // 一次循环把 10 条序列 + 时间戳都取出来：原来是对同一份 rows 跑 11 遍 map，
   // 每遍都要 _pick 做 split 解析，长时采集时这部分是纯浪费。
   const series = {
     fps: [], cpu: [], mem: [], temp: [], gpu: [], gpuTemp: [],
     jank: [], bigJank: [], smallJank: [], tinyJank: [],
+    // 现代帧指标（批次 1.1）：进索引后，报告库与对比页才能按同一口径横向比较
+    ftP50: [], ftP90: [], ftP95: [], ftP99: [],
+    jankyRatio: [], hitchMsPerSec: [], overrunP99: [],
   };
   const ts = [];
+  // 先探测这批数据到底有没有新口径帧字段（老数据 / PC / iOS 都没有）。
+  // 没有就整段跳过，避免每行都付 7 次取值 + 8 次调用的代价 ——
+  // 这是实测出来的：逐行判空仍会让 6000 点报告多花 ~4ms。
+  let hasFrameStats = false;
+  for (const r of rows) {
+    if (r && (r.ftP50 != null || r.ftP99 != null || r.hitchMsPerSec != null)) { hasFrameStats = true; break; }
+  }
   for (const r of rows) {
     const o = (r && typeof r === 'object') ? r : {};
     // 多段路径（cpu.x / mem.x / fps.fps）要求中间层是对象，与 _pick 语义一致：
@@ -256,6 +334,17 @@ function summarizePerf(perf, metricConfig) {
     series.bigJank.push(_firstNum(o.bigJank, o.big_jank, o.bigJankRate));
     series.smallJank.push(_firstNum(o.smallJank, o.small_jank));
     series.tinyJank.push(_firstNum(o.tinyJank, o.tiny_jank));
+    // 新口径帧指标只在采样点确实带该字段时才入列：
+    // 全量 push null 会让每个报告多出 7 条与样本等长的空数组，白付统计与内存成本。
+    if (hasFrameStats) {
+      if (o.ftP50 != null) series.ftP50.push(o.ftP50);
+      if (o.ftP90 != null) series.ftP90.push(o.ftP90);
+      if (o.ftP95 != null) series.ftP95.push(o.ftP95);
+      if (o.ftP99 != null) series.ftP99.push(o.ftP99);
+      if (o.jankyRatio != null) series.jankyRatio.push(o.jankyRatio);
+      if (o.hitchMsPerSec != null) series.hitchMsPerSec.push(o.hitchMsPerSec);
+      if (o.overrunP99 != null) series.overrunP99.push(o.overrunP99);
+    }
     if (o.timestamp != null) ts.push(o.timestamp);
   }
   // ── 加载阶段剔除 ───────────────────────────────────────────────────────────
@@ -264,7 +353,10 @@ function summarizePerf(perf, metricConfig) {
   // 的采样点置 null，后面的 KPI 计算自然跳过。识别规则见 src/fps-loading.js。
   const fpsRawSeries = series.fps.slice();
   const fpsRawAvg = _avg(fpsRawSeries);
-  const fpsLoading = loading.analyseLoading(fpsRawSeries);
+  // 1.1 设备自报刷新率优先：displayProfile 由采集端在 start 时读一次
+  // （dumpsys display / settings peak_refresh_rate），不随采样点重复下发 adb。
+  const deviceHz = displayProfile && Number(displayProfile.refreshRateHz);
+  const fpsLoading = loading.analyseLoading(fpsRawSeries, undefined, deviceHz);
   const loadingMask = fpsLoading.mask;
   if (fpsLoading.excludedSamples > 0) {
     for (const k of ['fps', 'jank', 'bigJank', 'smallJank', 'tinyJank']) {
@@ -273,7 +365,10 @@ function summarizePerf(perf, metricConfig) {
   }
 
   const kpi = {};
+  // 新口径帧指标是「有才写」：老数据 / PC / iOS 没有这些字段，
+  // 生成一条 avg=null 的 KPI 只会让报告库对比表多出一整行「—」。
   for (const k of Object.keys(series)) {
+    if (OPTIONAL_SERIES.has(k) && series[k].length === 0) continue;
     // 单趟求 sum / min / max：原来 _avg 与 _nums 各遍历一遍（共 3 遍），
     // 且 Math.min.apply(null, 大数组) 在点数 >6.5 万时会 RangeError（长时采集风险）
     let sum = 0, cnt = 0, mn = Infinity, mx = -Infinity;
@@ -377,6 +472,9 @@ function summarizePerf(perf, metricConfig) {
     // 加载阶段剔除情况：供对比报告 / 排查用，也是「均值为什么和曲线看起来不一致」的依据
     loading: {
       target: fpsLoading.target,
+      targetSource: fpsLoading.targetSource,
+      targetHz: fpsLoading.targetHz,
+      inferredTarget: fpsLoading.inferredTarget,
       segments: fpsLoading.segments,
       excludedSamples: fpsLoading.excludedSamples,
       excludedRatio: _round(fpsLoading.excludedRatio, 4),
@@ -440,7 +538,7 @@ function archiveReport(payload, dataJsPath) {
     const json = JSON.stringify(payload);
     fs.writeFileSync(path.join(dir, `${id}.js`), `var data = ${json};\n`, 'utf8');
 
-    const sum = summarizePerf(perf, payload.metricConfig);
+    const sum = summarizePerf(perf, payload.metricConfig, payload.displayProfile);
     const meta = {
       id,
       file: `${HISTORY_DIRNAME}/${id}.js`,
@@ -458,6 +556,13 @@ function archiveReport(payload, dataJsPath) {
       metricConfig: payload.metricConfig || null,
       // 本次采集保存的参数展示顺序；对比报告据此重排指标行与曲线
       metricOrder: payload.metricOrder || null,
+      // 口径版本与降级项：报告库列表与对比页据此判断「能不能直接比」
+      schemaVersion: payload.schemaVersion || Schema.SCHEMA_VERSION,
+      degraded: payload.provenance && Array.isArray(payload.provenance.degraded)
+        ? payload.provenance.degraded.map(d => d.key) : [],
+      missing: payload.provenance && Array.isArray(payload.provenance.missing)
+        ? payload.provenance.missing.slice(0, 12) : [],
+      truncatedSamples: (payload.diagnostics && payload.diagnostics.droppedSamples) || 0,
     };
 
     const list = readReportIndex();
@@ -465,6 +570,8 @@ function archiveReport(payload, dataJsPath) {
     while (list.length > MAX_HISTORY_REPORTS) {
       const old = list.pop();
       for (const ext of ['.js', '.json']) {
+        // 删旧报告失败（被占用 / 已经不在了）不阻断索引更新：索引里已经把它 pop 掉，
+        // 残留文件下次归档时还会被再删一遍。
         try { fs.unlinkSync(path.join(dir, `${old.id}${ext}`)); } catch (_) {}
       }
     }
@@ -481,6 +588,7 @@ module.exports = {
   getHistoryDir,
   formatReportAppId,
   writeDataJs,
+  preparePayload,
   readReportDataJs,
   readReportPureJsonTextFromDataJs,
   writeReportDataJsonFromDataJs,

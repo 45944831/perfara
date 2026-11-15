@@ -14,6 +14,7 @@
 """
 import os
 import sys
+import glob
 import shutil
 import argparse
 
@@ -43,6 +44,25 @@ DIRS = [
 # 直接删除的文件
 FILES = [
     '_asar_build.asar',            # 76M：打包中间产物
+]
+
+# 运行期产物：目录保留、只清里面的文件（下一轮采集会重建）
+# 这些都在 .gitignore 内，且被 make_release_zip.py 的 SKIP_DIR / 扩展名规则排除在包外。
+# 第二列是 glob 模式；None 表示「清空整个目录内容、保留目录本身」。
+RUNTIME_DIRS = [
+    # 报告目录与交付资源同处一地：perf.html / library.html / perf2.html / echarts.min.js
+    # 是**资产**，绝不能删，所以这里只按显式文件名匹配，不用 *.js 这种宽规则。
+    ('perfara/collector/resources/reports', ('data.js', 'data.json', '*.xlsx', '*.xls')),
+    ('perfara/collector/resources/reports/history', None),  # 本地报告库
+    ('perfara/collector/resources/reports/shots', None),    # 低谷截图
+    ('perfara/tests/_run_out', None),   # 测试输出（在 PROTECTED 的 perfara/tests 下，单独列出）
+]
+
+# 散落的运行日志
+LOG_GLOBS = [
+    'build/*.log',
+    'perfara/server/logs/*.log',
+    'perfara/collector/resources/weaknet/weaknet.log',
 ]
 
 # 根目录散落的过程截图与报告（已归档 F 盘）
@@ -86,28 +106,53 @@ def main():
     args = ap.parse_args()
 
     protected = set(p.replace('/', os.sep) for p in PROTECTED)
+    # 每项统一为 (kind, 展示名, 字节数, 待删文件列表或 None)
     targets = []
     for rel in DIRS:
         if rel.replace('/', os.sep) in protected:
             continue
         p = os.path.join(ROOT, rel.replace('/', os.sep))
         if os.path.isdir(p):
-            targets.append(('dir', rel, dir_size(p)))
+            targets.append(('dir', rel, dir_size(p), None))
     for rel in FILES:
         p = os.path.join(ROOT, rel)
         if os.path.isfile(p):
-            targets.append(('file', rel, os.path.getsize(p)))
+            targets.append(('file', rel, os.path.getsize(p), None))
     for n in sorted(os.listdir(ROOT)):
         p = os.path.join(ROOT, n)
         if not os.path.isfile(p) or n in KEEP_ROOT_FILES:
             continue
         if n.lower().endswith(ROOT_PATTERNS):
-            targets.append(('file', n, os.path.getsize(p)))
+            targets.append(('file', n, os.path.getsize(p), None))
 
-    total = sum(s for _k, _r, s in targets)
+    # 运行期产物：目录里的文件（目录本身保留）
+    for rel, patterns in RUNTIME_DIRS:
+        p = os.path.join(ROOT, rel.replace('/', os.sep))
+        if not os.path.isdir(p):
+            continue
+        if patterns is None:
+            kids = [os.path.join(p, n) for n in os.listdir(p)]
+            if kids:
+                targets.append(('contents', rel, dir_size(p), kids))
+            continue
+        hits = []
+        for pat in patterns:
+            hits.extend(fp for fp in glob.glob(os.path.join(p, pat)) if os.path.isfile(fp))
+        if hits:
+            size = sum(os.path.getsize(fp) for fp in hits)
+            label = '%s（%d 个 %s）' % (rel, len(hits), '/'.join(patterns))
+            targets.append(('pattern', label, size, hits))
+
+    # 散落的运行日志
+    for pat in LOG_GLOBS:
+        for fp in glob.glob(os.path.join(ROOT, pat.replace('/', os.sep))):
+            if os.path.isfile(fp):
+                targets.append(('file', os.path.relpath(fp, ROOT), os.path.getsize(fp), None))
+
+    total = sum(t[2] for t in targets)
     print('清理目标 %d 项，合计 %s' % (len(targets), human(total)))
     print('-' * 62)
-    for kind, rel, size in targets:
+    for kind, rel, size, _files in targets:
         print('  [%s] %-42s %10s' % (kind, rel, human(size)))
 
     # 保留项提示
@@ -124,11 +169,17 @@ def main():
     print('\n开始删除...')
     freed = 0
     failed = []
-    for kind, rel, size in targets:
+    for kind, rel, size, files in targets:
         p = os.path.join(ROOT, rel.replace('/', os.sep))
         try:
             if kind == 'dir':
                 shutil.rmtree(p)
+            elif kind in ('contents', 'pattern'):
+                for fp in files:
+                    if os.path.isdir(fp):
+                        shutil.rmtree(fp)
+                    else:
+                        os.remove(fp)
             else:
                 os.remove(p)
             freed += size

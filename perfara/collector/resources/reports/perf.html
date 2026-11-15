@@ -659,21 +659,39 @@ body { overflow-x: hidden; }
       h: '帧间隔超过 2 倍目标帧间隔的帧，累计其耗时 ÷ 总耗时 × 100%。',
       g: '比卡顿「次数」更能体现卡了多久，一般要求低于 5%。' },
 
-    jank: { t: 'Jank 卡顿帧', u: '帧',
-      d: '明显超出正常耗时的一次掉帧，是肉眼可察觉的「顿一下」。每个采样点统计该周期内的卡顿帧数（默认 1Hz 采集，数值上等于次/秒）。',
+    // FIX-02（schema v4）：现代帧指标的「超时」基准 = deadline = max(屏幕刷新周期,
+    // 本段实际帧节奏 P50)。锚面板 vsync 会让锁 30fps 在高刷面板上帧帧误判。
+    jankyr: { t: '卡顿帧占比 JankyFrame', u: '%',
+      d: '帧耗时超过 2×deadline 的帧占比；deadline = max(屏幕刷新周期, 本段实际帧节奏 P50)。跨刷新率 / 跨设备可比。',
+      h: '按帧耗时直方图统计（帧间隔 > 2×deadline 的帧数 ÷ 总帧数）。',
+      g: '一般要求低于 5%；与 Hitch 一起看「卡了多少」与「卡了多久」。' },
+    hitch: { t: 'Hitch（超时/秒）', u: 'ms/s',
+      d: '每秒累计超出 deadline 的时间，即 Apple Hitch Time Ratio 口径；deadline = max(屏幕刷新周期, 实际帧节奏 P50)。',
+      h: 'Σ max(0, 帧耗时 − deadline) ÷ 采样秒数；参考阈值 10 / 25 / 50 ms/s。',
+      g: '≤10 优秀，10~25 可接受，>25 用户明显感到掉帧。' },
+    overrun: { t: '超帧时限 P99', u: 'ms',
+      d: '单帧超出 deadline 的时长 P99（最长单帧为 overrunMax）。',
+      h: '对「每帧超出 deadline 的部分」取分位数；零超时帧计入分布，避免偶发长帧夸大 P99。',
+      g: 'P99 大而 P50 小 = 偶发长帧；P99 与 P50 一起高 = 持续重载。' },
+
+    // 「旧口径」标注（1.1）：Jank 家族基于固定电影帧绝对门槛，60/90/120/144Hz
+    // 之间不可直接比较；保留只为与历史报告对照，新分析请看帧耗时 P99 /
+    // 卡顿帧占比 / Hitch / 超帧时限，这些按刷新率归一化。
+    jank: { t: 'Jank 卡顿帧（旧口径）', u: '帧', legacy: true,
+      d: '【旧口径 · 跨刷新率不可直接比较】明显超出正常耗时的一次掉帧；每个采样点统计该周期内的卡顿帧数（默认 1Hz 采集，数值上等于次/秒）。新分析请改用帧耗时 P99 与卡顿帧占比。',
       h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 2 个电影帧（约 83ms）判定为 1 次 Jank。',
       g: '关键场景（战斗、切图、加载）中的 Jank 优先治理；≤2 次/分钟通常可接受。' },
-    bigjank: { t: 'BigJank 严重卡顿帧', u: '帧',
-      d: '耗时特别长的卡顿帧，用户几乎必感知。统计口径同 Jank（每采样点帧数）。',
+    bigjank: { t: 'BigJank 严重卡顿帧（旧口径）', u: '帧', legacy: true,
+      d: '【旧口径】耗时特别长的卡顿帧，用户几乎必感知。统计口径同 Jank（每采样点帧数），保留用于历史对照。',
       h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 3 个电影帧（125ms）判定为 1 次 BigJank。',
       g: '优先级最高：通常对应 GC、磁盘 IO、资源加载或布局重排。' },
-    smalljank: { t: 'SmallJank 轻卡顿帧', u: '帧',
-      d: 'Jank 家族中较轻的一级，用于在整体已流畅时定位轻微抖动。统计口径同 Jank。',
-      h: '同 Jank 的相对判定逻辑，但阈值更宽松（帧耗时超过基线而尚未达到 Jank 门槛）。',
-      g: '数值不大时无需处理；集中出现时说明有周期性的小开销。' },
-    tinyjank: { t: 'TinyJank 微卡顿帧', u: '帧',
-      d: '最轻一级的卡顿，粒度最细。统计口径同 Jank。',
-      h: '同 Jank 的相对判定逻辑，阈值最低。',
+    smalljank: { t: 'SmallJank 微小卡顿帧（旧口径）', u: '帧', legacy: true,
+      d: '【旧口径 · v5 档梯统一】PerfDog 定义「在 Jank 基础上对更细微卡顿的捕捉」（阈值应低于 Jank），但其从未公布数值。本项目按电影帧 1/2/3 倍递进推导：Small = max(2×基准, 41.67ms) ⊃ Jank = max(2×基准, 83.34ms)，方向已修正。',
+      h: '相对条件与 Jank 相同（> 2×基准），绝对门槛为 1 个电影帧（41.67ms，推导值非官方口径）。',
+      g: 'SmallJank 数值天然 ≥ Jank；两者差值 = 「41.67~83.34ms 区间」的轻微抖动帧数。' },
+    tinyjank: { t: 'TinyJank 微卡顿帧（旧口径）', u: '帧', legacy: true,
+      d: '【旧口径】最轻一级的卡顿，粒度最细。命名沿用 PerfDog（其未公布数值，1.5×基准为本项目自定），跨刷新率设备不要横向对比。',
+      h: '同 Jank 的相对判定逻辑，阈值最低（1.5×基准）。',
       g: '用于对标极致流畅度的专项优化。' },
     jank10: { t: 'Jank/10min', u: '次',
       d: '按每 10 分钟折算的 Jank 次数。',
@@ -1451,7 +1469,13 @@ body { overflow-x: hidden; }
   }
 
   class ChartManager {
-    constructor() { this._charts = {}; this._data = {}; this._ready = false; this._onReadyCbs = []; }
+    constructor() {
+      this._charts = {}; this._data = {}; this._ready = false; this._onReadyCbs = [];
+      /** @type {string[]|null} 视口外待补画的图（分帧渲染队列） */
+      this._pendingRest = null;
+      /** @type {*} 补画定时器句柄：同一时刻只排一条链，避免多批数据各排一队 */
+      this._restTimer = null;
+    }
     onReady(cb) {
       if (typeof cb !== 'function') return;
       if (this._ready) { try { cb(); } catch (_) {} return; }
@@ -1528,14 +1552,50 @@ body { overflow-x: hidden; }
       this.rerenderAll();
     }
 
-    /** 按当前 state 重画所有图（每图一次 setOption，渲染视图经过抽稀） */
+    /**
+     * 按当前 state 重画所有图（渲染视图经过抽稀）。
+     *
+     * 分两批：首屏可见的立刻画，视口外的每帧补一张。
+     * 原因：12 张图各 2000 点是 900ms 量级的长任务，一次画完期间浏览器连一帧都
+     * 出不来，用户看到的就是「打开报告白屏一下才出现曲线」。拆开后首屏曲线几百
+     * 毫秒内就能落位，剩下的在阅读时补齐，总耗时不变但感知完全不同。
+     */
     rerenderAll() {
+      const names = [];
       for (const name of Object.keys(CHART_CONFIGS)) {
-        const state = this._data[name];
-        const chart = this._charts[name];
-        if (!state || !chart) continue;
-        try { this._renderOne(name, chart, state); } catch (_) {}
+        if (this._data[name] && this._charts[name]) names.push(name);
       }
+      if (!names.length) return;
+      const vh = window.innerHeight || 800;
+      const soon = [];
+      const later = [];
+      for (const name of names) {
+        let top = 0;
+        try { top = this._charts[name].getDom().getBoundingClientRect().top; } catch (_) { /* 元素未布局：当作首屏 */ }
+        (top < vh * 1.3 ? soon : later).push(name);
+      }
+      // 布局还没就绪时（宽高为 0）所有图都算「首屏」，会退化成一次性画完；
+      // 因此首屏批次硬性封顶 4 张，保证无论如何都会让出主线程。
+      const FIRST_BATCH_MAX = 4;
+      const head = soon.length ? soon : names.slice(0, FIRST_BATCH_MAX);
+      const deferred = soon.length ? later : names.slice(FIRST_BATCH_MAX);
+      for (const name of head.slice(0, FIRST_BATCH_MAX)) {
+        try { this._renderOne(name, this._charts[name], this._data[name]); } catch (_) {}
+      }
+      this._pendingRest = head.slice(FIRST_BATCH_MAX).concat(deferred);
+      this._drainRest();
+    }
+
+    /** 每帧补画一张视口外的图，把长任务切成若干小任务 */
+    _drainRest() {
+      if (this._restTimer || !this._pendingRest || !this._pendingRest.length) return;
+      this._restTimer = setTimeout(() => {
+        this._restTimer = null;
+        const name = this._pendingRest && this._pendingRest.shift();
+        if (!name) return;
+        try { this._renderOne(name, this._charts[name], this._data[name]); } catch (_) {}
+        this._drainRest();
+      }, 0);
     }
 
     /**
@@ -1589,6 +1649,10 @@ body { overflow-x: hidden; }
       const colors = COLORS[name] || COLORS.cpu;
       return {
         color: colors,
+        // 静态报告不需要入场动画：12 张图各 2000 点做一次渐进动画，实测吃掉
+        // 首屏渲染时间的可观一部分，而用户看到的就是「打开报告卡一下」。
+        // 关掉后曲线直接落位，视觉上只是少了 0.5s 的「画上去」过程。
+        animation: false,
         tooltip: { trigger: 'axis' },
         legend: { top: 0, textStyle: { color: '#bcd3ff' } },
         grid: { left: 44, right: 16, top: 32, bottom: 28 },
@@ -1605,6 +1669,7 @@ body { overflow-x: hidden; }
       const colors = COLORS[name] || COLORS.fps;
       return {
         color: colors,
+        animation: false,
         tooltip: { trigger: 'axis' },
         legend: { top: 0, textStyle: { color: '#bcd3ff' } },
         grid: { left: 44, right: 16, top: 32, bottom: 28 },
@@ -1709,6 +1774,43 @@ body { overflow-x: hidden; }
     if (n) chips.push(`<span class="rm-chip"><i>采样</i>${n} 点</span>`);
     if (durSec != null) chips.push(`<span class="rm-chip"><i>时长</i>${durText(durSec)}</span>`);
     if (start) chips.push(`<span class="rm-chip"><i>开始</i>${fmtDateTime(start)}</span>`);
+    // 1.1 目标帧率来源必须显式：设备自报峰值刷新率比 FPS 序列推断可信，
+    // 锁帧应用用推断值会把「主动限帧」误判成「达标」。
+    const ld = (data && data.loading) || {};
+    if (ld.target > 0) {
+      const fromDev = ld.targetSource === 'device-peak-refresh-rate';
+      chips.push(`<span class="rm-chip" title="${fromDev
+        ? '取自设备峰值刷新率（dumpsys display / settings peak_refresh_rate）'
+        : '由 FPS 序列 P95 推断，未取到设备自报刷新率'}"><i>目标帧率</i>`
+        + `${ld.target} Hz · ${fromDev ? '设备自报' : '序列推断'}</span>`);
+    }
+    // 1.4 采集开销：观测者效应的直接证据，也解释采样点为什么变稀
+    const ov = (data.provenance && data.provenance.overhead) || null;
+    if (ov) {
+      const itv = (data.diagnostics && data.diagnostics.intervalMs) || 1000;
+      const pct = Math.round((ov.p50Ms || 0) / itv * 100);
+      chips.push(`<span class="rm-chip"${pct > 30 ? ' style="background:#fff1e6"' : ''}`
+        + ` title="采集自身耗时占采样周期 ${pct}%；过高会反过来拖慢被测应用"><i>采集耗时</i>`
+        + `P50 ${ov.p50Ms} / P95 ${ov.p95Ms} ms（${pct}%）</span>`);
+    }
+    // 1.5 分段溢出 / 截断：长时采集数据完整性的说明
+    const prov0 = data.provenance || {};
+    if (prov0.spilledSamples) {
+      chips.push(`<span class="rm-chip" title="超出内存上限的点已落盘分片并合并回本报告，没有丢失"><i>分段落盘</i>`
+        + `${prov0.spilledSamples} 点已合并</span>`);
+    }
+    if (prov0.truncatedSamples) {
+      chips.push(`<span class="rm-chip" style="background:#ffecec" title="分片写盘失败，报告不完整"><i>丢失</i>`
+        + `${prov0.truncatedSamples} 点</span>`);
+    }
+
+    // 0.2 iOS 侧 sysmon 只有 6 组，页头显式写「本平台不采集」，
+    // 免得报告里没有网络/电量/温度列时被当成采集失败。
+    const scopeNote = category === 'ios'
+      ? '本平台不采集：网络 / 电量 / 温度 / GPU 利用率（GPU 专项见独立页）；共 6 组指标'
+      : category === 'ios_gpu'
+        ? '本平台不采集：FPS / CPU / 内存 / 网络 / 电量 / 温度；仅渲染管线专项'
+        : '';
 
     const subParts = [];
     if (d.brand) subParts.push('品牌 ' + d.brand);
@@ -1727,6 +1829,8 @@ body { overflow-x: hidden; }
         '</div>' +
         '<div class="rm-chips">' + chips.join('') + '</div>' +
         (subParts.length ? '<div class="rm-sub">' + escapeHtml(subParts.join('   ·   ')) + '</div>' : '') +
+        (scopeNote ? '<div class="rm-sub" style="color:#8a6100">'
+          + escapeHtml(scopeNote) + '</div>' : '') +
       '</div>';
   }
 
@@ -2134,10 +2238,36 @@ body { overflow-x: hidden; }
     }
 
     /** P95 吸附到常见刷新率 */
+    // P-04 / S-01：档位表与采集端 adb.js 的 REFRESH_RATES 保持一致 ——
+    // `perf_param_audit_test.js` 的 ⑦⑧ 会逐份校验 5 个副本（本文件、adb.js、
+    // fps-loading.js、library.html、backend/utils.py），改一处不同步就会红。
+    // 修正点：去掉 45（手机面板没有 45Hz 档，45 是帧率上限）、补 24/48/100/185
+    //（24/48 是视频帧率，100 是非 30 倍数机型，185 见 ROG 9 / K100 Pro Max）。
+    const REFRESH_RATES_SHARED = [24, 30, 48, 60, 90, 100, 120, 144, 165, 185, 240];
     function snapFpsTarget(p95) {
       if (!(p95 > 0)) return null;
-      for (const c of [30, 45, 60, 90, 120, 144, 165]) { if (c >= p95 * 0.97) return c; }
-      return Math.ceil(p95 / 30) * 30;
+      // P-04：吸附到「≥ p95×0.97 的最小档」；档位都不满足时取 p95 向上取整——
+      // 旧兜底 ceil(p95/30)*30 会把 24fps 视频判成 30、185Hz 判成 210。
+      // 上界 1.10：200Hz 面板不该被抬到 240（与 fps-loading.js / utils.py 同口径）
+      for (const c of REFRESH_RATES_SHARED) { if (c >= p95 * 0.97 && c <= p95 * 1.10) return c; }
+      return Math.ceil(p95);
+    }
+    // P-04 / S-01：设备自报目标帧率。`loading` 里有两个不同字段：
+    //   targetHz   —— 仅在「设备自报」时非空（fps-loading.js:174），语义精确；
+    //   target     —— 设备值或「P95 吸附」推断值，读它必须同时看 targetSource。
+    // 旧实现直接读 target，等于把推断值当设备值：读不到刷新率的报告（iOS / PC /
+    // 历史报告 / 探针失败）会拿旧 7 档表的推断结果覆盖报告页的新表。
+    function deviceTargetHz() {
+      const L = (typeof data !== 'undefined' && data && data.loading) || null;
+      if (!L) return null;
+      const hz = Number(L.targetHz);
+      if (hz > 0) return hz;
+      // 老报告没有 targetHz：退回 target，但必须校验来源，否则宁可用本地吸附
+      if (L.targetSource === 'device-peak-refresh-rate') {
+        const t = Number(L.target);
+        if (t > 0) return t;
+      }
+      return null;
     }
 
     function fpsSeriesOf(pts) {
@@ -2151,11 +2281,16 @@ body { overflow-x: hidden; }
       const i = (a.length - 1) * 0.95;
       const lo = Math.floor(i), hi = Math.ceil(i);
       const p95 = lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
+      // P-04：设备自报优先（与 fpsTargetOf 同一口径），推断值仅作回退
+      const dev = deviceTargetHz();
+      if (dev != null) return dev;
       return snapFpsTarget(p95);
     }
 
-    /** 目标帧率：P95 吸附到常见刷新率 */
+    /** 目标帧率：设备自报优先（P-04），无设备值时按 P95 吸附到共享档位表 */
     function fpsTargetOf(pts) {
+      const dev = deviceTargetHz();
+      if (dev != null) return dev;
       return fpsTargetOfSeries(fpsSeriesOf(pts));
     }
 
@@ -2453,6 +2588,34 @@ body { overflow-x: hidden; }
       if (bj10 != null) push('BigJank/10min', '次', bj10);
       if (sj10 != null) push('SmallJank/10min', '次', sj10);
       if (tj10 != null) push('TinyJank/10min', '次', tj10);
+
+      // ── 现代帧指标（口径版本 2）──────────────────────────────────────────
+      // 这些字段由采集端按「每个采样窗口内的逐帧分布」算出（见 src/adb.js
+      // analyseHistogram / calcJankFramestats），无法从秒级 FPS 反推，
+      // 因此直接读 data.perf。旧报告 / iOS / PC 没有这些字段时整段跳过，
+      // 不显示 0 —— 未测量与测得零是两回事。
+      const perfRowsM = (typeof data !== 'undefined' && data && Array.isArray(data.perf)) ? data.perf : [];
+      const colOf = (key) => perfRowsM
+        .map(r => (r && typeof r[key] === 'number' && isFinite(r[key])) ? r[key] : null)
+        .filter(v => v != null);
+      const addCol = (label, unit, key, digits) => {
+        const vs = colOf(key);
+        if (!vs.length) return;
+        let sum = 0, mx = -Infinity;
+        for (const v of vs) { sum += v; if (v > mx) mx = v; }
+        rows.push({
+          metric: label, raw: label, unit,
+          mean: +(sum / vs.length).toFixed(digits),
+          max: +mx.toFixed(digits),
+          p98: +mx.toFixed(digits),
+        });
+      };
+      addCol('帧耗时 P95', 'ms', 'ftP95', 1);
+      addCol('帧耗时 P99', 'ms', 'ftP99', 1);
+      addCol('卡顿帧占比', '%', 'jankyRatio', 1);
+      addCol('Hitch', 'ms/s', 'hitchMsPerSec', 1);
+      addCol('超帧时限 P99', 'ms', 'overrunP99', 1);
+      addCol('最长单帧超时', 'ms', 'overrunMax', 1);
 
       return rows;
     }
@@ -3020,12 +3183,13 @@ body { overflow-x: hidden; }
         ? Math.max(0, Math.round(durSecAll * (1 - keptRatio))) : 0;
       const hasExclusion = out.excludedSec > 0;
 
-      /* ---------- 帧率目标：从 P95 吸附到常见刷新率 ---------- */
-      let fpsTarget = null;
-      if (fpsP95 != null && fpsP95 > 0) {
-        const cands = [30, 45, 60, 90, 120, 144, 165];
-        for (const c of cands) { if (c >= fpsP95 * 0.97) { fpsTarget = c; break; } }
-        if (fpsTarget == null) fpsTarget = Math.ceil(fpsP95 / 30) * 30;
+      /* ---------- 帧率目标：设备自报优先，无设备值再吸附到刷新率档位 ---------- */
+      // S-01：此前这里自带一份旧 7 档表 + ceil/30 兜底，与 KPI 卡（走 deviceTargetHz /
+      // snapFpsTarget）不是同一口径 —— 同一页会出现两个「目标帧率」，评分也跟着偏。
+      let fpsTarget = deviceTargetHz();
+      if (fpsTarget == null && fpsP95 != null && fpsP95 > 0) {
+        for (const c of REFRESH_RATES_SHARED) { if (c >= fpsP95 * 0.97) { fpsTarget = c; break; } }
+        if (fpsTarget == null) fpsTarget = Math.ceil(fpsP95);
       }
 
       /* ---------- 评分 ---------- */
@@ -3136,7 +3300,7 @@ body { overflow-x: hidden; }
         const parts = [];
         const tones = [];
         if (jankMean != null) {
-          parts.push('Jank ' + iFmt(jankMean, 2) + ' 次/s');
+          parts.push('Jank ' + iFmt(jankMean, 2) + ' 帧/拍');
           tones.push(jankMean <= 1 ? 'good' : (jankMean <= 3 ? 'warn' : 'bad'));
         }
         if (bjNums.length) {
@@ -3200,6 +3364,26 @@ body { overflow-x: hidden; }
         else if (tempMax != null && tempMax >= 40) { tone = 'info'; note = '温度正常'; }
         else { tone = 'good'; note = '温度良好'; }
         push('温度', '均值 ' + iFmt(tempMean, 1) + '°C / 峰值 ' + iFmt(tempMax, 1) + '°C', note, tone);
+      }
+
+      // ⑧b ADPF 热节流信号（v3 新增）：系统自报的节流等级与冷却动作。
+      // Status>0 = 系统正在限频，是掉帧归因时最直接的证据；null = ROM 未暴露，不显示。
+      {
+        const stCol = iNums(pts.map(p => p.thermalStatus)).filter(v => v != null);
+        if (stCol.length) {
+          const stMax = Math.max.apply(null, stCol);
+          const stHits = stCol.filter(v => v > 0).length;
+          const coolVals = iNums(pts.map(p => p.coolingValue)).filter(v => v != null);
+          const coolMax = coolVals.length ? Math.max.apply(null, coolVals) : null;
+          if (stMax > 0) {
+            push('热节流', '峰值等级 ' + stMax + ' 级（' + stHits + '/' + stCol.length + ' 拍节流中）'
+              + (coolMax != null && coolMax > 0 ? '，最大冷却动作 ' + iFmt(coolMax, 0) : ''),
+              '系统正在主动限频，掉帧时段请与温度曲线对照',
+              stMax >= 3 ? 'bad' : 'warn');
+          } else {
+            push('热节流', '全程 0 级', '未触发系统热节流', 'good');
+          }
+        }
       }
 
       // ⑨ GPU
@@ -3323,6 +3507,22 @@ body { overflow-x: hidden; }
       }
       const r = buildInsight(pts, category);
       const subParts = [r.n + ' 个采样点'];
+      // FIX-05：等距 category 轴的提示——采样间隔不恒定（采集耗时波动），
+      // 精确定位请看各指标的原始采样页（Excel「原始采样」表含 tickStartTs/timestamp）。
+      if (!subParts.__intervalNoted) subParts.push('采样间隔不恒定（含采集耗时）');
+      // FIX-16：两种「帧分布为空」的语义要在报告里说清，别让用户把 -- 读成「没测」：
+      //   low-activity = 产出了帧但太少（帧数不足，分布无统计意义；fps 仍是实测值）
+      //   none / no-frames / timestats-init = 本周期没有可见渲染帧
+      {
+        const lowN = pts.filter((p) => p.fpsMethod === 'low-activity').length;
+        const noneN = pts.filter((p) => ['none', 'no-frames', 'timestats-init', 'error']
+          .includes(p.fpsMethod)).length;
+        if (lowN > 0) subParts.push(`<span class="sub-cut">${lowN} 拍帧数不足（帧分布未统计，FPS 为实测）</span>`);
+        if (noneN > 0) subParts.push(`<span class="sub-cut">${noneN} 拍无渲染帧</span>`);
+        // r3 遗留项闭环（FIX-13 dtMs 下游消费）：长间隔拍（>3s，瞬时指标已断截）
+        const staleN = pts.filter((p) => typeof p.dtMs === 'number' && p.dtMs > 3000).length;
+        if (staleN > 0) subParts.push(`<span class="sub-cut">${staleN} 拍长间隔（&gt;3s，瞬时指标断截）</span>`);
+      }
       // 时长写「有效时长」：剔除了加载段，直接写全程会和各指标的分母对不上
       if (r.durSec != null) subParts.push('有效时长 ' + iDurationText(r.durSec));
       let subHtml = subParts.join(' · ');
@@ -3437,6 +3637,7 @@ body { overflow-x: hidden; }
 
     // selection state (by x-axis index)
     let selection = null; // {fromIdx,toIdx}
+    let _pcFramePts = null; // PC 分支归一化后的采样点（统计表附加「帧延迟分解」行用）
 
     function calcStats(arr) {
       const nums = (arr || []).filter(v => typeof v === 'number' && !isNaN(v));
@@ -3471,6 +3672,8 @@ body { overflow-x: hidden; }
       '达帧率', '均帧', '帧耗时标准差', '帧耗时方差', '低帧占比', '1%Low', 'Drop',
       'FPS≥目标', '稳帧范围', '帧率标准差', '卡顿时长占比', 'FPS(全程)',
       'Jank/10min', 'BigJank/10min', 'SmallJank/10min', 'TinyJank/10min',
+      // v3：PC 帧延迟分解（PresentMon v1 列，PC 报告统计表主表展示）
+      '上屏间隔', 'Present→上屏延迟', 'Present 调用耗时', '渲染完成延迟', '帧起点间距',
     ]);
 
     /** 属于「帧率」家族的系列名：整段统计时统一剔除加载段 */
@@ -3562,6 +3765,27 @@ body { overflow-x: hidden; }
           });
         }
       for (const r of qRows) rows.push(r);
+        }
+
+        // PC 帧延迟分解（v3 新增，PresentMon v1 列 1s 均值）：与 Android 端帧耗时
+        // 分位数对齐，回答「延迟花在哪个阶段」。旧报告 / PresentMon 无权限时全 null，
+        // 整组隐藏而不是留 5 行「--」。_pcFramePts 由 PC 分支在归一化后赋值。
+        if (category === 'pc' && _pcFramePts
+          && ['_frameDisplayChangeMs', '_frameUntilDisplayedMs', '_framePresentApiMs',
+            '_frameRenderLatencyMs', '_frameAppStartGapMs'].some(k => _pcFramePts.some(p => p[k] != null))) {
+          const defs = [
+            ['_frameDisplayChangeMs', '上屏间隔', 'ms'],
+            ['_frameUntilDisplayedMs', 'Present→上屏延迟', 'ms'],
+            ['_framePresentApiMs', 'Present 调用耗时', 'ms'],
+            ['_frameRenderLatencyMs', '渲染完成延迟', 'ms'],
+            ['_frameAppStartGapMs', '帧起点间距', 'ms'],
+          ];
+          for (const [k, label, unit] of defs) {
+            const vals = _pcFramePts.map(p => p[k]).filter(v => v != null);
+            const st2 = calcStats(vals);
+            rows.push({ metric: label, raw: label, unit: unit, mean: st2.mean, max: st2.max, p98: st2.p98,
+              sub: 'PresentMon ' + unit + '，1s 窗口均值' });
+          }
         }
         return rows;
       }
@@ -3861,7 +4085,13 @@ body { overflow-x: hidden; }
     }
 
     if (category === 'android') {
-      const pts = perf.map((it) => {
+            // P-03：上下文切换速率 = (自愿 + 非自愿 累计) 在相邻采样点间的差 ÷ 间隔秒。
+      // 数据在采集端 mem.ctxVoluntary / ctxNonvoluntary（FIX-07），报告层此前没做
+      // 「取差」，cswitch 曲线与解读条目恒空。首拍写 null（无基线）；计数器回绕
+      // 用 Math.max(0, …) 不报负数——与网络速率同一套约定。iOS 分支有自己的
+      // cswitch 数据源，不走这里。
+      let _prevCtx = null, _prevCtxTs = null;
+const pts = perf.map((it) => {
         const cpu = it.cpu || {};
         const mem = it.mem || {};
         const net = it.net || {};
@@ -3882,13 +4112,43 @@ body { overflow-x: hidden; }
             graphics: a_mem(mem.graphics),
             privateOther: a_mem(mem.privateOther),
             system: a_mem(mem.system),
+            // FIX-07：/proc/<pid>/status 现成字段（Excel 内存页同步登记）。
+            // 报告层暂无曲线，但进归一化对象后解读/数据质量可用。
+            threads: mem.threads ?? null,
+            swapMB: mem.swapMB ?? null,
+            ctxVoluntary: mem.ctxVoluntary ?? null,
+            ctxNonvoluntary: mem.ctxNonvoluntary ?? null,
           },
           fps: it.fps ?? null,
+          // FIX-16 前置条件：取帧通道必须跟着归一化对象走，否则 renderInsight 里
+          // lowN / noneN 恒为 0，「帧数不足」与「无渲染帧」两句话永远不出现（死代码）。
+          // 只有 Android 采集端（src/collector.js）会写这个字段：
+          //   · iOS 没有帧分布指标（无 ftP50/jankyRatio），不存在 low-activity 语义；
+          //   · PC 的 pcExtra.fpsSource 语义是「采集通道是否可用」（none = PresentMon
+          //     不可用），与「本周期没有渲染帧」不是一回事，混用会给出错误结论。
+          fpsMethod: it.fpsMethod ?? null,
+          // r3 遗留项闭环：dtMs（与上一拍窗口起点差，长间隔拍会让瞬时指标断截）
+          // 与 freqSource（cpuinfo=实际频率 / scaling=governor 目标）进归一化，
+          // 报告层才能解释「这里为什么断了一截」与「频率曲线的精度等级」。
+          // iOS/PC 无这两个字段（iOS 无 CPU 频率逐核通道；PC 频率来自 psutil 不同源）。
+          dtMs: it.dtMs ?? null,
+          freqSource: it.freqSource ?? null,
           jank: it.jank ?? null,
           bigJank: it.bigJank ?? null,
           smallJank: it.smallJank ?? null,
           tinyJank: it.tinyJank ?? null,
-          cswitch: it.cswitch ?? null,
+          ...(() => {
+            const m = it.mem || {};
+            const ctxNow = (m.ctxVoluntary != null && m.ctxNonvoluntary != null)
+              ? m.ctxVoluntary + m.ctxNonvoluntary : null;
+            let cs = null;
+            if (ctxNow != null && _prevCtx != null && it.timestamp > _prevCtxTs) {
+              const dtSec = (it.timestamp - _prevCtxTs) / 1000;
+              if (dtSec > 0) cs = Math.max(0, (ctxNow - _prevCtx) / dtSec);
+            }
+            if (ctxNow != null) { _prevCtx = ctxNow; _prevCtxTs = it.timestamp; }
+            return { cswitch: cs };
+          })(),
           cpuLimit: it.cpuLimit ?? null,
           net: { rxKBps: net.rxKBps ?? null, txKBps: net.txKBps ?? null },
           gpu: it.gpu ?? null,
@@ -3896,6 +4156,12 @@ body { overflow-x: hidden; }
           // CPU 结温单独成序列，绝不并进「机身温度」；老报告无此字段 → 全 null 断线
           cpuTemp: it.cpuTemp ?? null,
           temperature: tempRaw,
+          // ADPF 热节流信号：buildInsight 的「热节流」条目直接读这两个字段，
+          // 不写进归一化对象就永远读不到 → 整条解读静默消失（与 fpsMethod 同一类坑）。
+          // null = ROM 未暴露该节点，报告里不显示该条，不能折成 0 级「未节流」。
+          thermalStatus: it.thermalStatus ?? null,
+          coolingValue: it.coolingValue ?? null,
+          coolingName: it.coolingName ?? null,
           battery: { currentNow: a_cur_to_ma(bat.currentNow), power: bat.power ?? null, temperature: a_temp(bat.temperature), level: bat.level ?? null },
           cpuCores: {
             // 未采集 / offline 核保持 null 断线，不要折成 0MHz / 0%（会被读成实测值）
@@ -3985,9 +4251,16 @@ body { overflow-x: hidden; }
           },
           _diskReadKBps: (typeof px.diskReadKBps === 'number' && !isNaN(px.diskReadKBps)) ? px.diskReadKBps : null,
           _diskWriteKBps: (typeof px.diskWriteKBps === 'number' && !isNaN(px.diskWriteKBps)) ? px.diskWriteKBps : null,
+          // v3 帧延迟分解（PresentMon v1 列，1s 窗口均值 ms）：旧报告 / 无权限时全 null 断行
+          _frameDisplayChangeMs: (typeof px.frameDisplayChangeMs === 'number' && !isNaN(px.frameDisplayChangeMs)) ? px.frameDisplayChangeMs : null,
+          _frameUntilDisplayedMs: (typeof px.frameUntilDisplayedMs === 'number' && !isNaN(px.frameUntilDisplayedMs)) ? px.frameUntilDisplayedMs : null,
+          _framePresentApiMs: (typeof px.framePresentApiMs === 'number' && !isNaN(px.framePresentApiMs)) ? px.framePresentApiMs : null,
+          _frameRenderLatencyMs: (typeof px.frameRenderLatencyMs === 'number' && !isNaN(px.frameRenderLatencyMs)) ? px.frameRenderLatencyMs : null,
+          _frameAppStartGapMs: (typeof px.frameAppStartGapMs === 'number' && !isNaN(px.frameAppStartGapMs)) ? px.frameAppStartGapMs : null,
         };
       });
       chartMgr.updateMany(pts);   // 一次性批量追加 + 每图只重绘一次（旧实现逐点 setOption 是 O(n²)）
+      _pcFramePts = pts;          // 统计表的「帧延迟分解」附加行从这里取数
       setText('val-syscpu', fmtN(mean(pts.map(p => p.cpu.sysCpu)), 1));
       setText('val-proccpu', fmtN(mean(pts.map(p => p.cpu.procCpu)), 1));
       setText('val-mem', fmtN(mean(pts.map(p => p.mem.totalPss)), 0));
@@ -4879,6 +5152,86 @@ body { overflow-x: hidden; }
     tries += 1;
     if (build() || tries >= 60) clearInterval(timer);
   }, 250);
+})();
+</script>
+<script>
+/* 口径与范围提示：跨版本不可比、网络是整机流量、历史被截断 —— 这三件事必须
+   在页面最上方说清楚，而不是埋在指标表里让用户自己推断。
+   数据来自 data.js 的口径元数据（schemaVersion / provenance），旧报告没有则不显示。 */
+(function () {
+  try {
+    if (typeof data === 'undefined' || !data) return;
+    var CUR = '2';
+    var items = [];
+    var sv = data.schemaVersion;
+    if (!sv) {
+      items.push('本报告由旧版本生成（无口径版本），跨版本对比可能得出错误结论。');
+    } else if (String(sv) !== CUR) {
+      items.push('本报告口径版本为 ' + sv + '，当前为 ' + CUR
+        + '；指标定义或单位已变化，不建议与其它版本直接对比。');
+    }
+    var prov = data.provenance;
+    var net = prov && prov.metrics && prov.metrics['net.rxKBps'];
+    if (net && net.measured && net.scope === 'device') {
+      items.push('网络指标为整机流量（含设备上其它应用），不等于被测应用流量；'
+        + 'Excel「数据质量」页有逐项标注。');
+    }
+    if (prov && prov.truncatedSamples) {
+      items.push('本次采集有 ' + prov.truncatedSamples + ' 个最早的采样点因超出保留上限被丢弃。');
+    }
+    if (!items.length) return;
+    var esc = function (t) {
+      return t.replace(/[<>&]/g, function (c) {
+        return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c];
+      });
+    };
+    var el = document.createElement('div');
+    el.id = 'data-notice';
+    el.setAttribute('role', 'note');
+    el.style.cssText = 'position:sticky;top:0;z-index:9999;background:#fff8e6;color:#7a4b00;'
+      + 'border-bottom:1px solid #f2d29b;padding:8px 16px;'
+      + 'font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;';
+    el.innerHTML = items.map(function (t) { return '<div>· ' + esc(t) + '</div>'; }).join('');
+    document.body.insertBefore(el, document.body.firstChild);
+  } catch (_) {}
+})();
+</script>
+<script>
+/* 2.1 旁路取证片段入口：只在本次采集开过旁路、确实抓到片段时出现。
+   报告是单文件 HTML，片段本体在 userData/reports/traces/，这里只列元数据与路径，
+   用时间戳与低谷截图对齐，避免把大 trace 内联进报告。 */
+(function () {
+  try {
+    if (typeof data === 'undefined' || !data) return;
+    var list = Array.isArray(data.traceCaptures) ? data.traceCaptures : [];
+    if (!list.length) return;
+    var esc = function (t) {
+      return String(t == null ? '' : t).replace(/[<>&"]/g, function (c) {
+        return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c];
+      });
+    };
+    var box = document.createElement('details');
+    box.id = 'trace-captures';
+    box.style.cssText = 'margin:12px 16px;padding:10px 14px;border:1px solid #d9e2ec;'
+      + 'border-radius:8px;background:#f8fbff;font:13px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif;';
+    var rows = list.map(function (r) {
+      var when = r.ts ? new Date(r.ts).toLocaleString() : '—';
+      var kind = r.kind === 'simpleperf' ? 'simpleperf (perf.data)' : 'Perfetto';
+      var jt = (r.jankTypes && r.jankTypes.length)
+        ? '；FrameTimeline 归因：' + esc(r.jankTypes.join(' / ')) : '';
+      return '<li style="margin:4px 0">' + esc(when) + ' · ' + kind
+        + ' · ' + esc(r.source || 'manual') + (r.reason ? '（' + esc(r.reason) + '）' : '')
+        + (r.fps != null ? ' · FPS ' + esc(r.fps) : '')
+        + jt + '<br><code style="font-size:12px;color:#476">' + esc(r.path || '') + '</code></li>';
+    }).join('');
+    box.innerHTML = '<summary style="cursor:pointer;font-weight:600">取证片段（'
+      + list.length + ' 段）· 点击展开</summary>'
+      + '<div style="margin-top:8px;color:#456">这些是主采集之外的短时系统级 trace，'
+      + '用来定位「这一帧等的是谁」，不参与统计。文件路径可复制到离线分析工具打开。</div>'
+      + '<ul style="margin:8px 0 0;padding-left:20px">' + rows + '</ul>';
+    var anchor = document.getElementById('root') || document.body;
+    anchor.parentNode.insertBefore(box, anchor);
+  } catch (_) {}
 })();
 </script>
 </body>

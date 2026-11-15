@@ -6,6 +6,7 @@ const path = require('path');
 const fs   = require('fs');
 const http = require('http');
 const iosLog = require('./ios-logger');
+const SampleMeta = require('./sample-meta');
 
 const MAX_HISTORY = 3600;
 
@@ -292,6 +293,10 @@ class IosCollector extends EventEmitter {
           }
           // 按采集参数过滤：被移除的组不进 history / 不上报
           const filtered = filterIosData(data, this._mc);
+          // 1.3 三端共用逐拍溯源元数据
+          if (filtered && typeof filtered === 'object') {
+            filtered.meta = SampleMeta.makeSampleMeta('ios', filtered);
+          }
           if (this.history.length >= MAX_HISTORY) this.history.shift();
           this.history.push(filtered);
           this.emit('data', filtered);

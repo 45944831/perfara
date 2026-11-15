@@ -10,6 +10,11 @@
  *   ⑤ Jank 家族被 perSec() 额外除以 dt → 与「帧」标签 / Jank/10min / iOS·PC 通道冲突
  *   ⑥ sysfs 温度十分度值被整段丢弃；thermalservice die-only 时丢失结温
  *
+ * 后续追加（r5 全项目扫描 S-01 / S-02）：
+ *   ⑧⑨⑩ 刷新率档位表 5 份副本同源：11 档规范表、兜底公式、deviceTargetHz 读字段
+ *   ⑪      TinyJank 逐帧通道与直方图通道基准同源（P50，不再是 avg）
+ *   ⑫      口径版本已随上述数值变化升到 6
+ *
  * 全部用纯函数 + 源码断言验证，不依赖真机、不启动 adb。
  * 用法: node perf_param_audit_test.js
  */
@@ -220,13 +225,143 @@ check('被关闭的图表 / 卡片确实隐藏',
 for (const [name, src] of [['perf.html', perfHtml], ['library.html', libHtml],
                            ['inject_metric_info.py', injectPy]]) {
   check(`${name} 的 Jank 家族单位统一为「帧」`,
-    /jank: \{ t: 'Jank 卡顿帧', u: '帧'/.test(src)
-    && /tinyjank: \{ t: 'TinyJank 微卡顿帧', u: '帧'/.test(src));
+    /jank: \{ t: 'Jank 卡顿帧(（旧口径）)?', u: '帧'/.test(src)
+    && /tinyjank: \{ t: 'TinyJank 微卡顿帧(（旧口径）)?', u: '帧'/.test(src));
 }
 check('报告页不再有「次/s」的 Jank 卡片',
   !/class="card-unit">次\/s<\/div>/.test(perfHtml));
 check('Jank/10min 仍按累计次数折算（与「每采样点帧数」自洽）',
   /jank10[\s\S]{0,200}每 10 分钟折算/.test(perfHtml));
+
+// ─── ⑧ S-01 刷新率档位表 5 份副本同源 ───────────────────────────────────────
+// 起因：P-04 只改了 2/6 个生产副本，其余仍是旧 7 档表（含 45、缺 185）。
+// 漂移之所以长期没被发现，是因为 perf.html 的注释声称「perf_param_audit 有同步
+// 断言」——而这条断言此前并不存在。这里把它补上，并逐份校验。
+console.log('\n-- ⑧ S-01：刷新率档位表 5 份副本必须逐字同源 --');
+
+const CANON_RATES = [24, 30, 48, 60, 90, 100, 120, 144, 165, 185, 240];
+const nums = (s) => (s.match(/\d+/g) || []).map(Number);
+
+// 只从「声明处」取数字，绝不全文匹配 —— 注释里的示例值（「100Hz 被算成 120」）
+// 会被一并抓进来，让断言变成永不失败的空转。
+const RATE_SOURCES = [
+  ['_client_src/app/src/adb.js', /const REFRESH_RATES = \[([^\]]+)\]/, 'adb.js:REFRESH_RATES'],
+  ['_client_src/app/src/fps-loading.js', /const REFRESH_RATES = \[([^\]]+)\]/, 'fps-loading.js:REFRESH_RATES'],
+  ['perfara/collector/resources/reports/perf.html', /REFRESH_RATES_SHARED = \[([^\]]+)\]/, 'perf.html:REFRESH_RATES_SHARED'],
+  ['perfara/collector/resources/reports/library.html', /for \(const c of \[([^\]]+)\]\)/, 'library.html 内联档位表'],
+  ['perfara/backend/utils.py', /FPS_TARGET_CANDIDATES = \(([^)]+)\)/, 'backend/utils.py:FPS_TARGET_CANDIDATES'],
+];
+for (const [file, re, label] of RATE_SOURCES) {
+  const m = readSrc(file).match(re);
+  const got = m ? nums(m[1]) : null;
+  check(`${label} = 11 档规范表`, !!got && JSON.stringify(got) === JSON.stringify(CANON_RATES), got);
+  check(`${label} 不含已废弃的 45Hz 档`, !!got && !got.includes(45), got);
+}
+
+// 兜底公式：旧 ceil(p95/30)*30 把 24fps 判成 30、185Hz 判成 210
+check('fps-loading.js 兜底为 Math.ceil(p95)', /return Math\.ceil\(p95\);/.test(
+  readSrc('_client_src/app/src/fps-loading.js')));
+check('library.html 兜底为 Math.ceil(mx)', /Math\.ceil\(mx\)/.test(libHtml));
+check('backend/utils.py 兜底为 math.ceil(p95_value)', /math\.ceil\(p95_value\)/.test(
+  readSrc('perfara/backend/utils.py')));
+check('旧 ceil(p95/30)*30 写法已全项目绝迹（含基准脚本）',
+  !/Math\.ceil\([^)]*\/\s*30\s*\)\s*\*\s*30/.test(adbSrc + libHtml + perfHtml
+    + readSrc('_client_src/app/src/fps-loading.js')
+    + readSrc('perfara/tests/realdevice/report_serialize_bench.js')));
+
+// ─── ⑨ S-01 报告页读字段：targetHz 优先，target 必须校验来源 ────────────────
+console.log('\n-- ⑨ S-01：deviceTargetHz 只认设备值，不认「P95 反推值」 --');
+
+/** 按大括号配平抠出函数体（注释里的 `}` 不影响，只在源码文本上走一遍） */
+function fnBody(src, name) {
+  const i = src.indexOf('function ' + name);
+  if (i < 0) return '';
+  let depth = 0, started = false;
+  for (let k = src.indexOf('{', i); k >= 0 && k < src.length; k++) {
+    if (src[k] === '{') { depth++; started = true; }
+    else if (src[k] === '}') { depth--; if (started && depth === 0) return src.slice(i, k + 1); }
+  }
+  return src.slice(i);
+}
+const dth = fnBody(perfHtml, 'deviceTargetHz');
+check('deviceTargetHz 存在且优先读 loading.targetHz',
+  /L\.targetHz/.test(dth), dth.slice(0, 60));
+check('deviceTargetHz 回退到 loading.target 前校验 targetSource',
+  /targetSource === 'device-peak-refresh-rate'/.test(dth));
+check('deviceTargetHz 来源不可信时返回 null（交给本地吸附，不冒充设备值）',
+  /return null;/.test(dth));
+check('评分区目标帧率走 deviceTargetHz + 11 档表（不再恒用旧表）',
+  /let fpsTarget = deviceTargetHz\(\);/.test(perfHtml)
+  && /for \(const c of REFRESH_RATES_SHARED\) \{ if \(c >= fpsP95 \* 0\.97\)/.test(perfHtml));
+
+// ─── ⑩ S-01 行为：吸附不再把真实帧率抬到上一档 ──────────────────────────────
+console.log('\n-- ⑩ S-01：snapFpsTarget 吸附行为 --');
+const FL = require('../../../_client_src/app/src/fps-loading');
+const snapCases = [[23, 24], [24, 24], [30, 30], [48, 48], [60, 60], [90, 90],
+                   [100, 100], [119, 120], [120, 120], [144, 144], [165, 165],
+                   [185, 185], [240, 240], [250, 250]];
+for (const [p95, want] of snapCases) {
+  check(`P95=${p95} → ${want}`, FL.snapFpsTarget(p95) === want, FL.snapFpsTarget(p95));
+}
+check('非正数 / null 返回 null（不编造档位）',
+  FL.snapFpsTarget(0) === null && FL.snapFpsTarget(null) === null
+  && FL.snapFpsTarget(-5) === null);
+check('fps-loading 导出的档位表与规范表一致',
+  JSON.stringify(FL.REFRESH_RATES) === JSON.stringify(CANON_RATES), FL.REFRESH_RATES);
+
+// 旧 7 档表复现，证明这条修复不是空转
+function legacySnap(p95) {
+  for (const c of [30, 45, 60, 90, 120, 144, 165]) if (c >= p95 * 0.97) return c;
+  return Math.ceil(p95 / 30) * 30;
+}
+check('旧表把 100Hz 判成 120（反例成立）', legacySnap(100) === 120, legacySnap(100));
+check('旧表把 185Hz 判成 210（反例成立）', legacySnap(185) === 210, legacySnap(185));
+check('旧表把 24fps 判成 30（反例成立）', legacySnap(24) === 30, legacySnap(24));
+
+// ─── ⑪ S-02 TinyJank 两通道基准同源 ─────────────────────────────────────────
+// 起因：calcJankFramestats（逐帧）用 avgMs 做 TinyJank 基准，analyseHistogram
+// （直方图）用 P50。同一段帧序列两条通道给出两套结论，且 avg 会被长帧抬高 ——
+// 卡得越狠阈值越高，抖动帧成片漏计（自我遮蔽）。
+console.log('\n-- ⑪ S-02：TinyJank 逐帧通道与直方图通道必须同源 --');
+check('adb.js:TINY_JANK_MS 基准是 ftP50All，不再是 avgMs',
+  /TINY_JANK_MS = Math\.max\(vsyncMs, ftP50All\) \* 1\.5/.test(adbSrc));
+check('ftP50All 用与 nearestRank 相同的下标（ceil(0.5n)-1）',
+  /Math\.ceil\(0\.5 \* sortedFt\.length\) - 1/.test(adbSrc));
+check('直方图通道 tinyMs 同样锚在 max(vsync, p50)',
+  /const tinyMs\s*=\s*Math\.max\(vsyncMs \|\| 0, p50 \|\| 0\) \* 1\.5/.test(adbSrc));
+
+// 行为等价性：60 帧正常 + 20 帧 40ms 抖动 + 4 帧 200ms 长卡
+const JITTER = Array(60).fill(16.667).concat(Array(20).fill(40), Array(4).fill(200));
+const jitterFrames = buildFrames(2e12, JITTER);
+const js = algo.calcJankFramestats(jitterFrames);
+
+// 逐帧通道实际参与判定的是 index ≥ 3 的间隔（与函数内循环一致），
+// 直方图通道喂同一批，两条通道才具备可比性。
+const evalFt = JITTER.slice(3);
+const jitterHist = {};
+for (const v of evalFt) { const k = Math.round(v * 100) / 100; jitterHist[k] = (jitterHist[k] || 0) + 1; }
+const hs = algo.analyseHistogram(jitterHist, 16.67);
+
+check('两通道 TinyJank 计数一致（同一段帧、同一基准）',
+  js.tinyJank === hs.tinyJank, { framestats: js.tinyJank, histogram: hs.tinyJank });
+check('40ms 抖动帧全部计入（基准 ≈25ms）', js.tinyJank === 24, js.tinyJank);
+check('evaluated 分母一致', js.evaluated === hs.totalFrames, { js: js.evaluated, hs: hs.totalFrames });
+
+// 旧实现（avgMs）反例：4 个 200ms 长帧把均值抬到 ≈31ms → 阈值 ≈47ms → 抖动帧全漏
+const avgEval = evalFt.reduce((s, v) => s + v, 0) / evalFt.length;
+const legacyTinyMs = Math.max(16.67, avgEval) * 1.5;
+const legacyTiny = evalFt.filter(v => v >= legacyTinyMs).length;
+check('旧 avgMs 基准确实漏计抖动帧（反例成立）',
+  legacyTiny < js.tinyJank, { legacyTinyMs: +legacyTinyMs.toFixed(2), legacyTiny, now: js.tinyJank });
+
+// ─── ⑫ 口径版本 ─────────────────────────────────────────────────────────────
+console.log('\n-- ⑫ 口径版本：S-01 / S-02 改变已发布数值，必须升版 --');
+const Schema = require('../../../_client_src/app/src/metric-schema');
+check('SCHEMA_VERSION = 7（D-19/D-20 已版本化）', Schema.SCHEMA_VERSION === '7', Schema.SCHEMA_VERSION);
+check('v5 报告标记为不可直接对比（口径已变）',
+  Schema.checkSchema('5').comparable === false && Schema.checkSchema('5').level === 'mismatch',
+  Schema.checkSchema('5'));
+check('v4 及更早同样不兼容', Schema.checkSchema('4').comparable === false);
 
 console.log('\n──────────────────────────────────────────');
 console.log(`  ${pass} PASS / ${fail} FAIL`);

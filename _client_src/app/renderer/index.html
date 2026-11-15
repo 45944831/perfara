@@ -64,6 +64,26 @@
     <button type="button" id="btn-metric-settings" class="btn btn-sm" title="采集参数设置：勾选需要采集的参数，默认全选">⚙ 采集参数</button>
     <button type="button" id="btn-screen-continuous" class="btn btn-sm" hidden title="连续截图（待实现）">连续截图</button>
     <button type="button" id="btn-open-library" class="btn btn-sm" title="打开本地报告库：查看历史报告并对比">报告库</button>
+    <div class="trace-capture-wrap">
+      <label id="trace-capture-switch" class="btn btn-sm" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"
+        title="旁路取证（默认关闭）：低谷命中时抓一段 10 秒 trace，回答「这一帧等的是谁」；点右侧 ! 看详细说明">
+        <input type="checkbox" id="chk-trace-capture"> 旁路取证
+        <span id="btn-trace-help" class="trace-help-dot" role="button" tabindex="0"
+          aria-expanded="false" aria-controls="trace-help-panel" aria-label="查看旁路取证说明"
+          title="点击展开说明">!</span>
+      </label>
+      <div id="trace-help-panel" class="trace-help-panel" role="dialog" aria-label="旁路取证说明" hidden>
+        <div class="trace-help-panel__title">旁路取证是干什么的</div>
+        <ul class="trace-help-panel__list">
+          <li><b>解决什么</b>：普通采集只能看出「卡了多久」，看不出「卡在哪」。开启后，低谷截图命中时会额外抓一段设备级 trace，回答「这一帧在等谁」——应用主线程阻塞、SurfaceFlinger 合成超时，还是缓冲堆积。</li>
+          <li><b>什么时候抓</b>：只在低谷截图命中时自动抓一次，默认 10 秒。同一时刻只允许一段，重复触发会被拒；抓取失败静默跳过，不影响截图与主采集。</li>
+          <li><b>开销</b>：默认关闭，关闭时不探测能力、不起进程、不写文件，零开销。开启后也只在命中那一次抓取，抓完即停，不参与逐拍指标计算。</li>
+          <li><b>依赖</b>：Android 12+ 优先 perfetto，低版本或抓取失败回退 simpleperf。两者都没有时开关仍能打开，但不会产出片段，日志会提示「设备不支持」。</li>
+          <li><b>产物</b>：<code>.perfetto-trace</code> / <code>perf.data</code> 存在本机 <code>userData/reports/traces/</code>（最多保留 20 条），报告页「旁路取证」区块按时间戳与低谷截图对齐列出。</li>
+        </ul>
+        <div class="trace-help-panel__foot">trace 体积较大（10 秒约 1~5 MB），只用于离线分析，不内联进报告；需要长期留存请自行归档。</div>
+      </div>
+    </div>
     <span id="status-badge" class="badge idle">待机</span>
     <span id="pid-label" class="badge info" style="display:none"></span>
     <span id="elapsed" class="elapsed"></span>
@@ -133,7 +153,7 @@
     <div class="card-value" id="val-battery">--</div>
     <div class="card-unit">%</div>
   </div>
-  <div class="card" id="card-temp" data-metric="temp" title="主数值为机身 / 电池温度（接近手感）；下方小字并列外壳估算温度与 CPU 芯片结温。芯片结温常年比外壳高 20~30°C，属正常现象，不代表机身发烫。">
+  <div class="card" id="card-temp" data-metric="temp">
     <div class="card-label">机身温度</div>
     <div class="card-value" id="val-temp">--</div>
     <div class="card-unit" id="val-temp-unit">°C · 机身/电池</div>
@@ -215,6 +235,8 @@
 <script src="start-mode.js"></script>
 <script src="trough-shots.js"></script>
 <script src="metric-settings.js"></script>
+<script src="trace-help.js"></script>
+<script src="metric-help.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

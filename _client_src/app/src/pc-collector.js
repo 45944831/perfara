@@ -4,12 +4,14 @@ const EventEmitter = require('events');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const SampleMeta = require('./sample-meta');
 
 /**
  * PC 采集参数组 → 字段映射（与 renderer/metric-settings.js 一致）。
  * 采集脚本一次输出全部字段，这里在入口按配置过滤。
  * pcExtra 为子对象：exe/name/fpsSource 恒保留（报告页设备信息用），
- * fpsFloat 归 fps 组，diskReadKBps/diskWriteKBps 归 disk 组。
+ * fpsFloat 与 5 个帧延迟分解字段（PresentMon v1 列）归 fps 组，
+ * diskReadKBps/diskWriteKBps 归 disk 组。
  */
 const PC_METRIC_KEYS = {
   fps:     ['fps', 'jank', 'bigJank', 'jankRate'],
@@ -23,7 +25,8 @@ const PC_METRIC_KEYS = {
 };
 
 const PC_EXTRA_KEYS = {
-  fps:  ['fpsFloat'],
+  fps:  ['fpsFloat', 'frameDisplayChangeMs', 'frameUntilDisplayedMs', 'framePresentApiMs',
+         'frameRenderLatencyMs', 'frameAppStartGapMs'],
   disk: ['diskReadKBps', 'diskWriteKBps'],
 };
 
@@ -119,6 +122,37 @@ function resolvePcScriptPy() {
   return path.join(__dirname, '..', 'ios-tools', 'python', 'python', 'Scripts', name);
 }
 
+/**
+ * 「源码 vs 字节码」按修改时间选较新者。
+ *
+ * 历史坑：发布包里只有 `collect_pc_perf.pyc`，`start()` 无脑优先 pyc；
+ * 开发态改完 `collect_pc_perf.py` 忘了重编，运行期仍旧跑旧逻辑，现象极难定位。
+ * 现在构建时由 `tools/compile_pc_collector.py` 统一重编（已挂到 build_app.py），
+ * 运行期再做一次兜底：.py 明显比 .pyc 新就改用 .py 并打日志提醒重编。
+ * 抽成纯函数是为了能注入假的 exists/stat 做离线断言。
+ */
+function pickNewerScript(paths, exists, stat) {
+  const pyc = paths.pyc, py = paths.py;
+  const hasPyc = !!exists(pyc), hasPy = !!exists(py);
+  if (!hasPyc && !hasPy) return { path: null, stale: false, reason: 'missing' };
+  if (!hasPyc) return { path: py, stale: false, reason: 'py-only' };
+  if (!hasPy) return { path: pyc, stale: false, reason: 'pyc-only' };
+  let pycMs = 0, pyMs = 0;
+  try { pycMs = stat(pyc).mtimeMs || 0; } catch (_) {}
+  try { pyMs = stat(py).mtimeMs || 0; } catch (_) {}
+  // 1s 容差：Windows 时间戳精度 + 复制/解压会改写 mtime，别把同一次构建判成过期
+  const stale = pyMs > pycMs + 1000;
+  return { path: stale ? py : pyc, stale, reason: stale ? 'py-newer' : 'pyc-current' };
+}
+
+function resolvePcScript() {
+  return pickNewerScript(
+    { pyc: resolvePcScriptPyc(), py: resolvePcScriptPy() },
+    (p) => fs.existsSync(p),
+    (p) => fs.statSync(p)
+  );
+}
+
 class PcCollector extends EventEmitter {
   constructor(exePath, metricConfig = null) {
     super();
@@ -169,15 +203,25 @@ class PcCollector extends EventEmitter {
 
   async start() {
     const py = resolveBundledPythonExe();
-    let script = resolvePcScriptPyc();
+    const resolved = resolvePcScript();
     if (!fs.existsSync(py)) {
       throw new Error(`未找到内置 Python：${py}`);
     }
-    if (!fs.existsSync(script)) {
-      script = resolvePcScriptPy();
-    }
-    if (!fs.existsSync(script)) {
+    if (!script) {
       throw new Error('未找到 collect_pc_perf.pyc / collect_pc_perf.py（Scripts 目录）');
+    }
+    if (resolved.stale) {
+      this._log('[PC] 采集源码 .py 比 .pyc 新，本次改用源码运行；'
+        + '发布前请执行 python tools/compile_pc_collector.py 统一重编');
+    }
+    // FIX-15：pyc magic 错配 / 损坏时的自动回退（一次性）。resolvePcScript 仍会
+    // 选 pyc（mtime 没变），这里显式改用 .py 重跑，并打可见日志提示重编。
+    let scriptPath = resolved.path;
+    if (this._pyFallback && /\.pyc$/i.test(scriptPath)
+        && fs.existsSync(scriptPath.replace(/\.pyc$/i, '.py'))) {
+      scriptPath = scriptPath.replace(/\.pyc$/i, '.py');
+      this._log('[PC] 字节码不可用，已回退源码 .py 运行；'
+        + '发布前请用内置解释器执行 tools/compile_pc_collector.py 重编');
     }
     const exe = path.normalize(String(this.exePath || '').trim());
     if (!exe || !fs.existsSync(exe)) {
@@ -187,7 +231,7 @@ class PcCollector extends EventEmitter {
     this._running = true;
     this._buf = '';
     this._fpsWarned = false;
-    this._log(`启动 PC 采集脚本: ${script}`);
+    this._log(`启动 PC 采集脚本: ${scriptPath}`);
     this._log(`目标进程: ${exe}`);
 
     if (process.platform === 'win32') {
@@ -198,10 +242,10 @@ class PcCollector extends EventEmitter {
 
     // -u：stdout 无缓冲，管道场景下尽快把每行 JSON 送到前端（否则可能长时间看不到曲线）
     // exe 作为 argv 单独一项传入 Python，路径中的空格无需再包引号
-    this._proc = spawn(py, ['-u', script, exe], {
+    this._proc = spawn(py, ['-u', scriptPath, exe], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: path.dirname(script),
+      cwd: path.dirname(scriptPath),
     });
 
     this._proc.stdout.on('data', (chunk) => {
@@ -230,7 +274,9 @@ class PcCollector extends EventEmitter {
               + '请以管理员身份重新运行本工具后再采 FPS；CPU / 内存 / GPU 等指标不受影响。');
           }
           // 按采集参数过滤：被移除的组不上报
-          this.emit('data', filterPcData(obj, this._mc));
+          const d = filterPcData(obj, this._mc);
+          if (d && typeof d === 'object') d.meta = SampleMeta.makeSampleMeta('pc', d);
+          this.emit('data', d);
         } catch (e) {
           this._log(`JSON 解析跳过: ${line.slice(0, 80)}`);
         }
@@ -240,6 +286,17 @@ class PcCollector extends EventEmitter {
     this._proc.stderr.on('data', (chunk) => {
       const t = chunk.toString('utf8').trim();
       if (t) this._log(t);
+      // FIX-15：pyc 加载即崩（magic 错配 / 文件损坏）→ 自动用 .py 重跑一次，
+      // 不留「采集页显示采集中但一个数都没有」的静默失效。只回退一次，防循环。
+      if (!this._pyFallback
+          && /Bad magic number|ImportError|Source code string cannot be null|SyntaxError/i.test(t)
+          && /\.pyc$/i.test(scriptPath)) {
+        this._pyFallback = true;
+        this._log('[PC] 检测到字节码不可用，自动回退源码 .py …');
+        try { this.stop('pyc_broken'); } catch (_) {}
+        setTimeout(() => { this.start().catch(() => {}); }, 300);
+        return;
+      }
     });
 
     this._proc.on('error', (err) => {
@@ -284,4 +341,7 @@ module.exports = {
   PC_METRIC_KEYS,
   resolveBundledPythonExe,
   resolvePcScriptPyc,
+  resolvePcScriptPy,
+  resolvePcScript,
+  pickNewerScript,
 };

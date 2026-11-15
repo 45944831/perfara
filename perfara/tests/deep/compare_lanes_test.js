@@ -83,6 +83,115 @@ function extractConst(src, name) {
   return src.slice(start, i + 1);
 }
 
+/**
+ * 夹具自愈：这 4 份报告是**运行期数据**（`reports/history/` 已被 .gitignore），
+ * 清一次报告库、换一台机器就没了，测试随即变成「索引信息缺失」。与其让它依赖
+ * 一份随时会消失的目录，不如缺哪份就用现有真实报告切片现场生成，退出时删掉自己造的。
+ *
+ * 时长必须差得远（37.4s / 单点 / 14.8s / 8.0s），否则验不出「几次运行的曲线糊成一条」。
+ */
+function ensureFixtures() {
+  const idxPath = path.join(HISTORY, 'index.json');
+  let idx = [];
+  try { idx = JSON.parse(fs.readFileSync(idxPath, 'utf8')); } catch (_) { idx = []; }
+  if (!Array.isArray(idx)) idx = [];
+
+  const has = (id) => fs.existsSync(path.join(HISTORY, id + '.js')) && idx.some(r => r && r.id === id);
+  const missing = IDS.filter(id => !has(id));
+  if (!missing.length) return () => {};
+
+  const tplEntry = idx.find(r => r && fs.existsSync(path.join(HISTORY, r.id + '.js')));
+  if (!tplEntry) throw new Error('报告库是空的，无法生成对比夹具：' + HISTORY);
+  const tplSrc = fs.readFileSync(path.join(HISTORY, tplEntry.id + '.js'), 'utf8');
+  const m = /var\s+data\s*=\s*/.exec(tplSrc);
+  if (!m) throw new Error('模板报告格式不认识：' + tplEntry.id);
+  const tpl = JSON.parse(tplSrc.slice(m.index + m[0].length).replace(/;\s*$/, ''));
+  // 只用「fps 有值」的采样行做种子：模板报告的第一拍是 null（首拍无基线），
+  // 拿它去造单点运行会让那一整段没有可画的值，泳道直接塌成 null。
+  const tplPerf = (tpl.perf || []).filter(r => r && r.fps != null);
+  if (!tplPerf.length) throw new Error('模板报告没有可用采样（fps 全为 null）：' + tplEntry.id);
+
+  // 产品自己的汇总函数算 kpi，保证 samples / durationSec / kpi 三者自洽。
+  // reports-data-js.js 顶层 require('electron')，纯 node 下用桩顶一下。
+  const Module = require('module');
+  const origLoad = Module._load;
+  let RDS = null;
+  try {
+    Module._load = function (req) {
+      if (req === 'electron') {
+        return { app: { getPath: () => OUT, getName: () => 'Perfara', getVersion: () => '0', isPackaged: false } };
+      }
+      return origLoad.apply(this, arguments);
+    };
+    RDS = require(path.join(PROJ, '_client_src', 'app', 'src', 'reports-data-js.js'));
+  } catch (_) {
+    RDS = null;
+  } finally {
+    Module._load = origLoad;
+  }
+
+  // 时长与「本机时间」都要对得上原始夹具：页面按每份报告自己的 time 生成图例与段标题，
+  // 断言里就是靠 14:31:58 找到那个单点运行的。全部用 +08:00 的本地时间。
+  const PLAN = {
+    DEVICE_A: { n: 38, start: '2026-10-20T09:31:56+08:00' },
+    DEVICE_B: { n: 1, start: '2026-10-20T14:31:58+08:00' },
+    DEVICE_C: { n: 15, start: '2026-10-20T14:52:15+08:00' },
+    DEVICE_D: { n: 8, start: '2026-10-20T14:55:31+08:00' },
+  };
+  const made = [];
+  const nextIdx = idx.slice();
+  for (const id of missing) {
+    // IDS 是完整 id（20261020-093156-DEVICE_A），PLAN 按后缀索引
+    const key = (String(id).match(/DEVICE_[A-Z]$/) || [id])[0];
+    const plan = PLAN[key] || { n: 10, start: '2026-10-20T09:31:56+08:00' };
+    const n = plan.n;
+    const baseMs = Date.parse(plan.start);
+    const perf = [];
+    for (let i = 0; i < n; i++) {
+      const row = JSON.parse(JSON.stringify(tplPerf[i % tplPerf.length] || {}));
+      row.timestamp = baseMs + i * 1000;
+      row.time = new Date(row.timestamp + 8 * 3600e3).toISOString().slice(11, 19);
+      perf.push(row);
+    }
+    const payload = JSON.parse(JSON.stringify(tpl));
+    payload.perf = perf;
+    payload.device = Object.assign({}, payload.device, {
+      name: key, appName: 'com.example.game', bundleId: 'com.example.game', deviceId: 'demo-device-001',
+    });
+    payload.tag = key;
+    const file = path.join(HISTORY, id + '.js');
+    fs.writeFileSync(file, 'var data = ' + JSON.stringify(payload) + ';\n', 'utf8');
+    made.push(file);
+
+    const sum = (RDS && RDS.summarizePerf)
+      ? RDS.summarizePerf(perf, payload.metricConfig, payload.displayProfile) : null;
+    const entry = Object.assign({}, tplEntry, {
+      id, file: 'history/' + id + '.js',
+      createdAt: new Date(baseMs - 8 * 3600e3).toISOString(),
+      createdAtLocal: new Date(baseMs + 8 * 3600e3).toISOString().slice(0, 19).replace('T', ' '),
+      deviceName: key, app: 'com.example.game', deviceId: 'demo-device-001',
+      samples: perf.length,
+      durationSec: sum && sum.durationSec != null ? sum.durationSec : Math.max(0, perf.length - 1),
+    });
+    if (sum && sum.kpi) entry.kpi = sum.kpi;
+    const at = nextIdx.findIndex(r => r && r.id === id);
+    if (at >= 0) nextIdx[at] = entry; else nextIdx.push(entry);
+    console.log('  [夹具] 生成', id, '(' + key + ')', '采样', perf.length, '时长', entry.durationSec + 's');
+  }
+  fs.writeFileSync(idxPath, JSON.stringify(nextIdx, null, 2), 'utf8');
+
+  const cleanup = () => {
+    for (const f of made) { try { fs.unlinkSync(f); } catch (_) {} }
+    try {
+      const names = new Set(made.map(f => 'history/' + path.basename(f)));
+      const rest = JSON.parse(fs.readFileSync(idxPath, 'utf8')).filter(r => !r || !names.has(r.file));
+      fs.writeFileSync(idxPath, JSON.stringify(rest, null, 2), 'utf8');
+    } catch (_) {}
+  };
+  process.on('exit', cleanup);
+  return cleanup;
+}
+
 /** 用产品自身的打包逻辑生成 4 份报告的对比页（与用户导出的报告同构） */
 function buildCompare() {
   const src = fs.readFileSync(MAIN, 'utf8');
@@ -103,6 +212,7 @@ function buildCompare() {
 }
 
 async function main() {
+  ensureFixtures();
   const built = buildCompare();
   check('打包成功返回 HTML', built.ok === true && typeof built.html === 'string', built.reason);
   if (!built.ok) { console.log(`\n结果：${passed} 通过 / ${failed} 失败`); process.exit(1); }

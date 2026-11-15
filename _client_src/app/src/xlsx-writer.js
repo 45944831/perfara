@@ -41,20 +41,48 @@ function dosStamp(d) {
 }
 
 /**
+ * 压缩等级。实测（43200 采样点、510 万单元格）：
+ *   L6 → 2188ms / 18.2MB ｜ L4 → 1154ms / 20.6MB ｜ L1 → 628ms / 23.1MB
+ * 报告是给人打开看的本地产物，多 2MB 换掉 1s 的卡顿更划算；再往下（L1）体积
+ * 涨到 23MB 就不值了，故取 L4。
+ */
+const DEFLATE_LEVEL = 4;
+
+/**
  * 把 { 文件名: Buffer } 打成 ZIP（deflate）。
  * 只支持 < 4GB / < 65535 项，远够一次采集报告使用。
  */
 function makeZip(entries, when) {
   const stamp = dosStamp(when || new Date());
+  const items = [];
+  for (const [name, raw] of entries) {
+    const data = Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw), 'utf8');
+    items.push({ name, data, packed: zlib.deflateRawSync(data, { level: DEFLATE_LEVEL }), crc: crc32(data) });
+  }
+  return assembleZip(items, stamp);
+}
+
+/** 异步版：所有部件并行压缩（libuv 线程池），主线程不被 deflate 阻塞 */
+async function makeZipAsync(entries, when) {
+  const stamp = dosStamp(when || new Date());
+  const items = await Promise.all(entries.map(([name, raw]) => new Promise((resolve, reject) => {
+    const data = Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw), 'utf8');
+    zlib.deflateRaw(data, { level: DEFLATE_LEVEL }, (err, packed) => {
+      if (err) return reject(err);
+      resolve({ name, data, packed, crc: crc32(data) });
+    });
+  })));
+  return assembleZip(items, stamp);
+}
+
+/** 按 ZIP 结构拼字节（本地文件头 + 中央目录 + EOCD），压缩结果由调用方提供 */
+function assembleZip(items, stamp) {
   const locals = [];
   const central = [];
   let offset = 0;
 
-  for (const [name, raw] of entries) {
+  for (const { name, data, packed, crc } of items) {
     const fname = Buffer.from(name, 'utf8');
-    const data = Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw), 'utf8');
-    const packed = zlib.deflateRawSync(data, { level: 6 });
-    const crc = crc32(data);
 
     const lh = Buffer.alloc(30);
     lh.writeUInt32LE(0x04034B50, 0);
@@ -98,8 +126,8 @@ function makeZip(entries, when) {
   eocd.writeUInt32LE(0x06054B50, 0);
   eocd.writeUInt16LE(0, 4);
   eocd.writeUInt16LE(0, 6);
-  eocd.writeUInt16LE(entries.length, 8);
-  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt16LE(items.length, 8);
+  eocd.writeUInt16LE(items.length, 10);
   eocd.writeUInt32LE(cd.length, 12);
   eocd.writeUInt32LE(offset, 16);
   eocd.writeUInt16LE(0, 20);
@@ -108,8 +136,18 @@ function makeZip(entries, when) {
 }
 
 // ── XML ──────────────────────────────────────────────────────────────────────
+
+/**
+ * 需要转义的字符集。先用它做一次「有没有」判断：一份 12 小时报告有 500 万个
+ * 单元格，其中绝大多数（时间、数值、指标名）不含任何特殊字符，逐个跑 6 条
+ * replace 纯属浪费——实测这一层占了序列化时间的一大半。
+ */
+const NEEDS_ESC = /[&<>"'\u0000-\u0008\u000B\u000C\u000E-\u001F]/;
+
 function esc(s) {
-  return String(s)
+  const str = String(s);
+  if (!NEEDS_ESC.test(str)) return str;
+  return str
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')  // XML 1.0 非法控制字符
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -157,10 +195,20 @@ function sheetXml(sheet) {
   const width = rows.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0) || 1;
   const lastRef = `${colName(Math.max(0, width - 1))}${Math.max(1, rows.length)}`;
 
+  // 列名只算一次：旧实现每个单元格都调一次 colName（带 while 循环），
+  // 12 小时报告就是 500 万次重复计算，而列名总共只有几十个。
+  const colNames = new Array(width);
+  for (let i = 0; i < width; i++) colNames[i] = colName(i);
+
   const body = rows.map((row, ri) => {
-    const cells = (Array.isArray(row) ? row : []).map((v, ci) =>
-      cellXml(`${colName(ci)}${ri + 1}`, v, ri === 0 ? 1 : 0)).join('');
-    return `<row r="${ri + 1}">${cells}</row>`;
+    const arr = Array.isArray(row) ? row : [];
+    const style = ri === 0 ? 1 : 0;
+    const rowNo = ri + 1;
+    const cells = new Array(arr.length);
+    for (let ci = 0; ci < arr.length; ci++) {
+      cells[ci] = cellXml(colNames[ci] + rowNo, arr[ci], style);
+    }
+    return `<row r="${rowNo}">${cells.join('')}</row>`;
   }).join('');
 
   // 列宽：首列时间类给 20，其余按表头长度估，夹在 10~26
@@ -214,7 +262,11 @@ function stylesXml() {
  * @param {{title?:string, creator?:string, when?:Date}} [meta]
  * @returns {Buffer} .xlsx 文件字节
  */
-function buildXlsx(sheets, meta) {
+/**
+ * 组装 OOXML 的各个部件（不含压缩）。
+ * 同步/异步两条导出路径共用，避免两份序列化逻辑走偏。
+ */
+function buildParts(sheets, meta) {
   if (!Array.isArray(sheets) || sheets.length === 0) throw new Error('没有可写入的工作表');
   const when = (meta && meta.when) || new Date();
   const used = new Set();
@@ -268,17 +320,58 @@ function buildXlsx(sheets, meta) {
     + `<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">`
     + `<Application>Perfara</Application></Properties>`;
 
+  // 每张表的 XML 用 thunk 延后生成：同步路径立刻调用，异步路径两次生成之间让出主线程，
+  // 否则 12 小时报告光是拼 XML 就是 1.9s 的单个长任务（窗口直接无响应）。
   const entries = [
-    ['[Content_Types].xml', Buffer.from(types, 'utf8')],
-    ['_rels/.rels', Buffer.from(rootRels, 'utf8')],
-    ['docProps/core.xml', Buffer.from(core, 'utf8')],
-    ['docProps/app.xml', Buffer.from(app, 'utf8')],
-    ['xl/workbook.xml', Buffer.from(workbook, 'utf8')],
-    ['xl/_rels/workbook.xml.rels', Buffer.from(wbRels, 'utf8')],
-    ['xl/styles.xml', Buffer.from(stylesXml(), 'utf8')],
-    ...named.map((s, i) => [`xl/worksheets/sheet${i + 1}.xml`, Buffer.from(sheetXml(s), 'utf8')]),
+    { name: '[Content_Types].xml', buf: Buffer.from(types, 'utf8') },
+    { name: '_rels/.rels', buf: Buffer.from(rootRels, 'utf8') },
+    { name: 'docProps/core.xml', buf: Buffer.from(core, 'utf8') },
+    { name: 'docProps/app.xml', buf: Buffer.from(app, 'utf8') },
+    { name: 'xl/workbook.xml', buf: Buffer.from(workbook, 'utf8') },
+    { name: 'xl/_rels/workbook.xml.rels', buf: Buffer.from(wbRels, 'utf8') },
+    { name: 'xl/styles.xml', buf: Buffer.from(stylesXml(), 'utf8') },
+    ...named.map((s, i) => ({
+      name: `xl/worksheets/sheet${i + 1}.xml`,
+      make: () => Buffer.from(sheetXml(s), 'utf8'),
+    })),
   ];
-  return makeZip(entries, when);
+  return { entries, when };
 }
 
-module.exports = { buildXlsx, makeZip, crc32, esc, colName, safeSheetName };
+function materialize(entries) {
+  return entries.map(e => [e.name, e.buf || e.make()]);
+}
+
+async function materializeAsync(entries) {
+  const out = [];
+  for (const e of entries) {
+    out.push([e.name, e.buf || e.make()]);
+    // 让出一轮事件循环：每张表几万行 XML，一次拼完就是秒级无响应
+    await new Promise(r => setImmediate(r));
+  }
+  return out;
+}
+
+/**
+ * @param {Array<{name:string, rows:Array<Array<*>>}>} sheets 每张表第一行为表头
+ * @param {{title?:string, creator?:string, when?:Date}} [meta]
+ * @returns {Buffer} .xlsx 文件字节
+ */
+function buildXlsx(sheets, meta) {
+  const { entries, when } = buildParts(sheets, meta);
+  return makeZip(materialize(entries), when);
+}
+
+/**
+ * 异步版本：生成 XML 与压缩都分帧/并行，主线程不再被占住。
+ *
+ * 12 小时报告（43200 采样点 / 510 万单元格）实测：同步路径里 deflate 2.2s +
+ * 拼 XML 1.9s 两个长任务连在一起，期间 Electron 主进程完全卡死（窗口无响应、
+ * 采集日志停更）。异步路径把这两段都拆开，UI 全程可响应。
+ */
+async function buildXlsxAsync(sheets, meta) {
+  const { entries, when } = buildParts(sheets, meta);
+  return makeZipAsync(await materializeAsync(entries), when);
+}
+
+module.exports = { buildXlsx, buildXlsxAsync, makeZip, makeZipAsync, crc32, esc, colName, safeSheetName };

@@ -36,7 +36,17 @@ function androidPerf(n) {
       fps: i === 5 ? 10 : 60,
       jank: i === 5 ? 3 : 0,
       bigJank: 0, smallJank: 0, tinyJank: 0, jankRate: 0,
-      net: { rxKBps: 3, txKBps: 1 },
+      // 现代帧指标（口径版本 2）：i=5 那一拍有真实长帧
+      fpsMethod: 'timestats',
+      ftP50: 16.7, ftP90: 16.8, ftP95: i === 5 ? 180 : 17.2,
+      ftP99: i === 5 ? 200 : 33,
+      jankyRatio: i === 5 ? 8.5 : 2.1,
+      hitchMsPerSec: i === 5 ? 420 : 25,
+      overrunP95: i === 5 ? 160 : 0.5,
+      overrunP99: i === 5 ? 183 : 1.2,
+      overrunMax: i === 5 ? 183.3 : 16.8,
+      // 非 root 设备走整机口径：必须被标成 degraded，而不是当成应用流量
+      net: { rxKBps: 3, txKBps: 1, netScope: 'device', netSource: 'proc-net-dev' },
       temperature: 35, tempSource: 'battery', gpuTemp: 44, cpuTemp: 44, batteryTemp: 29, skinTemp: 32,
       battery: { level: 100 - i, voltage: 4000, temperature: 29, currentNow: -200, power: 800 },
       gpu: 55 + i,
@@ -78,6 +88,7 @@ const byName = n => sheets.find(s => s.name === n);
 check('首个标签页是汇总', names[0] === '汇总', names);
 check('每个性能组独占一个标签页',
   ['FPS与卡顿', 'CPU', '内存', '网络', 'GPU', '温度', '电池'].every(n => names.includes(n)), names);
+check('汇总之后紧跟数据质量页', names[1] === '数据质量', names.slice(0, 3));
 check('末尾含标记区间与原始采样', names.slice(-2).join(',') === '标记区间,原始采样', names);
 check('标签页顺序跟随 metricOrder',
   names.indexOf('FPS与卡顿') < names.indexOf('CPU') && names.indexOf('CPU') < names.indexOf('内存'), names);
@@ -88,10 +99,37 @@ check('metricOrder 可改变标签页顺序',
 {
   const fps = byName('FPS与卡顿');
   check('分组表行数 = 采样点 + 表头', fps.rows.length === 13, fps.rows.length);
-  check('分组表头为中文可读标签', fps.rows[0].includes('FPS (帧/秒)') && fps.rows[0].includes('Jank (帧)'), fps.rows[0]);
+  // Jank 家族表头已加「（旧口径）」后缀，前缀保持兼容（对比脚本按前缀匹配）
+  check('分组表头为中文可读标签',
+    fps.rows[0].includes('FPS (帧/秒)')
+    && fps.rows[0].some(h => typeof h === 'string' && h.startsWith('Jank (帧)')),
+    fps.rows[0]);
+  check('Jank 家族标注旧口径',
+    ['Jank (帧)', 'BigJank (帧)', 'SmallJank (帧)', 'TinyJank (帧)']
+      .every(p => fps.rows[0].some(h => typeof h === 'string' && h.startsWith(p) && h.includes('旧口径'))));
+  // 1.2 回退整机时，网络明细列名与汇总行都必须带口径，不能只靠脚注
+  const net = byName('网络');
+  check('整机流量明细列名标「整机流量」',
+    net && net.rows[0].some(h => typeof h === 'string' && h.includes('整机流量·下行')),
+    net && net.rows[0]);
+  const summary = byName('汇总');
+  check('汇总页把下行改名「整机下行（非应用流量）」',
+    summary && JSON.stringify(summary.rows).includes('整机下行（非应用流量）'));
+  check('汇总页写明「不等于被测应用流量」',
+    summary && JSON.stringify(summary.rows).includes('不等于被测应用流量'));
   check('分组表带标记区间列', fps.rows[0][2] === '标记区间' && fps.rows[3][2] === '标记1' && fps.rows[1][2] === '', [fps.rows[1][2], fps.rows[3][2]]);
   check('第二个标记区间可识别', fps.rows[9][2] === '标记2', fps.rows[9][2]);
   check('FPS 数值按采样点写入', fps.rows[6][3] === 10 && fps.rows[2][3] === 60, [fps.rows[2][3], fps.rows[6][3]]);
+  // 口径版本 2 的帧指标：列名、数值、以及「取帧通道」都要能落到表里
+  check('分组表含现代帧指标列',
+    fps.rows[0].includes('帧耗时 P99 (ms)') && fps.rows[0].includes('最长单帧超时 (ms)'),
+    fps.rows[0].slice(0, 24));
+  const iP99 = fps.rows[0].indexOf('帧耗时 P99 (ms)');
+  const iOverMax = fps.rows[0].indexOf('最长单帧超时 (ms)');
+  check('长帧那一拍的 P99 / 最长超时写入正确',
+    fps.rows[6][iP99] === 200 && fps.rows[6][iOverMax] === 183.3,
+    [iP99, iOverMax, fps.rows[6][iP99], fps.rows[6][iOverMax]]);
+  check('取帧通道进表（可回溯来源）', fps.rows[0].includes('取帧通道'), fps.rows[0].slice(0, 24));
 }
 
 {
@@ -148,6 +186,14 @@ check('metricOrder 可改变标签页顺序',
   check('汇总含应用/设备/采样点数', flat.some(x => /^应用\|com\.example\.demo/.test(x))
     && flat.some(x => /^采样点数\|12/.test(x)), flat.slice(0, 10));
   check('汇总含各指标均值/最小/最大表头', flat.includes('指标|均值|最小|最大|单位|有效样本'), flat.slice(11, 13));
+  // 新口径：帧耗时、网络口径都必须出现在汇总页最显眼的位置
+  check('汇总含帧耗时分位数列',
+    flat.some(x => /^帧耗时 P99\|/.test(x)) && flat.some(x => /^最长单帧超时\|/.test(x)),
+    flat.filter(x => /帧耗时|最长单帧/.test(x)));
+  check('汇总标明网络为整机流量',
+    flat.some(x => /^网络口径\|整机流量/.test(x)), flat.filter(x => /网络口径/.test(x)));
+  check('汇总含口径版本说明以外不伪造 0 值',
+    flat.some(x => /^说明\|未测量到的指标留空/.test(x)), flat.filter(x => /^说明/.test(x)));
 }
 
 {
@@ -231,11 +277,16 @@ def cells(i):
         v = c.find('m:v', NS)
         out.append([c.get('r'), c.get('t'), (t.text if t is not None else (v.text if v is not None else None))])
     return out
+# 标签页顺序会随「数据质量」页的加入而变化，必须按名字定位，不能写死下标
+fps_i = names.index('FPS与卡顿') + 1 if 'FPS与卡顿' in names else 2
+q_i = names.index('数据质量') + 1 if '数据质量' in names else 0
 print(json.dumps({
     'parts': len(parts), 'names': names,
-    's1': cells(1)[:20], 'fps': cells(2)[:20],
+    's1': cells(1)[:20],
+    'fps': cells(fps_i),
+    'quality': cells(q_i)[:200] if q_i else [],
     'styles': '<b/>' in z.read('xl/styles.xml').decode('utf-8'),
-    'frozen': 'ySplit="1"' in z.read('xl/worksheets/sheet2.xml').decode('utf-8'),
+    'frozen': 'ySplit="1"' in z.read('xl/worksheets/sheet%d.xml' % fps_i).decode('utf-8'),
 }, ensure_ascii=False))
 `;
 const py = spawnSync('python', ['-c', PY, out.file], { encoding: 'utf8' });
@@ -254,21 +305,38 @@ if (py.status !== 0 && py.error && py.error.code === 'ENOENT') {
     check('FPS 表含中文表头与数值单元格', /FPS \(帧\/秒\)/.test(s2) && /"60"/.test(s2), s2.slice(0, 300));
     check('表头加粗样式存在', r.styles === true, r.styles);
     check('分组表冻结首行', r.frozen === true, r.frozen);
+    // 数据质量页：口径降级必须写在表里，而不是只存在于注释
+    check('汇总之后紧跟「数据质量」页', names[1] === '数据质量', names.slice(0, 3));
+    const q = JSON.stringify(r.quality);
+    check('数据质量页含覆盖率与口径列', /覆盖率/.test(q) && /实际口径/.test(q), q.slice(0, 240));
+    check('数据质量页把整机流量标为降级', /口径降级/.test(q), q.slice(0, 400));
   }
 }
 
 // ── 主进程接线（静态） ──────────────────────────────────────────────────────
 check('main 引入 run-xlsx', /require\('\.\/src\/run-xlsx'\)/.test(MAIN), true);
-const xlsxCalls = MAIN.match(/^\s+_writeRunXlsxSafe\(payload, dataJsPath, '/gm) || [];
+// 调用形态现在是 `await _writeRunXlsxSafe(...)`（异步导出，避免停止采集时冻窗口），
+// 断言同时接受同步/异步两种写法，但仍然要求 4 个 stop handler 全部接线。
+const xlsxCalls = MAIN.match(/^\s+(?:await\s+)?_writeRunXlsxSafe\(payload, dataJsPath, '/gm) || [];
 check('四个 stop handler 都接了 Excel', xlsxCalls.length === 4, xlsxCalls.length);
 check('Excel 跟随 data.js 实际落盘目录', /const dataJsPath = reportsDataJs\.writeDataJs\(payload\)/.test(MAIN), true);
 check('Excel 失败不影响停止流程', /function _writeRunXlsxSafe[\s\S]{0,500}catch \(e\)/.test(MAIN), true);
 check('生成结果推送到采集日志', /已生成 Excel：/.test(MAIN), true);
 
-// 报告目录里的 Excel 含真实采集数据，绝不能随发布包分发
+// 报告目录里的 Excel 含真实采集数据，绝不能随发布包分发。
+// S-04 起这里不再是「按扩展名排除」，而是「按文件名白名单放行」——方向反过来了：
+// 将来新增任何产物类型（.csv / .png / .json）默认都会被挡住，不用再补黑名单规则。
 const PACK = fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'tools', 'make_release_zip.py'), 'utf8');
-check('发布包剔除报告目录下的 Excel',
-  /'collector\/resources\/reports\/':\s*\('\.xlsx',\s*'\.xls'\)/.test(PACK), true);
+const ALLOW = (/REPORTS_ALLOW\s*=\s*\{[\s\S]*?\n\}/.exec(PACK) || [''])[0];
+// 只取引号里的文件名：白名单块的注释里会提到 perf2.html（说明它为什么不在列），
+// 直接对整块做正则会被注释误导。
+const ALLOW_FILES = (ALLOW.match(/'[^']+'/g) || []).map(x => x.slice(1, -1));
+check('报告目录走文件名白名单（不再是扩展名黑名单）', ALLOW_FILES.length > 0, ALLOW_FILES);
+check('白名单只放行交付资源（不含 Excel / 运行期产物 / 停用页）',
+  ALLOW_FILES.length > 0 &&
+  !ALLOW_FILES.some(f => /\.xlsx$|\.xls$|^data\.js$|^data\.json$|^perf2\.html$/.test(f)),
+  ALLOW_FILES);
+check('白名单在 pruned() 里真的生效', /if rel\.startswith\(REPORTS_DIR\):/.test(PACK), true);
 
 // 开发态报告目录在 _client_src/app/reports/，同样会被 build_app.py 打进 asar
 const BUILD = fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'tools', 'build_app.py'), 'utf8');

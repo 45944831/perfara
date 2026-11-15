@@ -104,14 +104,17 @@ function jpegSize(buf) {
 
   // 走真实 UI 启动：渲染进程只在「开始」按钮把 isCollecting 置真后才消费 perf-data，
   // 直接调 perfAPI.startCollect 会得到「缩略条有图、曲线没数据」的假状态。
-  const deviceReady = await page.evaluate((id) => {
+  // 设备枚举是主进程异步完成的（一次 adb spawn ~200ms+）：一次性 evaluate 会跑在
+  // 枚举完成之前，下拉还是空的 —— 之前偶发「设备列表包含目标设备 false」即此。
+  // 改成 waitForFunction 等真实信号（与 foreground_app_ui_test 同手法），超时兜底 15s。
+  const deviceReady = await page.waitForFunction((id) => {
     const sel = document.getElementById('sel-device');
     if (!sel) return false;
     if (!Array.from(sel.options).some(o => o.value === id)) return false;
     sel.value = id;
     sel.dispatchEvent(new Event('change'));
     return true;
-  }, DEVICE);
+  }, DEVICE, { timeout: 15000 }).then(() => true).catch(() => false);
   check('设备列表包含目标设备', deviceReady, deviceReady);
 
   let started = { ok: false };

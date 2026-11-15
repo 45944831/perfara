@@ -192,7 +192,10 @@ LOADING_OPTIONS = {
     "max_excluded_ratio": 0.4,
 }
 
-FPS_TARGET_CANDIDATES = (30, 45, 60, 90, 120, 144, 165)
+# S-01：与 adb.js:REFRESH_RATES / perf.html:REFRESH_RATES_SHARED /
+# library.html / fps-loading.js:REFRESH_RATES 同源（去 45，补 24/48/100/185）。
+# perf_param_audit_test 有「5 份副本完全一致」的断言，改一处必须同步全部。
+FPS_TARGET_CANDIDATES = (24, 30, 48, 60, 90, 100, 120, 144, 165, 185, 240)
 
 
 def _is_num(v) -> bool:
@@ -214,9 +217,11 @@ def snap_fps_target(p95_value: Optional[float]) -> Optional[int]:
     if p95_value is None or not (p95_value > 0):
         return None
     for c in FPS_TARGET_CANDIDATES:
-        if c >= p95_value * 0.97:
+        # 上界 1.10：只贴「略高于实测」的档，200Hz 面板不抬到 240
+        if c >= p95_value * 0.97 and c <= p95_value * 1.10:
             return c
-    return int(math.ceil(p95_value / 30.0) * 30)
+    # 旧兜底 ceil(p95/30)*30 会把 24fps 判成 30、185Hz 判成 210 —— 直接向上取整。
+    return int(math.ceil(p95_value))
 
 
 def fps_target_of(values: List[Any]) -> Optional[int]:

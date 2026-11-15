@@ -1,5 +1,10 @@
 'use strict';
 
+// 空 catch 约定（S-05）：本文件的 `catch (_) {}` 只出现在两类地方——
+//   ① 对 adb 子进程 / socket 的 best-effort 清理（kill、destroy、释放 inflight）；
+//   ② 「本机路径探测」这种『这个位置没有就试下一个』的试探（existsSync / realpathSync）。
+// 成败由调用方的返回值或随后的回读判定，不在这里抛；真要报给用户的错误不走空 catch。
+
 const { execFile } = require('child_process');
 const path = require('path');
 const fs   = require('fs');
@@ -179,8 +184,104 @@ function adb(args, timeout = 10000) {
   }));
 }
 
+// ─── TCP 直连 adb server（shell 类命令的低开销通道）──────────────────────────
+// 每拍 7 组并发采集各起一个 adb.exe 子进程时，Windows 的进程创建 + adb 握手
+// 占掉单拍的大头（实测 spawn ~180ms/条、7 条并发竞争拉到 ~400ms，而设备端
+// 命令本身只跑 20~50ms、全量串行也只有 344ms）。adb server 的协议就是本地
+// TCP：4 位十六进制长度 + 服务名，host:transport:<serial> 握手 OKAY 后
+// shell: 服务的输出是裸流直到连接关闭。直连把每拍的 spawn 全部省掉，
+// 真机实测整拍 589ms → 192ms（观测者效应 59% → ~20%）。
+// 任何失败都回退到子进程路径，调用方语义不变；pull / push / exec-out /
+// 设备管理等仍走子进程（协议不同，不在此覆盖）。
+let _directOkCount = 0;
+let _directFailCount = 0;
+
+function _adbDirectShell(deviceId, cmd, timeout) {
+  return new Promise((resolve, reject) => {
+    let sock;
+    try {
+      sock = net.connect({ host: '127.0.0.1', port: ADB_SERVER_PORT });
+    } catch (e) {
+      return reject(e);
+    }
+    const chunks = [];
+    let stage = 0;            // 0=等 transport OKAY，1=等 shell OKAY，2=流式读
+    let acc = Buffer.alloc(0);
+    let settled = false;
+    const finish = (err, out) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      _inflight.delete(sock);
+      try { sock.destroy(); } catch (_) {}
+      err ? reject(new Error(err)) : resolve(out);
+    };
+    const timer = setTimeout(() => finish('adb 直连超时（' + timeout + 'ms）'), timeout);
+    // cancelAllInflight 兼容：子进程用 kill()，socket 同样暴露 kill()
+    sock.kill = () => finish('cancelled');
+    _inflight.add(sock);
+    const send = (s) => sock.write(Buffer.from(s.length.toString(16).padStart(4, '0') + s, 'ascii'));
+    sock.on('error', (e) => finish('adb 直连: ' + e.message));
+    sock.on('data', (d) => {
+      if (settled) return;
+      acc = Buffer.concat([acc, d]);
+      for (;;) {
+        if (stage < 2) {
+          if (acc.length < 4) return;
+          const head = acc.slice(0, 4).toString('ascii');
+          if (head === 'OKAY') {
+            acc = acc.slice(4);
+            stage++;
+            if (stage === 1) send('shell:' + cmd);
+            continue;
+          }
+          if (head === 'FAIL') {
+            if (acc.length < 8) return;
+            const n = parseInt(acc.slice(4, 8).toString('ascii'), 16);
+            if (acc.length < 8 + n) return;
+            return finish('adb: ' + acc.slice(8, 8 + n).toString('utf8'));
+          }
+          return finish('adb 直连: 握手异常 ' + JSON.stringify(head));
+        }
+        chunks.push(acc);
+        acc = Buffer.alloc(0);
+        return;
+      }
+    });
+    sock.on('close', () => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      _inflight.delete(sock);
+      // ⚠️ stage<2 = 握手（transport / shell OKAY）没走完连接就被关闭：
+      // 这不是「命令成功但无输出」，而是 server 挂了 / 复位 / 拒绝 —— 必须
+      // reject 让 adbShell 回退子进程路径，绝不能 resolve('') 静默吞掉
+      // （空输出会被上层当作「读不到写 null」，掩盖设备通信失败、污染熔断判定）。
+      // stage 2 的 close 才是 legacy shell 协议的正常结束（对端关闭=命令完成）。
+      if (stage < 2) {
+        reject(new Error('adb 直连: 连接在握手完成前关闭（server 未就绪或已退出）'));
+        return;
+      }
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    sock.on('connect', () => send('host:transport:' + deviceId));
+  });
+}
+
+/** legacy shell: 服务的输出带 \r\n（adbd PTY 转换），与 execFile 输出对齐 */
+function _stripCr(s) {
+  return String(s == null ? '' : s).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
 function adbShell(deviceId, cmd, timeout = SHELL_TIMEOUT_MS) {
-  return adb(['-s', deviceId, 'shell', cmd], timeout);
+  return _adbDirectShell(deviceId, cmd, timeout)
+    .then((out) => { _directOkCount++; return _stripCr(out); })
+    .catch((e) => {
+      // server 未起 / 设备刚插上 / 协议异常 / 超时：回退子进程路径
+      // （spawn 路径会顺带 ensureServerOwnership，server 起来后下一拍直连即恢复）
+      _directFailCount++;
+      return adb(['-s', deviceId, 'shell', cmd], timeout);
+    });
 }
 
 /**
@@ -222,6 +323,11 @@ function captureScreen(deviceId, timeout = 8000) {
  */
 function shellArg(value) {
   return "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'";
+}
+
+/** 直连层健康度（诊断用）：成功 / 回退 spawn 的次数 */
+function getDirectStats() {
+  return { ok: _directOkCount, fallback: _directFailCount };
 }
 
 function cancelAllInflight() {
@@ -774,22 +880,38 @@ function calcCpuPct(prevPid, currPid, totalDelta, idleDelta, coreCount) {
  *   「占单核百分比」（单核跑满 = 100%，多线程可超 100%）差一个核数倍，属系统性低估。
  *   这里除以在线核数还原成单核口径，上限放宽到 N×100%。
  */
-async function getCpuSnapshot(deviceId, pid) {
+async function getCpuSnapshot(deviceId, pid, staleGapMs = STALE_GAP_MS) {
   const key = `${deviceId}_${pid || 'sys'}`;
   const coreKey = `${deviceId}_cores`;
   const now = Date.now();
   const cmd = 'cat /proc/stat 2>/dev/null; echo "---PIDSTAT---"; '
     + (pid ? `cat /proc/${pid}/stat 2>/dev/null; ` : '')
     + 'echo "---FREQ---"; '
+    // 频率用一个 awk 进程读完所有核：旧写法是 for 循环里每个核起一次 cat，
+    // 8 核就是 8 次 fork/exec（真机实测省 50~60ms/拍），而这只是采集器自己要的
+    // 数据，没必要让被测应用跟着付调度开销。awk 取不到时退回原循环，保证兼容。
+    // FIX-14：优先 cpuinfo_cur_freq（核心实际运行频率；DVFS 快速切换 / 被限频时
+    // scaling 只是 governor 目标值），部分设备需 root / 内核支持 —— 取不到退回
+    // scaling，并把来源写进 FSRC 行，解析成 freqSource 供 provenance 标注精度。
+    + 'F=$(awk \'FNR==1{split(FILENAME,a,"/"); print a[6]" "$1}\' '
+    + '/sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_cur_freq 2>/dev/null); '
+    + 'FSRC=cpuinfo; '
+    + 'if [ -z "$F" ]; then '
+    + 'F=$(awk \'FNR==1{split(FILENAME,a,"/"); print a[6]" "$1}\' '
+    + '/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq 2>/dev/null); '
+    + 'FSRC=scaling; fi; '
+    + 'printf "%s\\n" "FSRC=$FSRC"; '
+    + 'if [ -n "$F" ]; then printf "%s\\n" "$F"; else '
     + 'for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do '
     + 'n=${f#/sys/devices/system/cpu/}; n=${n%%/*}; '
-    + 'echo "$n $(cat "$f" 2>/dev/null || echo 0)"; done';
+    + 'echo "$n $(cat "$f" 2>/dev/null || echo 0)"; done; fi';
 
   let out = '';
   try {
     out = await adbShell(deviceId, cmd, 6000);
   } catch (_) {
-    return { sysCpu: null, procCpu: null, cores: { usage: [], freq: [] }, coreCount: 0 };
+    return { sysCpu: null, procCpu: null, cores: { usage: [], freq: [] }, coreCount: 0,
+      freqSource: null };
   }
 
   const PID_MARK = '---PIDSTAT---';
@@ -825,8 +947,11 @@ async function getCpuSnapshot(deviceId, pid) {
   }
 
   // 频率按 cpuN 名称配对：glob 顺序是 cpu0,cpu1,cpu10,…,cpu2，按下标硬对齐会张冠李戴
+  let freqSource = null;   // FIX-14：cpuinfo（实际频率）| scaling（governor 目标）| null
   const freqMap = new Map();
   for (const line of freqPart.split('\n')) {
+    const ms = line.trim().match(/^FSRC=(\w+)$/);
+    if (ms) { freqSource = ms[1]; continue; }
     const m = line.trim().match(/^(cpu\d+)\s+(-?\d+)/);
     if (!m) continue;
     const v = parseInt(m[2], 10);
@@ -834,25 +959,32 @@ async function getCpuSnapshot(deviceId, pid) {
   }
   const freq = coreIds.map((id) => (freqMap.has(id) ? freqMap.get(id) : null));
 
+  // FIX-13：快照统一存单调时钟；与上一拍隔太久（设备休眠 / 看门狗恢复 /
+  // 跳过重叠拍）时，jiffies 差值是「长窗口平均」—— 瞬时使用率写 null，
+  // 下一拍基线自然重建（curr 每拍都会 set）。
+  const mono = monoMs();
   const curr = { sys: sysLine ? parseSys(sysLine) : null,
-                 pid: (pid && pidRaw) ? parsePidStat(pidRaw) : null, ts: now };
+                 pid: (pid && pidRaw) ? parsePidStat(pidRaw) : null, ts: now, mono };
   const prev = _cpuState.get(key);
   _cpuState.set(key, curr);
+  const cpuStale = !!(prev && prev.mono != null && mono - prev.mono > staleGapMs);
 
-  const currCores = { ids: coreIds, cores: coreData, ts: now };
+  const currCores = { ids: coreIds, cores: coreData, ts: now, mono };
   const prevCores = _coreState.get(coreKey);
   _coreState.set(coreKey, currCores);
-  const usage = coreCount ? pairCoreUsage(prevCores, currCores) : [];
+  // 逐核使用率同样受长间隔影响：stale 时全部 null（不要把 10 秒压进一个点）
+  const usage = (coreCount && !cpuStale) ? pairCoreUsage(prevCores, currCores)
+    : coreCount ? coreIds.map(() => null) : [];
 
-  // 首帧没有基线、或本次读失败：使用率「未测量」，不是 0%
+  // 首帧没有基线、本次读失败、或间隔过长：使用率「未测量」，不是 0%
   let pct = { sysCpu: null, procCpu: null };
-  if (prev && prev.sys && curr.sys) {
+  if (!cpuStale && prev && prev.sys && curr.sys) {
     pct = calcCpuPct(prev.pid, curr.pid,
       curr.sys.total - prev.sys.total,
       curr.sys.idle - prev.sys.idle,
       coreCount);
   }
-  return { sysCpu: pct.sysCpu, procCpu: pct.procCpu, cores: { usage, freq }, coreCount };
+  return { sysCpu: pct.sysCpu, procCpu: pct.procCpu, cores: { usage, freq }, coreCount, freqSource };
 }
 
 /** 兼容包装：只取整机 / 进程两项。采集主循环请直接用 getCpuSnapshot 避免重复读。 */
@@ -872,7 +1004,13 @@ async function getCpuStats(deviceId, pid) {
 function parseMemInfoSections(out, mi) {
   const text = String(out || '');
   const mem  = String(mi || '');
-  const totalMatch = text.match(/^\s*TOTAL\s+(\d+)/m);
+  // 明细表 TOTAL 行（行首 + 第一个数字）优先。部分 ROM 只给 App Summary，
+  // 而汇总行把三个值挤在一起：
+  //   "TOTAL PSS: 142988   TOTAL RSS: 171234   TOTAL SWAP PSS: 271"
+  // 必须只认 key 后紧跟的第一个数字；取行内最后一个会拿到 SWAP PSS（差数百倍），
+  // 正是 WeakNet v1.1.16 修掉的同类缺陷。
+  const totalMatch = text.match(/^\s*TOTAL\s+(\d+)/m)
+    || text.match(/(?:^|\s)TOTAL\s+PSS:\s*(\d+)/);
   const summary = (label) => {
     const m = text.match(new RegExp(`^\\s*${label}:\\s+(\\d+)`, 'm'));
     return m ? Math.round(parseInt(m[1], 10) / 1024) : null;
@@ -906,21 +1044,105 @@ function parseMemInfoSections(out, mi) {
   };
 }
 
-async function getMemInfo(deviceId, packageName) {
-  // 一次 shell 取两段：dumpsys meminfo（进程） + /proc/meminfo（整机）。
-  // 旧实现分两次 adb，两个值来自不同时刻；合并后只解析同一份输出。
-  const cmd = `dumpsys meminfo ${shellArg(packageName)} 2>/dev/null; `
-    + 'echo "---PROCMEM---"; cat /proc/meminfo 2>/dev/null';
+/**
+ * 解析 /proc/meminfo + /proc/<pid>/status（纯函数）。
+ * RSS 是内核计数字段，读它不遍历被测进程的地址空间；这就是它能做到
+ * 「几乎零干扰」的原因（对照：dumpsys meminfo 要逐个 VMA 统计 smaps）。
+ */
+function parseMemLite(mi, status) {
+  const mem = String(mi || '');
+  const st  = String(status || '');
+  const kb = (re) => {
+    const m = st.match(re);
+    return m ? Math.round(parseInt(m[1], 10) / 1024) : null;
+  };
+  const mt = mem.match(/^MemTotal:\s+(\d+)/m);
+  const ma = mem.match(/^MemAvailable:\s+(\d+)/m);
+  // FIX-07：/proc/<pid>/status 同一份输出里现成可得的三项 —— 零额外 adb 开销
+  // （该文件每拍已读）。读不到写 null，不补 0。
+  const int = (re) => {
+    const m = st.match(re);
+    return m ? parseInt(m[1], 10) : null;
+  };
+  const ctx = st.match(/^voluntary_ctxt_switches:\s+(\d+)/m);
+  // D-01（r4）：内核字段名是 nonvoluntary_ctxt_switches（fs/proc/array.c:401），
+  // 旧正则写的 voluntary_ctxt_switches_nonvoluntary 在 /proc/<pid>/status 里
+  // 永远不存在 → 非自愿上下文切换恒 null（真机佐证：同一份 status 里
+  // ctxVoluntary 正常递增、ctxNonvoluntary 全程 null）。
+  const ctxNV = st.match(/^nonvoluntary_ctxt_switches:\s+(\d+)/m);
+  return {
+    memTotalMB:     mt ? Math.round(parseInt(mt[1], 10) / 1024) : null,
+    memAvailableMB: ma ? Math.round(parseInt(ma[1], 10) / 1024) : null,
+    rss: kb(/^VmRSS:\s+(\d+)/m),
+    hwm: kb(/^VmHWM:\s+(\d+)/m),
+    // 线程数（Threads）：native 线程暴涨（泄漏 / 排查并发问题）的第一手证据
+    threads:        int(/^Threads:\s+(\d+)/m),
+    // swap 换出页（VmSwap，KB→MB）：内存压力下被换出的大小
+    swapMB:         kb(/^VmSwap:\s+(\d+)/m),
+    // 自愿 / 非自愿上下文切换累计：非自愿高 = CPU 争抢；累计值由上层取差算速率
+    ctxVoluntary:   ctx ? parseInt(ctx[1], 10) : null,
+    ctxNonvoluntary: ctxNV ? parseInt(ctxNV[1], 10) : null,
+  };
+}
+
+/**
+ * 轻量内存通道：只读整机内存水位与进程 RSS/HWM。
+ *
+ * 真机实测（游戏 30fps 场景，A/B 交替）：
+ *   dumpsys meminfo 每拍 → 帧间隔 P95 +12.5ms / P99 +20.1ms
+ *   本函数每拍         → P95 ±0 / P99 ±0（在噪声内）
+ * 所以高频内存采样走这条路，PSS 家族降频到 5s 一次（见 collector._collectMem）。
+ */
+async function getMemInfoLite(deviceId, pid) {
+  const cmd = 'cat /proc/meminfo 2>/dev/null; echo "---PROCSTATUS---"; '
+    + (pid ? `cat /proc/${pid}/status 2>/dev/null` : 'true');
   try {
     const raw = await adbShell(deviceId, cmd, DUMPSYS_TIMEOUT_MS);
-    const MARK = '---PROCMEM---';
+    const MARK = '---PROCSTATUS---';
     const idx = raw.indexOf(MARK);
-    const out = idx >= 0 ? raw.slice(0, idx) : raw;
-    const mi  = idx >= 0 ? raw.slice(idx + MARK.length) : '';
-    return parseMemInfoSections(out, mi);
+    const mi = idx >= 0 ? raw.slice(0, idx) : raw;
+    const st = idx >= 0 ? raw.slice(idx + MARK.length) : '';
+    return parseMemLite(mi, st);
+  } catch (_) {
+    return { memTotalMB: null, memAvailableMB: null, rss: null, hwm: null,
+      threads: null, swapMB: null, ctxVoluntary: null, ctxNonvoluntary: null };
+  }
+}
+
+async function getMemInfo(deviceId, packageName, pid) {
+  // 一次 shell 取三段：dumpsys meminfo（进程 PSS 家族） + /proc/meminfo（整机）
+  // + /proc/<pid>/status（RSS，和轻量通道同源，保证两个通道的 rss 口径一致）。
+  // 旧实现分多次 adb，几个值来自不同时刻；合并后只解析同一份输出。
+  const cmd = `dumpsys meminfo ${shellArg(packageName)} 2>/dev/null; `
+    + 'echo "---PROCMEM---"; cat /proc/meminfo 2>/dev/null; '
+    + 'echo "---PROCSTATUS---"; '
+    + (pid ? `cat /proc/${pid}/status 2>/dev/null` : 'true');
+  try {
+    const raw = await adbShell(deviceId, cmd, DUMPSYS_TIMEOUT_MS);
+    const M1 = '---PROCMEM---';
+    const M2 = '---PROCSTATUS---';
+    const i1 = raw.indexOf(M1);
+    const i2 = raw.indexOf(M2);
+    const out = i1 >= 0 ? raw.slice(0, i1) : raw;
+    const mi  = i1 >= 0 ? raw.slice(i1 + M1.length, i2 >= 0 ? i2 : undefined) : '';
+    const st  = i2 >= 0 ? raw.slice(i2 + M2.length) : '';
+    const base = parseMemInfoSections(out, mi);
+    const lite = parseMemLite(mi, st);
+    base.rss = lite.rss;
+    base.hwm = lite.hwm;
+    // D-02（r4）：这条命令里 cat /proc/<pid>/status 明明在跑，threads/swap/ctx
+    // 四个字段已经解析到手 —— 旧实现只往外带 rss/hwm，collector 再显式置空，
+    // 造成「每 5 拍有 1 拍四项为 null」的规律性断点（依据不成立的主动丢弃）。
+    base.threads = lite.threads;
+    base.swapMB = lite.swapMB;
+    base.ctxVoluntary = lite.ctxVoluntary;
+    base.ctxNonvoluntary = lite.ctxNonvoluntary;
+    return base;
   } catch (_) {
     return { totalPss: null, nativeHeap: null, javaHeap: null, dalvikHeap: null, code: null, stack: null,
-             graphics: null, privateOther: null, system: null, memTotalMB: null, memAvailableMB: null };
+             graphics: null, privateOther: null, system: null, memTotalMB: null, memAvailableMB: null,
+             rss: null, hwm: null,
+             threads: null, swapMB: null, ctxVoluntary: null, ctxNonvoluntary: null };
   }
 }
 
@@ -1193,6 +1415,13 @@ async function preflightCheck(deviceId, shellFn) {
 
 const _fpsState        = new Map();
 const _timestatsEnabled = new Set();
+// FIX-10：timestats「未匹配目标 layer」的失败记忆 —— 命不中的设备上每拍都先白跑
+// 一条 dump（实测 16 条日志 / 15 拍全 miss），再降级 framestats。连续 miss 满
+// TIMESTATS_MISS_SKIP_TICKS 拍后暂停 timestats 一个窗口（TIMESTATS_SKIP_TICKS 拍），
+// 期间直接走 framestats；窗口结束后重试（应用可能换了渲染层）。
+const _timestatsMiss = new Map();
+const TIMESTATS_MISS_SKIP_TICKS = 10;
+const TIMESTATS_SKIP_TICKS = 10;
 /**
  * framestats 通道的上一帧快照（按 device_pkg 缓存）。
  * PROFILEDATA 是「最近 N 帧」的**滚动窗口**，同一帧会在连续多个采样点里反复出现。
@@ -1256,8 +1485,13 @@ function histDelta(prev, curr) {
   return delta;
 }
 
-/** 常见屏幕刷新率档位（Hz） */
-const REFRESH_RATES = [24, 30, 48, 60, 90, 100, 120, 144, 165, 240];
+/** 常见屏幕刷新率档位（Hz）。P-04：补 185（ROG 9 Game Genie / REDMI K100 Pro Max /
+ * 荣耀 WIN 实际存在，非 30 倍数——任何 ceil(p95/30)*30 兜底都会把它算成 210） */
+const REFRESH_RATES = [24, 30, 48, 60, 90, 100, 120, 144, 165, 185, 240];
+/** 1 个电影帧：1000/24 ≈ 41.67ms —— SmallJank 的绝对门槛。P-01：PerfDog 从未公布
+ * SmallJank 的毫秒阈值（只有语义描述），按其电影帧 1/2/3 倍算术推导补齐第 1 档，
+ * 使 Tiny/Small/Jank/Big 四档单调不减；41.67 是推导值，不是官方口径 */
+const MOVIE_FRAME_X1_MS = 1000 / 24;
 /** 2 个电影帧：1000/24×2 ≈ 83.34ms —— Jank 的绝对门槛（PerfDog 口径） */
 const MOVIE_FRAME_X2_MS = 1000 / 24 * 2;
 /** 3 个电影帧：1000/24×3 = 125ms —— BigJank 的绝对门槛（PerfDog 口径） */
@@ -1308,31 +1542,155 @@ function detectVsync(hist, refreshRate) {
   return Math.floor(1000 / best);
 }
 
+// ── 帧耗时分位数 / hitch / overrun（跨刷新率可比的现代口径）────────────────
+const EMPTY_FRAME_STATS = {
+  ftP50: null, ftP90: null, ftP95: null, ftP99: null,
+  jankyRatio: null, hitchMsPerSec: null, overrunP95: null, overrunP99: null,
+  overrunMax: null,
+};
+
+/** 从算法结果里只挑出现代帧指标，避免把 jank 家族重复塞进返回对象 */
+function pickFrameStats(r) {
+  const src = r || {};
+  const out = {};
+  for (const k of Object.keys(EMPTY_FRAME_STATS)) {
+    out[k] = (typeof src[k] === 'number' && isFinite(src[k])) ? src[k] : null;
+  }
+  return out;
+}
+
+/**
+ * 最近秩分位数（入参必须升序）。
+ * 统一用最近秩而不用线性插值：直方图桶只有整数毫秒，两条通道若用不同算法，
+ * 同一段帧序列会给出不同的 P99，反而制造新的不可比。
+ */
+function nearestRank(sortedAsc, p) {
+  if (!sortedAsc.length) return null;
+  const i = Math.min(sortedAsc.length - 1, Math.max(0, Math.ceil(p * sortedAsc.length) - 1));
+  return sortedAsc[i];
+}
+
+/** 直方图分位数：按累计计数定位到桶 */
+function histNearestRank(entriesAsc, total, p) {
+  if (!total) return null;
+  const target = total * p;
+  let acc = 0;
+  for (const e of entriesAsc) {
+    acc += e.c;
+    if (acc >= target) return e.ms;
+  }
+  return entriesAsc.length ? entriesAsc[entriesAsc.length - 1].ms : null;
+}
+
+/**
+ * 从帧间隔分布算出现代帧指标：
+ *   - jankyRatio     帧间隔 > 2×deadline 的帧占比（%）。分母是总帧数，
+ *                    与采样窗口长短无关，天然可跨设备比较。
+ *   - hitchMsPerSec  每秒累计超出 1 个 deadline 的时间（ms/s），即 Apple 的
+ *                    Hitch Time Ratio 口径（参考阈值 10 / 25 / 50）。
+ *   - overrunP95/P99 单帧超出 deadline 的时长分位数（ms）。
+ *
+ * ⚠️ deadline ≠ 屏幕刷新周期：它必须是 max(屏幕刷新周期, 本段实际帧节奏 P50)。
+ *   只用面板 vsync 当锚的话，锁 30fps（33ms/帧）在 120Hz 面板（8.33ms）上
+ *   33 > 2×8.33 → 帧帧都算卡顿（jankyRatio=100%），换一块 60Hz 屏又变 0% ——
+ *   同一份帧数据跨面板差 100 个百分点。Jank 家族用 baseline 防了自我遮蔽，
+ *   现代帧指标必须用同一个 deadline（FIX-02，schema v4）。
+ *
+ * 与 Jank 家族的关系：Jank 是「按 PerfDog 绝对阈值判定的次数」，用于兼容旧报告；
+ * 这里三项是新口径的补充，不是替换。
+ *
+ * deadline 未知（<=0）时无法定义「超时」，这三项一律返回 null（未测量），
+ * 不编造 0。
+ */
+function frameStatsFromBuckets(entriesAsc, total, deadlineMs) {
+  const vs = deadlineMs > 0 ? deadlineMs : 0;
+  if (!total) return { ...EMPTY_FRAME_STATS };
+  const out = {
+    ftP50: histNearestRank(entriesAsc, total, 0.5),
+    ftP90: histNearestRank(entriesAsc, total, 0.9),
+    ftP95: histNearestRank(entriesAsc, total, 0.95),
+    ftP99: histNearestRank(entriesAsc, total, 0.99),
+    jankyRatio: null,
+    hitchMsPerSec: null,
+    overrunP95: null,
+    overrunP99: null,
+    overrunMax: null,
+  };
+  if (!vs) return out;
+
+  let spanMs = 0, hitchMs = 0, janky = 0;
+  const overruns = [];
+  for (const e of entriesAsc) {
+    spanMs += e.ms * e.c;
+    if (e.ms > 2 * vs) janky += e.c;
+    const over = e.ms - vs;
+    if (over > 0) hitchMs += over * e.c;
+    // 分位数分布必须包含「零超时」的帧：只统计超时帧的话，P99 会退化成
+    // 「最差那 1% 帧的典型值」，反而把偶发长帧说得比实际更严重。
+    overruns.push({ ms: over > 0 ? over : 0, c: e.c });
+  }
+  out.jankyRatio = Math.round((janky / total) * 1000) / 10;
+  // 分母用实际被覆盖的时间（所有帧间隔之和），不是墙钟时长：
+  // 采集窗口内可能有「无帧」间隙，那部分不属于渲染节奏。
+  if (spanMs > 0) out.hitchMsPerSec = Math.round((hitchMs / (spanMs / 1000)) * 10) / 10;
+  const overTotal = overruns.reduce((s, e) => s + e.c, 0);
+  out.overrunP95 = overTotal ? histNearestRank(overruns, overTotal, 0.95) : 0;
+  out.overrunP99 = overTotal ? histNearestRank(overruns, overTotal, 0.99) : 0;
+  // 最差单帧超时：回答「这一秒最长卡了多久」，不受分位数分布影响
+  // 向上取整到 0.1ms：最差帧与 P99 常常就是同一帧，四舍五入会让 max 比 P99 小
+  // 0.01ms（真机踩到过 492.50 < 492.51），既违反 max ≥ P99 的单调关系，也会被
+  // 下游当成脏数据。向上取整只会让「最长」更保守，永远不会低估。
+  const worst = entriesAsc.length ? entriesAsc[entriesAsc.length - 1].ms - vs : 0;
+  out.overrunMax = worst > 0 ? Math.ceil(worst * 10) / 10 : 0;
+  return out;
+}
+
 // Analyse a (delta) present2present histogram → { jank, bigJank, smallJank, tinyJank, totalFrames }
-// 卡顿分级（PerfDog 口径，逐级递进）：
+// 卡顿分级（逐级递进）。⚠️ 归属说明（Q-01）：Jank / BigJank / SmallJank 沿用
+// PerfDog 口径（V7.1 发布说明新增 SmallJank「在 Jank 基础上捕捉更细微卡顿」）；
+// TinyJank（≥1.5×基准）的**命名**属 PerfDog（客户端说明书有此指标），但这个**阈值**
+// 是本项目自定 —— PerfDog 只公布过 Jank（83.34ms）与 BigJank（125ms）的数值。
 //   TinyJank  极小卡顿：帧间隔 ≥ 1.5 × 基准（见下方 tinyMs 说明，锁帧时用实际帧节奏）
-//   SmallJank 微小卡顿：帧间隔 ≥ 84ms（= 1000ms/24×2，PerfDog Jank 绝对档）
-//   Jank              ：帧间隔 ≥ 2 × vsyncMs（missed ≥1 vsync，保持原口径）
-//   BigJank           ：帧间隔 ≥ max(2×avgMs, 125)（PerfDog 精确双条件）
+//   SmallJank 微小卡顿：帧间隔 > max(2×基准, 41.67ms)（P-01 档梯统一；PerfDog
+//     未公布数值，41.67 按电影帧 1 倍推导；语义「在 Jank 基础上捕捉更细微卡顿」）
+//     ⚠️ 与 PerfDog V7.1 官方语义**方向相反**：其 SmallJank 是「比 Jank 更细微的
+//     卡顿」（阈值应低于 Jank），本实现却 ≥84ms ≈ Jank 上限——实际输出的是
+//     「重度卡顿子集」。是否改口径 / 改名见参数准确性报告 P-01 待决策。
+//   Jank              ：帧间隔 ≥ max(2×P50, 83.34ms)
+//   BigJank           ：帧间隔 ≥ max(2×P50, 125ms)
+//
+// ⚠️ 基准从「整段平均帧间隔」改为「P50（中位数）」：
+//    旧实现用 avgMs 再乘 2，而一段卡顿本身就会把平均值抬高，阈值跟着水涨船高，
+//    越卡越测不出来（自我遮蔽）。中位数对少量超长帧不敏感，是稳健基准；
+//    直方图又无法还原逐帧「前三帧均值」，因此用分布中位数是这里能做的最好近似。
 function analyseHistogram(hist, vsyncMs) {
-  const entries = Object.entries(hist).map(([ms, c]) => ({ ms: +ms, c })).filter(e => e.c > 0);
+  const entries = Object.entries(hist)
+    .map(([ms, c]) => ({ ms: +ms, c }))
+    .filter(e => e.c > 0)
+    .sort((a, b) => a.ms - b.ms);
   const totalFrames = entries.reduce((s, e) => s + e.c, 0);
-  if (totalFrames === 0) return { jank: 0, bigJank: 0, smallJank: 0, tinyJank: 0, totalFrames: 0 };
+  if (totalFrames === 0) {
+    return { jank: 0, bigJank: 0, smallJank: 0, tinyJank: 0, totalFrames: 0,
+      avgMs: null, vsyncMs, ...EMPTY_FRAME_STATS };
+  }
 
   const avgMs = entries.reduce((s, e) => s + e.ms * e.c, 0) / totalFrames;
+  const p50 = histNearestRank(entries, totalFrames, 0.5);
 
-  // Jank: PerfDog 双条件的 OR → ft > 2×avgMs OR ft > 83.34ms
-  //   报告文案为「> 前三帧平均 2 倍，且 > 2 个电影帧（83ms）」，与 BigJank 同为 AND 语义，
-  //   此处按 AND 落地取 max（histogram 无法还原逐帧前三帧均值，用整段均值近似）。
-  //   ⚠️ 原实现为 vsyncMs * 2：一旦 vsync 被误判放大，全部卡顿阈值随之失效、Jank 恒为 0。
-  const jankMs  = Math.max(2 * avgMs, MOVIE_FRAME_X2_MS);
-  // BigJank: 两个条件同时满足 → ft > max(2 × avgMs, 125ms)
-  const bigMs   = Math.max(2 * avgMs, MOVIE_FRAME_X3_MS);
-  // TinyJank 基准取「屏幕 vsync 与实际平均帧间隔的较大者」：
-  //   锁低帧率的应用（典型如锁 30fps 的游戏）每帧恒定 ≈33ms，若仍以 60Hz 的 16ms 为基准，
-  //   会把整段全部帧判成微卡顿、失去分辨力；此时应以实际帧节奏为基准。
-  const tinyMs  = Math.max(vsyncMs || 0, avgMs) * 1.5;
-  const smallMs = 84;              // 1000/24×2，PerfDog Jank 绝对档
+  // 锁低帧率的应用（典型如锁 30fps 的游戏）P50 ≈ 33ms，阈值随之抬高，
+  // 避免「整段都被判成卡顿」；稳定 60/120fps 时 2×P50 远小于绝对门槛，
+  // 最终由 83.34 / 125ms 兜底，与 PerfDog 口径一致。
+  const baseline = Math.max(vsyncMs || 0, p50 || 0);
+  const jankMs  = Math.max(2 * baseline, MOVIE_FRAME_X2_MS);
+  const bigMs   = Math.max(2 * baseline, MOVIE_FRAME_X3_MS);
+  // TinyJank 基准同样取「屏幕 vsync 与实际帧节奏（P50）的较大者」
+  const tinyMs  = Math.max(vsyncMs || 0, p50 || 0) * 1.5;
+  // P-01：SmallJank 档梯统一 —— 与 Jank/BigJank 同一相对条件（2×baseline），
+  // 绝对门槛按电影帧 1/2/3 倍递进（41.67/83.34/125）。旧写法固定 84ms：
+  // 正常帧率下（baseline≤41.67ms）jankMs 被钉在 83.34 → SmallJank(≥84) ⊂ Jank，
+  // 「微小卡顿」实为「重度卡顿子集」，方向与 PerfDog「在 Jank 基础上捕捉更细微
+  // 卡顿」的定义相反。PerfDog 从未公布 SmallJank 数值，41.67 是推导值非官方口径。
+  const smallMs = Math.max(2 * baseline, MOVIE_FRAME_X1_MS);
 
   let jank = 0, bigJank = 0, smallJank = 0, tinyJank = 0;
   for (const { ms, c } of entries) {
@@ -1341,7 +1699,12 @@ function analyseHistogram(hist, vsyncMs) {
     if (ms >= jankMs)  jank      += c;
     if (ms >= bigMs)   bigJank   += c;
   }
-  return { jank, bigJank, smallJank, tinyJank, totalFrames, avgMs, vsyncMs };
+  return {
+    jank, bigJank, smallJank, tinyJank, totalFrames, avgMs, vsyncMs,
+    // FIX-02：现代帧指标与 Jank 家族共用同一个 deadline（baseline），
+    // 不是裸面板 vsync —— 否则锁 30fps 在高刷面板上整段误判卡顿。
+    ...frameStatsFromBuckets(entries, totalFrames, baseline),
+  };
 }
 
 // 解析 `dumpsys gfxinfo <pkg> framestats` 的 ---PROFILEDATA--- 段 → [{ vsync, completed }]
@@ -1383,7 +1746,6 @@ function parseFramestats(out) {
 // minVsyncNs：只统计结束时间不早于该 vsync 的帧间隔。调用方会把上一周期尾部几帧
 // 拼在 frames 前面给 avg3 提供基准，靠这个参数避免把旧帧再数一遍。
 function calcJankFramestats(frames, minVsyncNs = 0) {
-  const SMALL_JANK_MS = 84;
   let jank = 0, bigJank = 0, smallJank = 0, tinyJank = 0, evaluated = 0;
 
   // ── 帧间隔必须用相邻帧 Vsync 的差值 ────────────────────────────────────────
@@ -1396,7 +1758,7 @@ function calcJankFramestats(frames, minVsyncNs = 0) {
   const vsyncs = Array.from(new Set(frames.map(f => f.vsync))).sort((a, b) => a - b);
   const ft = [];
   for (let i = 1; i < vsyncs.length; i++) ft.push((vsyncs[i] - vsyncs[i - 1]) / 1e6); // ns → ms
-  if (ft.length < 4) return { jank, bigJank, smallJank, tinyJank, evaluated };
+  if (ft.length < 4) return { jank, bigJank, smallJank, tinyJank, evaluated, ...EMPTY_FRAME_STATS };
 
   // 估算 vsync：帧间隔中位数吸附到常见刷新率
   const sortedFt = ft.filter(v => v > 0).sort((a, b) => a - b);
@@ -1408,27 +1770,58 @@ function calcJankFramestats(frames, minVsyncNs = 0) {
     else vsyncMs = 16.67;                 // 60Hz
   }
   // TinyJank 基准与 analyseHistogram 保持同一口径：
-  //   取「屏幕 vsync」与「段内实际平均帧间隔」的较大者 —— 锁 30fps 的应用每帧恒定 ≈33ms，
+  //   取「屏幕 vsync」与「段内实际帧节奏」的较大者 —— 锁 30fps 的应用每帧恒定 ≈33ms，
   //   若仍以 16.67ms 为基准，整段帧都会被判成微卡顿。
-  const avgMs = ft.reduce((s, v) => s + v, 0) / ft.length;
-  const TINY_JANK_MS = Math.max(vsyncMs, avgMs) * 1.5;
+  // ⚠️ S-02：基准必须是 **P50（中位数）**，不能是均值。均值会被长帧抬高，
+  //   卡得越狠阈值越高 —— 正是下面 ftP50Anchor 注释里批评的「自我遮蔽」。
+  //   此前这里用 avgMs，与 analyseHistogram 的 p50 不同源：同一段帧序列两条通道
+  //   给出 10 vs 50 的 TinyJank（抖动帧 + 长卡场景），长卡增到 40 帧时 40 vs 80。
+  const ftP50All = sortedFt.length
+    ? sortedFt[Math.min(sortedFt.length - 1, Math.max(0, Math.ceil(0.5 * sortedFt.length) - 1))]
+    : 0;
+  const TINY_JANK_MS = Math.max(vsyncMs, ftP50All) * 1.5;
 
+  // 逐帧判定：evaluatedFt 只收「本周期、真正参与判定」的帧间隔，
+  // 分位数/hitch/overrun 也只在同一批帧上算 —— 否则分位数会被上一周期的
+  // 尾部帧稀释，同一份数据算出两套结论。
+  const evaluatedFt = [];
   for (let i = 3; i < ft.length; i++) {
     // ft[i] 的结束时刻是 vsyncs[i + 1]；早于 minVsyncNs 的间隔属于上一周期，
     // 只用来算 avg3 基准，不计入本周期的卡顿次数 / evaluated 分母。
     if (minVsyncNs && vsyncs[i + 1] < minVsyncNs) continue;
     const avg3 = (ft[i - 1] + ft[i - 2] + ft[i - 3]) / 3;
     evaluated++;
+    evaluatedFt.push(ft[i]);
     // Jank：PerfDog 双条件（> 2×前三帧均值 且 > 83.34ms）→ 取 max，与 histogram 路径同口径。
     //   ⚠️ 原实现为 ft > 16.67ms：60Hz 下任何正常帧都会被计成 Jank，指标失真。
     if (ft[i] > Math.max(2 * avg3, MOVIE_FRAME_X2_MS)) jank++;
-    // TinyJank / SmallJank：绝对阈值档
+    // TinyJank（阈值自定）：1.5×基准；SmallJank：P-01 统一档梯（与 Jank/BigJank
+    // 同源 avg3 + 电影帧 1 倍递进），不再固定 84ms
     if (ft[i] >= TINY_JANK_MS) tinyJank++;
-    if (ft[i] >= SMALL_JANK_MS) smallJank++;
+    if (ft[i] > Math.max(2 * avg3, MOVIE_FRAME_X1_MS)) smallJank++;
     // Exact BigJank definition: both conditions → max
     if (ft[i] > Math.max(2 * avg3, MOVIE_FRAME_X3_MS)) bigJank++;
   }
-  return { jank, bigJank, smallJank, tinyJank, evaluated };
+
+  // 现代帧指标：用帧间隔桶的形式复用同一套计算，保证与 timestats 通道同口径
+  const buckets = Object.entries(
+    evaluatedFt.reduce((m, v) => {
+      const b = Math.round(v * 100) / 100;   // 保留两位：直接四舍五入到整毫秒会
+                                            // 给每帧人为加上 0.3ms 超时（60Hz 尤甚）
+      m[b] = (m[b] || 0) + 1;
+      return m;
+    }, {})
+  ).map(([ms, c]) => ({ ms: +ms, c })).sort((a, b) => a.ms - b.ms);
+
+  // FIX-02：deadline 与 histogram 通道对齐 = max(屏幕 vsync, 本段实际帧节奏 P50)。
+  // S-02：TINY_JANK_MS 也已改用 P50（见上），与这里的锚同一口径 —— 三处（Tiny 基准、
+  // 现代帧指标 deadline、histogram 通道）现在都锚在「vsync 与 P50 的较大者」上。
+  const ftP50Anchor = histNearestRank(buckets, evaluatedFt.length, 0.5) || 0;
+  return {
+    jank, bigJank, smallJank, tinyJank, evaluated,
+    vsyncMs,
+    ...frameStatsFromBuckets(buckets, evaluatedFt.length, Math.max(vsyncMs, ftP50Anchor)),
+  };
 }
 
 // Main FPS entry point — returns { fps, jank, bigJank, jankRate, method }
@@ -1445,9 +1838,13 @@ function gfxTotalDelta(out, key, now, log) {
   const total = parseInt(m[1], 10);
   const gKey = key + '_gfx';
   const gPrev = _fpsState.get(gKey);
+  // now 由调用方传入单调时钟（见 getFps 的 mono）：墙钟回拨会让 dt 触底 0.5s，
+  // 把「1 秒内的增量」当成 0.5 秒的增量，帧率凭空翻倍。
   _fpsState.set(gKey, { total, ts: now });
   if (!gPrev || total === gPrev.total) return null;
-  const dt = Math.max((now - gPrev.ts) / 1000, 0.5);
+  const dtMs = now - gPrev.ts;
+  if (!(dtMs > 0)) return null;   // 时钟异常：本帧增量不可信，写 null 不编数
+  const dt = Math.max(dtMs / 1000, 0.5);
   // 计数器被重置 / 应用重启时 delta 可能为负，钳到 0 而不是报负帧率
   const fps = Math.min(Math.round(Math.max(0, total - gPrev.total) / dt), FPS_CAP);
   log(`[FPS] gfxinfo delta ✓ fps=${fps}`);
@@ -1456,14 +1853,23 @@ function gfxTotalDelta(out, key, now, log) {
            jankRate: null, method: 'gfxinfo-delta' };
 }
 
-async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
+async function getFps(deviceId, packageName, logFn, intervalMs = 1000, actualIntervalMs = null) {
+  // FIX-17：framestats 窗口过期判定用「上一拍实际周期」（门闩跳过重叠 / 设备
+  // 休眠会让实际周期远大于配置值），配置 intervalMs 仅作首拍缺省。
+  const effInterval = (Number(actualIntervalMs) > 0) ? Number(actualIntervalMs) : intervalMs;
   const log = logFn || (() => {});
   const key = `${deviceId}_${packageName}_fps`;
+  // now 是墙钟，只用于 timestats 的 15s 失败节流（要的是真实日期时间）；
+  // mono 是单调时钟，所有 dt 计算都用它 —— 墙钟回拨会把 dt 夹到下限、把 FPS 放大。
   const now = Date.now();
+  const mono = monoMs();
   const prev = _fpsState.get(key);
 
   // ── Enable timestats once per device ──────────────────────────────────────
-  if (!_timestatsEnabled.has(deviceId)) {
+  // FIX-10：失败记忆窗口期内不再 enable / dump（省一条 adb/拍），走 framestats
+  const miss = _timestatsMiss.get(deviceId) || { miss: 0, skipUntil: 0 };
+  const timestatsSkipped = now < miss.skipUntil;
+  if (!_timestatsEnabled.has(deviceId) && !timestatsSkipped) {
     try {
       await adbShell(deviceId, 'dumpsys SurfaceFlinger --timestats -enable -clear 2>/dev/null', DUMPSYS_TIMEOUT_MS);
       _timestatsEnabled.add(deviceId);
@@ -1473,6 +1879,10 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
 
   // ── Method 1: --timestats (BLAST/Unity layers) ────────────────────────────
   try {
+    if (timestatsSkipped) {
+      // 窗口期内静默跳过：这不是错误（是省一次白跑），不打日志刷屏
+      throw { __skip: true };
+    }
     const out = await adbShell(deviceId, 'dumpsys SurfaceFlinger --timestats -dump 2>/dev/null', DUMPSYS_TIMEOUT_MS);
     const lines = out.split('\n');
 
@@ -1514,11 +1924,19 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
     }
 
     if (inLayer && totalFrames >= 0) {
-      const currState = { totalFrames, droppedFrames, hist: present2presentHist, ts: now, rr: layerRefreshRate };
+      const currState = { totalFrames, droppedFrames, hist: present2presentHist, ts: now, mono, rr: layerRefreshRate };
       _fpsState.set(key, currState);
 
       if (prev && prev.totalFrames !== undefined) {
-        const dt   = Math.max((now - prev.ts) / 1000, 0.1);
+        // 优先用单调时间差；老状态没有 mono 时退回墙钟（仅热更新瞬间会走到）
+        const dtMs = (prev.mono != null ? mono - prev.mono : now - prev.ts);
+        // 间隔非正 = 时钟异常，本帧增量不可信：重新建立基线并报无数据
+        if (!(dtMs > 0)) {
+          log('[FPS] 采样间隔非正（时钟跳变），本拍 FPS 记无数据并重建基线');
+          return { fps: null, jank: null, bigJank: null, smallJank: null,
+                   tinyJank: null, jankRate: null, method: 'no-frames' };
+        }
+        const dt   = Math.max(dtMs / 1000, 0.1);
         const delta = Math.max(0, totalFrames - prev.totalFrames);
 
         // 本采样周期一帧都没产出（delta=0）：说明应用当前没有可见渲染 ——
@@ -1536,6 +1954,7 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
         const fps   = Math.min(Math.round(delta / dt), FPS_CAP);
 
         let jank = 0, bigJank = 0, smallJank = 0, tinyJank = 0;
+        let fstats = EMPTY_FRAME_STATS;
 
         if (present2presentHist && prev.hist) {
           const dHist  = histDelta(prev.hist, present2presentHist);
@@ -1545,6 +1964,7 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
           bigJank  = result.bigJank;
           smallJank = result.smallJank;
           tinyJank  = result.tinyJank;
+          fstats = pickFrameStats(result);
           log(`[FPS] timestats ✓ layer=${layerTag.split('=')[1]?.trim()} fps=${fps} avgFPS=${averageFPS.toFixed(1)} refreshRate=${layerRefreshRate || 'N/A'} vsync=${vsync}ms avgMs=${(result.avgMs ?? 0).toFixed(1)} jank=${jank} bigJank=${bigJank} smallJank=${smallJank} tinyJank=${tinyJank} δframes=${delta}`);
         } else {
           // Histogram not yet available — estimate from droppedFrames
@@ -1564,10 +1984,15 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
         // 同一次卡顿就被缩小 dt 倍，而 jank10 又把累计值按时长折算一次 —— 等于多除
         // 一次，数值随设备响应速度漂移，跨机型不可比。dt 只用于 fps。
         const jankRate = delta > 0 ? Math.round((jank / delta) * 100) : 0;
+        // FIX-10：命中目标 layer → 清失败记忆（应用可能换回了可统计的渲染层）
+        miss.miss = 0;
+        miss.skipUntil = 0;
+        _timestatsMiss.set(deviceId, miss);
         return {
           fps,
           jank, bigJank, smallJank, tinyJank,
           jankRate, method: 'timestats',
+          ...fstats,
         };
       }
 
@@ -1575,8 +2000,20 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
       return { fps: 0, jank: 0, bigJank: 0, smallJank: 0, tinyJank: 0, jankRate: 0, method: 'timestats-init' };
     }
 
+    // FIX-10：未匹配目标 layer —— 记失败，连续满 10 拍后暂停 timestats 一个窗口
+    miss.miss += 1;
+    if (miss.miss >= TIMESTATS_MISS_SKIP_TICKS) {
+      miss.skipUntil = Date.now() + TIMESTATS_SKIP_TICKS * (intervalMs || 1000);
+      miss.miss = 0;
+      log(`[FPS] timestats 连续 ${TIMESTATS_MISS_SKIP_TICKS} 拍未匹配层，暂停 ${TIMESTATS_SKIP_TICKS} 拍（期间走 framestats）`);
+    }
+    _timestatsMiss.set(deviceId, miss);
     log(`[FPS] timestats 未匹配层 "${packageName}"`);
-  } catch (e) { log(`[FPS] timestats 异常: ${e.message}`); }
+  } catch (e) {
+    // FIX-10：窗口期内的主动跳过（{__skip:true}）不是异常，静默走 framestats；
+    // 真异常照常记日志。
+    if (!(e && e.__skip)) log(`[FPS] timestats 异常: ${e.message}`);
+  }
 
   // ── Method 2: gfxinfo framestats (View-based apps) ───────────────────────
   try {
@@ -1588,7 +2025,8 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
 
     if (frames.length >= 4) {
       frames.sort((a, b) => a.vsync - b.vsync);
-      const win = selectFramestatsWindow(frames, _fsState.get(key), now, intervalMs);
+      // 传单调时钟：窗口过期判定与 fps 的 dt 都基于同一基准，墙钟回拨不会误判 stale
+      const win = selectFramestatsWindow(frames, _fsState.get(key), mono, effInterval);
       _fsState.set(key, win.state);
       if (win.usable) {
         // 只统计本周期新帧：fps = 新帧数 / 真实采样间隔，不再拿滚动窗口的
@@ -1596,25 +2034,26 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
         const fps = Math.min(Math.round(win.frames.length / win.dt), FPS_CAP);
         // 上一周期尾部几帧只为 avg3 提供基准，calcJankFramestats 不会把它们计入。
         const seq = win.tail.concat(win.frames);
-        const { jank, bigJank, smallJank, tinyJank, evaluated } =
-          calcJankFramestats(seq, win.frames[0].vsync);
+        const fsRes = calcJankFramestats(seq, win.frames[0].vsync);
+        const { jank, bigJank, smallJank, tinyJank, evaluated } = fsRes;
         // 分母用「实际参与判定的帧数」，不是原始行数
         const jankRate = evaluated > 0 ? Math.round((jank / evaluated) * 100) : 0;
         log(`[FPS] gfxinfo framestats ✓ new=${win.frames.length} dt=${win.dt.toFixed(2)}s fps=${fps} jank=${jank} bigJank=${bigJank} smallJank=${smallJank} tinyJank=${tinyJank} cols=${iCompleted + 1}${sawHeader ? '(按表头)' : '(默认索引)'}`);
         return {
           fps, jank, bigJank, smallJank, tinyJank,
           jankRate, method: 'framestats',
+          ...pickFrameStats(fsRes),
         };
       }
       // 首帧 / 窗口过期 / 本周期无新帧：framestats 的输出里已经带着
       // 「Total frames rendered」，直接用它做真实增量即可。再跑一次
       // `dumpsys gfxinfo` 只是把同一条命令重复执行一遍（framestats 是其超集）。
       log(`[FPS] gfxinfo framestats 本周期无可用新帧（${win.reason}，窗口 ${frames.length} 帧）→ 复用同一份输出的总帧数增量`);
-      const d = gfxTotalDelta(out, key, now, log);
+      const d = gfxTotalDelta(out, key, mono, log);
       if (d) return d;
     } else {
       log(`[FPS] gfxinfo framestats 帧数不足 (${frames.length}) → 复用同一份输出的总帧数增量`);
-      const d = gfxTotalDelta(out, key, now, log);
+      const d = gfxTotalDelta(out, key, mono, log);
       if (d) return d;
     }
   } catch (e) { log(`[FPS] gfxinfo 异常: ${e.message}`); }
@@ -1622,7 +2061,7 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000) {
   // ── Method 3: gfxinfo "Total frames" delta（framestats 本身抛异常时的兜底） ──
   try {
     const out = await adbShell(deviceId, `dumpsys gfxinfo ${shellArg(packageName)} 2>/dev/null`, DUMPSYS_TIMEOUT_MS);
-    const d = gfxTotalDelta(out, key, now, log);
+    const d = gfxTotalDelta(out, key, mono, log);
     if (d) return d;
     log(`[FPS] gfxinfo 无可用帧增量（未取到 "Total frames rendered" 或无变化）`);
   } catch (e) { log(`[FPS] gfxinfo-delta 异常: ${e.message}`); }
@@ -1654,34 +2093,355 @@ function isMeteredIface(name) {
 }
 
 const _netState = new Map();
+/** 口径探测缓存：记住上次走通的通道，避免每拍都去试一条不通的命令 */
+const _netScopeCache = new Map();
+/** 回退到整机口径后，隔多久再试一次应用口径（应用开始产生流量后才能命中） */
+const NET_SCOPE_RETRY_MS = 15000;
 
-async function getNetStats(deviceId) {
-  const key = `${deviceId}_net`;
-  try {
-    const out = await adbShell(deviceId, 'cat /proc/net/dev 2>/dev/null');
-    let rx = 0, tx = 0;
-    for (const line of out.split('\n')) {
-      // 接口白名单集中在 isMeteredIface（含 clat / v4-* 等 464xlat 接口）：
-      // 旧实现内联正则只有 wlan/rmnet_data，MTK 的 ccmni*、USB 共享的 rndis* 全被漏掉。
-      const iface = line.trim().split(':')[0];
-      if (!isMeteredIface(iface)) continue;
-      const cols = line.trim().split(/\s+/);
-      rx += parseInt(cols[1], 10) || 0;
-      tx += parseInt(cols[9], 10) || 0;
+/**
+ * 解析 `/proc/net/xt_qtaguid/stats` 中指定 UID 的收发字节数。
+ *
+ * 列序：idx iface acct_tag_hex uid_tag_int cnt_set rx_bytes rx_packets tx_bytes tx_packets …
+ * cnt_set 0=前台、1=后台，两者相加才是该 UID 的总量。
+ *
+ * 为什么需要它：`/proc/net/dev` 是**整机**流量，包含系统与其它应用；
+ * 只有按 UID 统计才是「被测应用的流量」。xt_qtaguid 在 Android 9 起被逐步
+ * 移除（改 eBPF），因此这是「能用就用、不能用就如实降级」的一层。
+ *
+ * @returns {{rx:number, tx:number}|null} 找不到该 UID 的任何记录时返回 null
+ */
+function parseQtaguidStats(text, uid) {
+  const want = Number(uid);
+  if (!Number.isFinite(want) || want <= 0) return null;
+  let rx = 0, tx = 0, hit = false;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const c = line.trim().split(/\s+/);
+    if (c.length < 8) continue;
+    if (!/^\d+$/.test(c[0])) continue;                 // 跳过表头
+    if (parseInt(c[3], 10) !== want) continue;         // uid_tag_int
+    if (!isMeteredIface(c[1])) continue;               // 回环/隧道不计
+    const r = parseInt(c[5], 10);                      // rx_bytes
+    const t = parseInt(c[7], 10);                      // tx_bytes
+    if (!Number.isFinite(r) || !Number.isFinite(t)) continue;
+    rx += r; tx += t; hit = true;
+  }
+  return hit ? { rx, tx } : null;
+}
+
+/**
+ * `dumpsys netstats` 按 UID 汇总（qtaguid 被新内核移除后的第二选择）。
+ *
+ * 真机实测（Android 13 / SDK 33）这个命令的输出有**两种**格式，必须都认：
+ *
+ *   ① 缩写计数行（Android 11+ 常见）—— uid 头与计数行是**分开的两行**：
+ *        ident=[{type=1, ...}] uid=10421 set=FOREGROUND tag=0x0
+ *          NetworkStatsHistory: bucketDuration=7200
+ *            st=1794556800 rb=13889 rp=48 tb=50648 tp=120 op=0
+ *      字段名是缩写 rb/tb（不是 rxBytes/txBytes）。
+ *
+ *   ② 长字段计数行（旧格式）—— 同一行内含 uid= / set= / rxBytes= / txBytes=。
+ *
+ * set 口径（**这里最容易算错**）：set 之间是**互斥的流量分段**，不是包含关系。
+ *   DEFAULT = 非前台流量，FOREGROUND = 前台流量，ALL = 两者之和。
+ *   只取 DEFAULT 会漏掉前台流量 —— 实测某前台应用 DEFAULT 仅 18 KB、
+ *   FOREGROUND 却有 22 MB，相差三个数量级。因此：有 ALL 就只用 ALL，
+ *   否则 DEFAULT + FOREGROUND + BACKGROUND 三段相加。
+ * tag 是同一 set 内的再分类（tag=0x0 = 未打标流量），同 set 内各 tag 相加才是该 set 总量。
+ *
+ * ⚠️ 新格式口径：bucket 是固定窗口（真机实测 7200s）内的累计，不是全局累计。
+ * 若把全部 bucket 相加当「历史累计」，桶边界处全量会跳增一个「过去 2h 平均」，
+ * 相邻两拍的差值瞬间放大 7200 倍 —— 速率假尖峰。因此新格式只取**当前进行中的
+ * bucket**（st 最大的行）当作「自桶开始的累计」：同一桶内两拍差值即真实速率；
+ * 跨桶时新桶累计变小，由调用方的回绕判空逻辑置 null 重建基线（2h 丢 1 拍，可接受）。
+ * 解析不到就返回 null 交给下一级降级，**绝不拿整机数字凑数**。
+ */
+function parseNetstatsUid(text, uid) {
+  const want = Number(uid);
+  if (!Number.isFinite(want) || want <= 0) return null;
+  const lines = String(text || '').split(/\r?\n/);
+
+  // set → {rx, tx}
+  const bySet = Object.create(null);
+  let curUid = null;
+  let curSet = null;
+  let curBest = null; // 当前 ident 段里 st 最大的 bucket = 当前进行中的窗口
+  let hit = false;
+
+  const acc = (set, r, t) => {
+    if (!set) return;
+    if (!bySet[set]) bySet[set] = { rx: 0, tx: 0 };
+    bySet[set].rx += r;
+    bySet[set].tx += t;
+    hit = true;
+  };
+  const flush = () => {
+    if (curSet && curUid === want && curBest) acc(curSet, curBest.rx, curBest.tx);
+    curBest = null;
+  };
+
+  for (const line of lines) {
+    const mu = /\buid=(-?\d+)\b/.exec(line);
+    const mset = /\bset=([A-Z_]+)\b/.exec(line);
+
+    // ② 旧格式：同一行内带长字段名（Android 9~11 常见）
+    if (mu && mset && line.indexOf('rxBytes=') >= 0 && line.indexOf('txBytes=') >= 0) {
+      if (parseInt(mu[1], 10) !== want) continue;
+      const mr = /\brxBytes=(\d+)\b/.exec(line);
+      const mt = /\btxBytes=(\d+)\b/.exec(line);
+      if (!mr || !mt) continue;
+      acc(mset[1], parseInt(mr[1], 10), parseInt(mt[1], 10));
+      continue;
     }
-    const now  = Date.now();
-    const prev = _netState.get(key);
-    _netState.set(key, { rx, tx, ts: now });
-    // 速率必须由两帧差值推出：首帧 / 读取失败都是「未测量」，写 0 会被读成「无流量」
-    if (!prev) return { rxKBps: null, txKBps: null };
-    // 计数器回绕或接口重置 → 本帧差值不可信，同样不编造 0 KB/s
-    if (rx < prev.rx || tx < prev.tx) return { rxKBps: null, txKBps: null };
-    const dt = Math.max((now - prev.ts) / 1000, 0.1);
-    return {
-      rxKBps: Math.max(0, Math.round(((rx - prev.rx) / 1024) / dt)),
-      txKBps: Math.max(0, Math.round(((tx - prev.tx) / 1024) / dt)),
-    };
-  } catch (_) { return { rxKBps: null, txKBps: null }; }
+
+    // 头行：先结算上一段，再记住「接下来几行属于哪个 uid / 哪个 set」
+    if (mu && mset) {
+      flush();
+      curUid = parseInt(mu[1], 10);
+      curSet = mset[1];
+      continue;
+    }
+
+    // ① 缩写 bucket 行：只记 st 最大的（当前进行中的桶），归属到上一个头行
+    if (curUid !== want || !curSet) continue;
+    const mb = /\bst=(\d+)\s+rb=(\d+)\b/.exec(line);
+    const mt = /\btb=(\d+)\b/.exec(line);
+    if (!mb || !mt) continue;
+    const st = parseInt(mb[1], 10);
+    const r = parseInt(mb[2], 10);
+    const t = parseInt(mt[1], 10);
+    if (!Number.isFinite(r) || !Number.isFinite(t)) continue;
+    if (!curBest || st >= curBest.st) curBest = { st: st, rx: r, tx: t };
+  }
+  flush();
+
+  if (!hit) return null;
+  const sets = Object.keys(bySet);
+  if (!sets.length) return null;
+
+  let rx = 0;
+  let tx = 0;
+  if (bySet.ALL) {
+    // ALL 已经是各 set 的和，混加会重复计数
+    rx = bySet.ALL.rx;
+    tx = bySet.ALL.tx;
+  } else {
+    const known = ['DEFAULT', 'FOREGROUND', 'BACKGROUND'];
+    for (const s of known) {
+      if (bySet[s]) { rx += bySet[s].rx; tx += bySet[s].tx; }
+    }
+    // 未知 set 名（定制 ROM 自造分段）也计入，宁可多算不漏算
+    for (const s of sets) {
+      if (known.indexOf(s) < 0 && s !== 'ALL') { rx += bySet[s].rx; tx += bySet[s].tx; }
+    }
+  }
+  if (!Number.isFinite(rx) || !Number.isFinite(tx)) return null;
+  return { rx, tx };
+}
+
+/** 设备峰值刷新率缓存：一次采集只读一次，刷新率不会在采集中途变 */
+const _refreshRateCache = new Map();
+
+/** 从 dumpsys display 文本里取峰值刷新率（纯函数，便于离线断言） */
+function parsePeakRefreshRate(text) {
+  const s = String(text || '');
+  // D-19（2026-11-15 真机）：旧正则带 `i` 标志，`peakRefreshRate` 会命中
+  // `mDefaultPeakRefreshRate: 90.0` —— 那是 DisplayManagerService 的**框架默认常量**，
+  // 与面板能力无关。真机 120Hz 面板因此被报成 90，目标帧率与达帧率全线偏 25%。
+  // 现在按可信度依次取，并且排除 Default 变体：
+  //   ① PRIORITY_USER_SETTING_PEAK_REFRESH_RATE 的 maxRefreshRate —— 实际生效的用户投票
+  //   ② mPeakRefreshRate / peakRefreshRate（排除 mDefault*）
+  //   ③ peak_refresh_rate 键值
+  const patterns = [
+    /PRIORITY_USER_SETTING_PEAK_REFRESH_RATE[^\n]*?maxRefreshRate\s*=\s*([0-9]+(?:\.[0-9]+)?)/,
+    /(?<!Default)\bmPeakRefreshRate(?:Hz)?\s*[=:]\s*([0-9]+(?:\.[0-9]+)?)/,
+    /(?<!Default)\bpeakRefreshRate\s*[=:]\s*([0-9]+(?:\.[0-9]+)?)/i,
+    /(?<!Default)\bpeak_refresh_rate\s*[=:]\s*([0-9]+(?:\.[0-9]+)?)/,
+  ];
+  for (const re of patterns) {
+    const m = re.exec(s);
+    if (!m) continue;
+    const hz = parseFloat(m[1]);
+    // P-04：上界 240 → 480（360Hz 屏已存在，旧上界会把它们判非法丢弃）
+    if (Number.isFinite(hz) && hz >= 24 && hz <= 480) return hz;
+  }
+  return null;
+}
+
+/** dumpsys display 的 supportedModes 里最大的 fps —— 面板能力的兜底来源 */
+function parseMaxSupportedFps(text) {
+  const s = String(text || '');
+  let max = null;
+  for (const m of s.matchAll(/fps=([0-9]+(?:\.[0-9]+)?)/g)) {
+    const v = parseFloat(m[1]);
+    if (!Number.isFinite(v) || v < 24 || v > 480) continue;
+    if (max == null || v > max) max = v;
+  }
+  return max;
+}
+
+/**
+ * 1.1 目标帧率的唯一可信来源是设备自报的峰值刷新率，而不是 FPS 序列 P95。
+ * 锁 30fps 的应用会把 P95 推成 30，但屏幕其实是 120Hz —— 用推断值当目标
+ * 会把「主动限帧」误判成「达标」。两路都读不到时返回 null，报告回退旧推断并标注。
+ */
+async function getDeviceRefreshRate(deviceId) {
+  const key = String(deviceId || '');
+  if (_refreshRateCache.has(key)) return _refreshRateCache.get(key);
+  const result = { hz: null, source: null };
+  // D-19（2026-11-15 真机）：顺序反过来 —— `settings get system peak_refresh_rate`
+  // 是用户实际设置，比 `dumpsys display` 里的内部状态更贴近「这块屏按多少刷新」。
+  try {
+    const out2 = await adbShell(deviceId, 'settings get system peak_refresh_rate 2>/dev/null');
+    const v = parseFloat(String(out2 || '').trim());
+    if (Number.isFinite(v) && v >= 24 && v <= 480) {
+      result.hz = v; result.source = 'settings-system';
+    }
+  } catch (_) { /* 权限不足：继续看 dumpsys */ }
+  let displayDump = '';
+  if (result.hz == null) {
+    try {
+      displayDump = await adbShell(deviceId, 'dumpsys display 2>/dev/null');
+      const hz = parsePeakRefreshRate(displayDump);
+      if (hz != null) { result.hz = hz; result.source = 'dumpsys-display'; }
+    } catch (_) { /* 定制 ROM 可能不给 display dump */ }
+  }
+  // 都取不到时用 supportedModes 的最大 fps 兜底（面板能力，不是当前模式）
+  if (result.hz == null && displayDump) {
+    const hz = parseMaxSupportedFps(displayDump);
+    if (hz != null) { result.hz = hz; result.source = 'display-supported-modes'; }
+  }
+  _refreshRateCache.set(key, result);
+  return result;
+}
+
+/**
+ * 网络速率（KB/s）。
+ *
+ * 口径分级（宁可标注，绝不冒充）：
+ *   ① `/proc/net/xt_qtaguid/stats` 按 UID 汇总 → netScope='app'    —— 应用流量
+ *   ② `dumpsys netstats` 按 UID 汇总          → netScope='app'    —— 应用流量（新内核）
+ *   ③ `/proc/net/dev` 整机接口汇总            → netScope='device' —— 整机流量
+ *
+ * 调用方必须把 netScope 一起带到报告与 Excel：③的数值包含其它应用，
+ * 不能当作被测应用的流量来解读。
+ *
+ * 换通道 / 计数器回绕 / 首拍时一律返回 null 速率（未测量），
+ * 只带回新的 scope/source —— 把不可比的差值写成 0 才是假数据。
+ */
+async function getNetStats(deviceId, uid, staleGapMs = STALE_GAP_MS) {
+  const key = `${deviceId}_net`;
+  const now = Date.now();
+  const prev = _netState.get(key);
+  const cache = _netScopeCache.get(key) || {};
+  let sample = null;
+
+  // ① 应用口径：UID 已知，且 qtaguid 没被判死（或已过重试间隔）
+  const uidNum = Number(uid);
+  const uidOk = Number.isFinite(uidNum) && uidNum > 0;
+  const qtaguidDead = cache.qtaguidDeadTs && (now - cache.qtaguidDeadTs <= NET_SCOPE_RETRY_MS);
+  // 整机口径失败后的整体重试节流（与 qtaguid 判死是两件事，不能混用同一个条件）
+  const appRetryDue = cache.mode !== 'device' || now - (cache.ts || 0) > NET_SCOPE_RETRY_MS;
+  const canTryApp = uidOk && !qtaguidDead && appRetryDue;
+  if (canTryApp) {
+    try {
+      const out = await adbShell(deviceId, 'cat /proc/net/xt_qtaguid/stats 2>/dev/null');
+      const hit = parseQtaguidStats(out, uidNum);
+      if (hit) sample = { rx: hit.rx, tx: hit.tx, scope: 'app', source: 'qtaguid' };
+      else {
+        // Android 9+ 已移除 qtaguid（改 eBPF）。旧实现每拍都白白 cat 一次这个
+        // 不存在的文件——多一次 adb 往返，也就多一次对被测应用的扰动。
+        // 判死后 15s 再试一次，兼顾「ROM 其实有、只是本拍没读到」的情况。
+        _netScopeCache.set(key, Object.assign({}, cache, { qtaguidDeadTs: now }));
+      }
+    } catch (_) { /* 老系统无此文件：静默降级，不打断采集 */ }
+  }
+
+  // ② 按 UID 的第二通道：Android 9+ 逐步移除 qtaguid（改 eBPF），
+  //    dumpsys netstats 仍能给出 per-UID 累计值。输出较重，只在 ① 失败时问，
+  //    且失败后与 ① 共用 15s 重试节流（_netScopeCache）。
+  //
+  //    命令必须带 --uid：默认视图只有汇总段、不含 per-UID 计数行；
+  //    `detail` 视图字节数是 --uid 视图的 2 倍，放兜底位。
+  if (!sample && uidOk && appRetryDue) {
+    const cmds = [
+      `dumpsys netstats --uid ${uidNum} 2>/dev/null`,
+      `dumpsys netstats detail --uid ${uidNum} 2>/dev/null`,
+      'dumpsys netstats 2>/dev/null',
+    ];
+    for (const cmd of cmds) {
+      try {
+        const out = await adbShell(deviceId, cmd);
+        const hit = parseNetstatsUid(out, uidNum);
+        if (hit) { sample = { rx: hit.rx, tx: hit.tx, scope: 'app', source: 'netstats' }; break; }
+      } catch (_) { /* 权限/ROM 不支持：试下一条命令 */ }
+    }
+  }
+
+  // ③ 整机口径（回退）
+  if (!sample) {
+    try {
+      const out = await adbShell(deviceId, 'cat /proc/net/dev 2>/dev/null');
+      let rx = 0, tx = 0;
+      for (const line of out.split('\n')) {
+        // 接口白名单集中在 isMeteredIface（含 clat / v4-* 等 464xlat 接口）：
+        // 旧实现内联正则只有 wlan/rmnet_data，MTK 的 ccmni*、USB 共享的 rndis* 全被漏掉。
+        const iface = line.trim().split(':')[0];
+        if (!isMeteredIface(iface)) continue;
+        const cols = line.trim().split(/\s+/);
+        rx += parseInt(cols[1], 10) || 0;
+        tx += parseInt(cols[9], 10) || 0;
+      }
+      sample = { rx, tx, scope: 'device', source: 'proc-net-dev' };
+    } catch (_) { /* 两条通道都读不到：返回未测量 */ }
+  }
+
+  if (!sample) {
+    return { rxKBps: null, txKBps: null, netScope: null, netSource: null };
+  }
+
+  // FIX-04：速率分母的 dt 基准用「计数器读回时刻」，不是命令发起时刻 ——
+  // 两者之间隔着 shell 往返（慢设备可达数百 ms），用发起时刻会把 shell 耗时
+  // 算进分母、系统性低估速率；读回时刻才是计数窗口的真实端点。
+  // （`now` 仍用于 15s 重试节流：那个语义是「距上次尝试多久」，发起时刻才对。）
+  // 读回时刻取单调时钟：墙钟回拨时 dt 会被夹到下限、把速率放大 10 倍。
+  const readAt = monoMs();
+
+  // 合并写，保留 qtaguid 判死时间戳：整体覆盖会让下一拍又去试一次不存在的文件
+  _netScopeCache.set(key, Object.assign({}, _netScopeCache.get(key), {
+    mode: sample.scope, source: sample.source, ts: now,
+  }));
+  const scopeFields = { netScope: sample.scope, netSource: sample.source };
+
+  // 首拍或换了通道：两套计数器没有可比性，本拍只建立基线
+  if (!prev || prev.source !== sample.source) {
+    _netState.set(key, { rx: sample.rx, tx: sample.tx, ts: readAt, source: sample.source });
+    return { rxKBps: null, txKBps: null, ...scopeFields };
+  }
+  // 计数器回绕或接口重置 → 本帧差值不可信，同样不编造 0 KB/s
+  if (sample.rx < prev.rx || sample.tx < prev.tx) {
+    _netState.set(key, { rx: sample.rx, tx: sample.tx, ts: readAt, source: sample.source });
+    return { rxKBps: null, txKBps: null, ...scopeFields };
+  }
+  const dtMs = readAt - prev.ts;
+  // 单调时钟下 dtMs 理论上恒 > 0；这里仍守一道，避免状态错乱/热更新混用
+  // 旧墙钟基线时把「负间隔」夹成 0.1s 反过来放大速率。读不出可信间隔就写 null。
+  if (!(dtMs > 0)) {
+    _netState.set(key, { rx: sample.rx, tx: sample.tx, ts: readAt, source: sample.source });
+    return { rxKBps: null, txKBps: null, ...scopeFields };
+  }
+  // FIX-13：与上一拍隔太久（设备休眠 / 跳拍）时差值是长窗口平均 —— 写 null，
+  // 基线照常更新；不要把 10 秒的量除以 1 秒伪装成瞬时速率。
+  if (dtMs > staleGapMs) {
+    _netState.set(key, { rx: sample.rx, tx: sample.tx, ts: readAt, source: sample.source });
+    return { rxKBps: null, txKBps: null, ...scopeFields };
+  }
+  const dt = Math.max(dtMs / 1000, 0.1);
+  _netState.set(key, { rx: sample.rx, tx: sample.tx, ts: readAt, source: sample.source });
+  return {
+    rxKBps: Math.max(0, Math.round(((sample.rx - prev.rx) / 1024) / dt)),
+    txKBps: Math.max(0, Math.round(((sample.tx - prev.tx) / 1024) / dt)),
+    ...scopeFields,
+  };
 }
 
 // ─── Battery ─────────────────────────────────────────────────────────────────
@@ -1807,6 +2567,54 @@ const BODY_TEMP_NAMES = new Set([
 const _r1 = (v) => Math.round(v * 10) / 10;
 const _avgRows = (rows) => rows.reduce((s, r) => s + r.value, 0) / rows.length;
 
+/** FIX-09 的设备端脚本：head -v 一次读全部 zone 的 type 与 temp（仅 1 次 fork） */
+function buildThermalSysfsScript() {
+  return 'head -v -c 256 /sys/class/thermal/thermal_zone*/type '
+    + '/sys/class/thermal/thermal_zone*/temp 2>/dev/null';
+}
+
+/**
+ * FIX-09：解析 head -v 的多文件输出，把每个 thermal_zone 的 type 与 temp 配对。
+ *
+ * glob 展开按字母序：每个 zone 的 temp 节在 type 节**之前**（'temp' < 'type'），
+ * 每个节头是 `==> 路径 <==`，节内容 1 行（-c 256 足够）。按「同 zone 号的
+ * temp 节 + type 节」配对，绝不按出现顺序串位。
+ * 超量程 / 负温 / 异常单位经 normalizeThermalSysfsTemp 过滤（不猜）。
+ * 抽成纯函数供离线用例锁定配对正确性。
+ * @returns {Array<{name:string, value:number}>}
+ */
+function parseThermalSysfsDump(out) {
+  const sections = [];
+  let cur = null;
+  for (const line of String(out || '').split('\n')) {
+    const t = line.trim();
+    const m = /^==>\s+(.+?)\s+<==$/.exec(t);
+    if (m) { cur = { path: m[1], text: '' }; sections.push(cur); continue; }
+    if (cur && t) cur.text += t + '\n';
+  }
+  const byZone = new Map();   // zone 目录号 → {tempMs, typeName}
+  for (const sec of sections) {
+    const mz = /thermal_zone(\d+)\/(type|temp)$/.exec(sec.path);
+    if (!mz) continue;
+    const entry = byZone.get(mz[1]) || {};
+    if (mz[2] === 'temp') {
+      const v = normalizeThermalSysfsTemp(sec.text.trim());
+      if (v != null) entry.tempMs = v;
+    } else {
+      entry.typeName = sec.text.trim();
+    }
+    byZone.set(mz[1], entry);
+  }
+  const rows = [];
+  for (const entry of byZone.values()) {
+    if (entry.tempMs == null || !entry.typeName) continue;
+    const name = entry.typeName.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    if (!name) continue;
+    rows.push({ name, value: entry.tempMs });
+  }
+  return rows;
+}
+
 /**
  * sysfs 热区 temp 节点（thermal_zoneN/temp）的单位并不统一：
  *   标准 Linux thermal sysfs 是**毫摄氏度**（36500 → 36.5°C）；
@@ -1844,13 +2652,56 @@ function parseThermalService(out) {
   else section = out;
 
   const rows = [];
-  const re = /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=([A-Z_]+)/g;
+  // FIX-06：mStatus 必须一起捕获并过滤 —— mStatus!=0 表示该传感器已被
+  // 系统判定为异常 / 停用（真机实测：SKIN mStatus=3 时报 53.6°C，比机身
+  // 主值 43.0 还高，物理关系反常）。只保留 mStatus=0（正常）的温度行；
+  // 全部被滤掉时按现有回退链兜底（不要写 0 冒充实测）。
+  // mStatus 缺省（老 ROM 不输出该字段）视为 0，保持旧行为兼容。
+  const re = /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=([A-Z_]+),\s*mStatus=(\d+)\}/g;
+  const reNoStatus = /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=([A-Z_]+)\}/g;
   let m;
   while ((m = re.exec(section)) !== null) {
     const v = parseFloat(m[1]);
-    if (isFinite(v) && v > 0 && v < 150) rows.push({ value: v, name: m[3] });
+    const st = parseInt(m[4], 10);
+    if (isFinite(v) && v > 0 && v < 150 && st === 0) rows.push({ value: v, name: m[3] });
   }
-  if (!rows.length) return null;
+  if (!rows.length) {
+    // 兜底：输出完全不带 mStatus 字段（老格式）才走无状态正则
+    while ((m = reNoStatus.exec(section)) !== null) {
+      const v = parseFloat(m[1]);
+      if (isFinite(v) && v > 0 && v < 150) rows.push({ value: v, name: m[3] });
+    }
+  }
+
+  // ADPF Thermal Status（0 NONE ~ 6 SHUTDOWN）：系统判定的节流等级，
+  // 比温度更直接 —— 掉帧归因时「Status>0」就是系统在限频的铁证。
+  // 全文找（该行在温度段之外），取不到写 null。
+  let status = null;
+  const ms = /(?:^|\n)\s*Thermal Status:\s*(\d+)/.exec(String(out));
+  if (ms) {
+    const s = parseInt(ms[1], 10);
+    if (Number.isFinite(s) && s >= 0 && s <= 6) status = s;
+  }
+
+  // 冷却设备动作量（cpu_adaptive 等被主动施压的幅度）：mValue 越大限得越狠。
+  // 取动作量最大的设备；全部为 0 时也如实返回（value=0 的最大者）。
+  let cooling = null;
+  const cr = /CoolingDevice\{mValue=(-?[\d.]+),\s*mType=(\d+),\s*mName=([A-Za-z0-9_]+)\}/g;
+  while ((m = cr.exec(out)) !== null) {
+    const v = parseFloat(m[1]);
+    if (!Number.isFinite(v)) continue;
+    if (!cooling || v > cooling.value) cooling = { name: m[3], value: v };
+  }
+
+  if (!rows.length) {
+    // 没有温度行也可能有 Status / Cooling（ROM 只开了部分传感器）：仍返回节流信号
+    if (status == null && !cooling) return null;
+    return {
+      main: null, source: null, gpu: null, cpu: null, battery: null, skin: null,
+      thermalStatus: status, coolingName: cooling ? cooling.name : null,
+      coolingValue: cooling ? cooling.value : null,
+    };
+  }
 
   const pick = (name) => rows.find((r) => r.name === name);
   const skin = pick('SKIN');
@@ -1877,6 +2728,9 @@ function parseThermalService(out) {
     cpu: cpu ? _r1(cpu.value) : null,
     battery: battery ? _r1(battery.value) : null,
     skin: skin ? _r1(skin.value) : null,
+    thermalStatus: status,
+    coolingName: cooling ? cooling.name : null,
+    coolingValue: cooling ? cooling.value : null,
   };
 }
 
@@ -1889,7 +2743,12 @@ async function getThermalInfo(deviceId, opts = {}) {
   // 分项读数单独保存：即使采不到机身温度，thermalservice 已读到的 CPU/GPU 结温、
   // SKIN 估算值也不能丢。旧实现只在 r.main > 0 时返回整个 r，die-only 机型
   // （只有结温可读）会把 cpuTemp/gpuTemp 一起变成 null，白白丢掉可用数据。
-  const extra = { gpuTemp: null, cpuTemp: null, batteryTemp: null, skinTemp: null };
+  const extra = {
+    gpuTemp: null, cpuTemp: null, batteryTemp: null, skinTemp: null,
+    // ADPF 节流信号（thermalservice 通道才有）：thermalStatus 0~6、
+    // coolingXxx = 动作量最大的冷却设备。读不到写 null，不编 0。
+    thermalStatus: null, coolingName: null, coolingValue: null,
+  };
   let dieOnlySource = null;
   const pack = (temperature, tempSource) =>
     Object.assign({ temperature, tempSource }, extra);
@@ -1903,6 +2762,9 @@ async function getThermalInfo(deviceId, opts = {}) {
       extra.cpuTemp = r.cpu;
       extra.batteryTemp = r.battery;
       extra.skinTemp = r.skin;
+      // 节流信号与温度无关：即使温度走的是下一级兜底，Status/Cooling 也已到手
+      if (r.thermalStatus != null) extra.thermalStatus = r.thermalStatus;
+      if (r.coolingName != null) { extra.coolingName = r.coolingName; extra.coolingValue = r.coolingValue; }
       if (r.main > 0) return pack(r.main, r.source);
       // 只有芯片结温：机身温度留空，但标记来源，卡片才会显示「仅结温」而非 0°C
       if (r.source === 'die') dieOnlySource = 'die';
@@ -1911,19 +2773,12 @@ async function getThermalInfo(deviceId, opts = {}) {
 
   // 2) sysfs：老机型 / root 可读。只读「具名」机身与电池热区；
   //    匿名 thermal_zone 大多是 CPU 各核结温，无差别求平均会系统性偏高，宁可放弃。
+  //    FIX-09：28 个 zone × type/temp 两文件 = 旧写法 56 次 fork（实测整条 743ms）；
+  //    改为单次 head -v -c 256 读全部文件（glob 展开在设备端 shell 内，仅 1 次 fork，
+  //    实测 116ms）。⚠️ 只有 thermalservice 取不到机身温度的 die-only 机型才会走到。
   try {
-    const out = await adbShell(deviceId,
-      'for d in /sys/class/thermal/thermal_zone*; do t=$(cat "$d/type" 2>/dev/null); ' +
-      'v=$(cat "$d/temp" 2>/dev/null); if [ -n "$t" ] && [ -n "$v" ]; then echo "$t=$v"; fi; done');
-    const rows = [];
-    for (const line of out.split('\n')) {
-      const m = line.trim().match(/^([A-Za-z0-9_\- ]+)=(-?\d+(?:\.\d+)?)$/);
-      if (!m) continue;
-      const value = normalizeThermalSysfsTemp(m[2]);
-      if (value == null) continue;   // 负温 / 异常单位 / 超量程：不猜
-      const name = m[1].trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-      rows.push({ name, value });
-    }
+    const out = await adbShell(deviceId, buildThermalSysfsScript());
+    const rows = parseThermalSysfsDump(out);
     const isBody = (r) => /(SKIN|SHELL|CASE|BACK|SURFACE|PANEL|BATT|BOARD|AMBIENT)/.test(r.name)
       && !/(CPU|GPU|NPU|MODEM|DSP|CHG|WIFI|WLAN|CAM|DDR|PMIC|USB)/.test(r.name);
     const body = rows.filter(isBody);
@@ -1985,41 +2840,80 @@ async function getThermalInfo(deviceId, opts = {}) {
  * 仍失败返回 null —— 不返回 0。0 会被当成「GPU 占用 0%」画出一条贴底直线，
  * 比没有数据更容易误导；null 由报告页显式标注「该机型未开放」。
  */
+// FIX-08：探针表只存「tag + 节点路径（可含 glob）」—— cat 是唯一形式，无需重复。
+// 读取方式从「14 次 echo+cat（设备端 14 次 fork，实测 187ms）」改为「过滤可读节点
+// 后单次 head -v -c 4096（1 次 fork，实测 23~30ms，-84%）」：
+//   - [ -r ] 过滤不可读节点：全部不可读时 head 都不执行（本机实测 14/14 不可读，
+//     收益最大）；shell 内 glob 展开，无匹配时保留字面量、[ -r ] 判假，安全。
+//   - head -v 的分节头 `==> path <==` 替代 @@tag；splitProbeOutput 两种格式都认。
+//   - -c 4096 每节点限 4KB：util 类单行无损，gpufreq 表格截断部分行（解析找
+//     gpu_util 字段，前 4KB 足够），换来 USB 传输大幅缩减。
 const GPU_NODE_PROBES = [
   // Qualcomm Adreno
-  ['kgsl_pct',    'cat /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage'],
-  ['kgsl_busy',   'cat /sys/class/kgsl/kgsl-3d0/gpubusy'],
-  ['kgsl_load',   'cat /sys/class/kgsl/kgsl-3d0/devfreq/gpu_load'],
+  ['kgsl_pct',    '/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage'],
+  ['kgsl_busy',   '/sys/class/kgsl/kgsl-3d0/gpubusy'],
+  ['kgsl_load',   '/sys/class/kgsl/kgsl-3d0/devfreq/gpu_load'],
   // ARM Mali（通用路径 / MTK 变体）
-  ['mali_util',   'cat /sys/class/misc/mali0/device/utilization'],
-  ['mtk_mali',    'cat /proc/mtk_mali/utilization'],
-  ['mtk_mali_alt','cat /proc/mali/utilization'],
-  ['mali_load',   'cat /sys/class/devfreq/*.mali/load'],
+  ['mali_util',   '/sys/class/misc/mali0/device/utilization'],
+  ['mtk_mali',    '/proc/mtk_mali/utilization'],
+  ['mtk_mali_alt','/proc/mali/utilization'],
+  ['mali_load',   '/sys/class/devfreq/*.mali/load'],
   // MTK GED（debugfs，通常 root-only）
-  ['ged_hal',     'cat /sys/kernel/debug/ged/hal/gpu_utilization'],
-  ['ged_proc',    'cat /proc/ged/hal/gpu_utilization'],
+  ['ged_hal',     '/sys/kernel/debug/ged/hal/gpu_utilization'],
+  ['ged_proc',    '/proc/ged/hal/gpu_utilization'],
   // MTK gpufreq（root-only，文本里带 util/loading 字段）
-  ['mtk_gpufreq', 'cat /proc/gpufreq/gpufreq_var_dump'],
-  ['mtk_opp',     'cat /proc/gpufreq/gpufreq_opp_dump'],
+  ['mtk_gpufreq', '/proc/gpufreq/gpufreq_var_dump'],
+  ['mtk_opp',     '/proc/gpufreq/gpufreq_opp_dump'],
   // Samsung Exynos / PowerVR / 通用
-  ['exynos',      'cat /sys/kernel/gpu/gpu_busy'],
-  ['pvr',         'cat /sys/devices/platform/*.gpu/utilisation'],
-  ['generic',     'cat /sys/class/gpu/gpu_busy_percentage'],
+  ['exynos',      '/sys/kernel/gpu/gpu_busy'],
+  ['pvr',         '/sys/devices/platform/*.gpu/utilisation'],
+  ['generic',     '/sys/class/gpu/gpu_busy_percentage'],
 ];
 
-/** 每条探针前打一个 @@tag 分隔符，便于回读时切段 */
+/** glob pattern → 正则（供 `==> 实际路径 <==` 反查 tag；* 匹配路径段内任意字符） */
+function gpuPatternToRegex(pat) {
+  return new RegExp('^' + pat.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$');
+}
+const _GPU_PATH_TAG = GPU_NODE_PROBES
+  .map(([tag, pat]) => [gpuPatternToRegex(pat), tag]);
+
+/** 节点实际路径 → tag；未知路径返回 null（忽略该节） */
+function gpuPathToTag(p) {
+  for (const [re, tag] of _GPU_PATH_TAG) {
+    if (re.test(p)) return tag;
+  }
+  return null;
+}
+
+/**
+ * FIX-08：GPU 探针脚本。设备端流程：
+ *   1) 对每个 pattern 做 glob 展开并 [ -r ] 过滤（不可读/不存在的不进列表）；
+ *   2) 有可读节点才执行一次 head -v -c 4096（1 次 fork 读全部节点）。
+ * 全部不可读时整个脚本只有若干 [ -r ] 判断，≈0 次 fork —— 正是收益最大的情形。
+ * ⚠️ 调用方：getGpuUsage（采集）与 probeGpuLoad（启动预检，要求必须快）共用。
+ */
 function buildGpuProbeScript() {
-  return GPU_NODE_PROBES
-    .map(([tag, cmd]) => `echo "@@${tag}"; ${cmd} 2>/dev/null`)
-    .join('; ');
+  const pats = GPU_NODE_PROBES.map(([, pat]) => `'${pat}'`).join(' ');
+  return 'set --; '
+    + `for pat in ${pats}; do for f in $pat; do [ -r "$f" ] && set -- "$@" "$f"; done; done; `
+    + '[ $# -gt 0 ] && head -v -c 4096 "$@" 2>/dev/null; true';
 }
 
 function splitProbeOutput(out) {
   const parts = {};
   let cur = null;
   for (const line of String(out || '').split('\n')) {
-    const m = /^@@(\w+)$/.exec(line.trim());
+    const t = line.trim();
+    const m = /^@@(\w+)$/.exec(t);
     if (m) { cur = m[1]; parts[cur] = ''; continue; }
+    // FIX-08：head -v 的分节头 `==> 路径 <==` → 反查 tag（未知路径整节忽略）
+    const hv = /^==>\s+(.+?)\s+<==$/.exec(t);
+    if (hv) {
+      const tag = gpuPathToTag(hv[1]);
+      cur = tag || null;
+      if (cur) parts[cur] = '';
+      continue;
+    }
     if (cur) parts[cur] += line + '\n';
   }
   return parts;
@@ -2123,7 +3017,7 @@ async function readGpuUsageViaRoot(deviceId) {
   return null;
 }
 
-async function getGpuUsage(deviceId) {
+async function getGpuUsage(deviceId, staleGapMs = STALE_GAP_MS) {
   try {
     const out = await adbShell(deviceId, buildGpuProbeScript(), 6000);
     const parts = splitProbeOutput(out);
@@ -2135,8 +3029,15 @@ async function getGpuUsage(deviceId) {
     const busy = parseGpuBusyCounters(parts.kgsl_busy);
     let busyDelta = null;
     if (busy) {
-      busyDelta = gpuBusyDeltaPct(_gpuBusyState.get(deviceId), busy);
-      _gpuBusyState.set(deviceId, busy);
+      // FIX-13：与上一拍隔太久时 Δbusy/Δtotal 是长窗口平均 —— 写 null（基线
+      // 照常更新，下一拍恢复）
+      const prevRec = _gpuBusyState.get(deviceId);
+      const monoNow = monoMs();
+      const gpuStale = !!(prevRec && prevRec.mono != null && monoNow - prevRec.mono > staleGapMs);
+      if (!gpuStale) {
+        busyDelta = gpuBusyDeltaPct(prevRec, busy);
+      }
+      _gpuBusyState.set(deviceId, { busy: busy.busy, total: busy.total, mono: monoNow });
     }
 
     for (const [tag] of GPU_NODE_PROBES) {
@@ -2200,22 +3101,56 @@ function resetDeviceState(deviceId) {
   // _gpuBusyState 同理：不清会用上一轮结束时的累计计数算出一个跨越整段停机
   // 时间的「平均 GPU 占用」当作本轮第一帧的利用率。
   // _rootState 是有意的会话级缓存（清了每轮都要多探一次 su）。
-  for (const map of [_cpuState, _netState, _fpsState, _coreState, _fsState, _gpuBusyState]) {
+  for (const map of [_cpuState, _netState, _netScopeCache, _fpsState, _coreState, _fsState,
+    _gpuBusyState, _refreshRateCache]) {
     for (const k of map.keys()) { if (k.startsWith(deviceId)) map.delete(k); }
   }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * 单调时钟（毫秒）。
+ *
+ * 所有「速率类」指标的分母 dt 必须用它，不能用 Date.now()：
+ * Windows 时间同步 / 用户改系统时间 / 跨时区都会让墙钟跳变，一旦回拨，
+ * `Math.max((now - prev.ts)/1000, 0.1)` 会把 dt 夹到 0.1s，而计数器增量仍是
+ * 真实增长 —— 速率被凭空放大（1s 的真实窗口算成 0.1s，读数 ×10）。
+ * 网络 KB/s、FPS、framestats 的 dt 都受这条影响，且偶发尖峰会污染峰值统计。
+ *
+ * 墙钟仍保留给「展示时间戳」与「15s 重试节流」这类语义（那类要的是真实日期时间）。
+ */
+// FIX-13：状态间隔超过该阈值（设备休眠 / 看门狗恢复 / 跳过重叠拍）时，
+// 差值是「长窗口平均」而不是瞬时值 —— 写 null 并让下一拍重建基线，
+// 绝不把 10 秒压进一个点伪装成当前值。
+// r3 遗留项闭环：默认 3000ms（1Hz 的 3 倍冗余）只是**无参兜底**——采集器会按
+// 实际采样周期传 Math.max(3×intervalMs, 3000)，可配间隔 >3s 时阈值跟随，不误杀。
+const STALE_GAP_MS = 3000;
+
+function monoMs() {
+
+  if (typeof process !== 'undefined' && process.hrtime && typeof process.hrtime.bigint === 'function') {
+    return Number(process.hrtime.bigint() / 1000000n);
+  }
+  return Date.now();
+}
+
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
+/** 2.1 旁路取证用：原始 adb 参数入口（shell / pull 共用同一套超时与 inflight 管理） */
+function runAdb(args, timeout) {
+  return adb(args, timeout);
+}
+
 module.exports = {
-  shell: adbShell,
+  shell: adbShell, runAdb,
   getDevices, getDeviceInfo, getThirdPartyPackages, getPid, getUid, ensureAppRunning,
   getDeviceLocale, getApkPath, resolveAppLabel, readApkEntry,
   resolveLauncherComponent, isAppForeground, getForegroundSnapshot,
-  getCpuStats, getCpuSnapshot, getMemInfo, getFps,
+  getCpuStats, getCpuSnapshot, getMemInfo, getMemInfoLite, getFps,
   getNetStats, getBatteryInfo, getThermalInfo, parseThermalService, getGpuUsage,
+  getDirectStats,
+  getDeviceRefreshRate,
   getCpuCoreStats, captureScreen,
   preflightCheck, probeChannel,
   resetDeviceState, connectWifi, autoConnectWifi, disconnectWifi,
@@ -2234,7 +3169,15 @@ module.exports = {
     parsePidStat, pairCoreUsage,
     // 采集口径纯函数：整机/单核 CPU、meminfo 分项、电池单位、网络接口白名单
     calcCpuPct, parseMemInfoSections, parseBatteryDump, isMeteredIface,
+    parseQtaguidStats, parseNetstatsUid, parsePeakRefreshRate, parseMemLite,
+    nearestRank, frameStatsFromBuckets, pickFrameStats,
     parseGpuBusyCounters, gpuBusyDeltaPct, interpretGpuProbe,
-    MOVIE_FRAME_X2_MS, MOVIE_FRAME_X3_MS,
+    // FIX-08：GPU 探针脚本生成 / head -v 分节解析（离线用例锁定格式）
+    buildGpuProbeScript, splitProbeOutput, gpuPathToTag,
+    // FIX-09：thermal sysfs 单次读脚本 / type+temp 配对解析
+    buildThermalSysfsScript, parseThermalSysfsDump,
+    MOVIE_FRAME_X1_MS, MOVIE_FRAME_X2_MS, MOVIE_FRAME_X3_MS, EMPTY_FRAME_STATS,
+    // 时间基准：所有速率类 dt 必须用单调时钟（墙钟回拨会放大速率）
+    monoMs,
   },
 };

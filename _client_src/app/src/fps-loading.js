@@ -47,13 +47,29 @@ function p95Of(values) {
   return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
 }
 
+/**
+ * 常见屏幕刷新率档位（Hz）。
+ *
+ * ⚠️ S-01：这张表在项目里有 5 份副本（本文件、`adb.js:REFRESH_RATES`、
+ * `perf.html:REFRESH_RATES_SHARED`、`library.html`、`backend/utils.py:
+ * FPS_TARGET_CANDIDATES`），改动必须同步。历史教训：P-04 只改了其中 2 份，
+ * 本文件仍是旧的 7 档表，而它的输出会经 `data.loading.target` 被报告页当成
+ * 「设备值」直接采用，使报告页新表形同虚设（100Hz 被算成 120、24fps 算成 30）。
+ *
+ * 24 / 48 是视频帧率，100 是非 30 倍数的真实机型，185 见于 ROG 9 / K100 Pro Max。
+ */
+const REFRESH_RATES = [24, 30, 48, 60, 90, 100, 120, 144, 165, 185, 240];
+
 /** P95 吸附到常见刷新率档位 */
 function snapFpsTarget(p95) {
   if (!(p95 > 0)) return null;
-  for (const c of [30, 45, 60, 90, 120, 144, 165]) {
-    if (c >= p95 * 0.97) return c;
+  for (const c of REFRESH_RATES) {
+    // 只贴「略高于实测」的档：下界 0.97 让 119→120；上界 1.10 防止 200Hz 面板
+    // 被抬到 240（达帧率凭空少 17%，2026-11-15 真机复核时定的上界）。
+    if (c >= p95 * 0.97 && c <= p95 * 1.10) return c;
   }
-  return Math.ceil(p95 / 30) * 30;
+  // 旧兜底 ceil(p95/30)*30 会把 24fps 判成 30、185Hz 判成 210 —— 直接向上取整。
+  return Math.ceil(p95);
 }
 
 /** 由 FPS 序列直接推目标帧率 */
@@ -141,15 +157,24 @@ function buildLoadingMask(length, segments) {
  * @returns {{target:number|null, segments:Array, mask:Uint8Array,
  *            excludedSamples:number, totalSamples:number, excludedRatio:number}}
  */
-function analyseLoading(fps, options) {
+function analyseLoading(fps, options, targetOverride) {
   const arr = Array.isArray(fps) ? fps : [];
-  const target = fpsTargetOf(arr);
+  const inferred = fpsTargetOf(arr);
+  // 1.1：设备自报的 peak_refresh_rate 比「FPS 序列 P95 吸附」可信 ——
+  // 锁 30fps 的应用会把 P95 推成 30，而屏幕其实是 120Hz。
+  // 有设备值时优先用它；没有时保持旧行为，历史报告数值不变。
+  const hz = Number(targetOverride);
+  const fromDevice = Number.isFinite(hz) && hz >= 24 && hz <= 240;
+  const target = fromDevice ? Math.round(hz) : inferred;
   const segments = detectLoadingSegments(arr, target, options);
   const mask = buildLoadingMask(arr.length, segments);
   let excluded = 0;
   for (let k = 0; k < mask.length; k += 1) if (mask[k]) excluded += 1;
   return {
     target,
+    targetSource: fromDevice ? 'device-peak-refresh-rate' : 'fps-p95-inferred',
+    targetHz: fromDevice ? Math.round(hz) : null,
+    inferredTarget: inferred,
     segments,
     mask,
     excludedSamples: excluded,
@@ -182,6 +207,7 @@ function maskToNull(values, mask) {
 
 module.exports = {
   DEFAULT_OPTIONS,
+  REFRESH_RATES,
   p95Of,
   snapFpsTarget,
   fpsTargetOf,

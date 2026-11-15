@@ -12,6 +12,7 @@
   python tools/inject_metric_info.py --dry      # 只预览改动点数量
 """
 import io
+import json
 import os
 import re
 import sys
@@ -21,6 +22,29 @@ REPORTS = os.path.join(ROOT, 'perfara', 'collector', 'resources', 'reports')
 PORTABLE = os.path.join(ROOT, 'Perfara-Portable', 'collector', 'resources', 'reports')
 
 MARK = '__METRIC_INFO_V1__'
+
+# ══════════════════════════════════════════════════════════════════════════
+# 口径版本（方案 1.6）：把指标定义注入报告 data.js 的 payload
+# 与 app/src/metric-schema.js 的 SCHEMA_VERSION / metricDefinitions() 对齐。
+# 新版 preparePayload() 已写入 schemaVersion + metricDefinitions，这里必须幂等；
+# 旧报告没有 schemaVersion，只补定义、绝不伪造版本，并明确告知不可跨版本对比。
+# ══════════════════════════════════════════════════════════════════════════
+SCHEMA_VERSION = '2'
+LEGACY_NOTICE = '旧报告不可直接跨版本对比'
+
+# metricDefinitions() 的等价清单（key/label/unit/group/scope），不含任何设备信息。
+METRIC_DEFINITIONS = [
+    {'key': 'fps', 'label': 'FPS', 'unit': '帧/秒', 'group': 'fps', 'scope': 'app'},
+    {'key': 'jank', 'label': 'Jank', 'unit': '帧', 'group': 'fps', 'scope': 'app'},
+    {'key': 'cpu.procCpu', 'label': '进程 CPU', 'unit': '%', 'group': 'cpu', 'scope': 'app'},
+    {'key': 'cpu.sysCpu', 'label': '系统 CPU', 'unit': '%', 'group': 'cpu', 'scope': 'device'},
+    {'key': 'mem.totalPss', 'label': '总 PSS', 'unit': 'MB', 'group': 'mem', 'scope': 'app'},
+    {'key': 'net.rxKBps', 'label': '下行', 'unit': 'KB/s', 'group': 'net', 'scope': 'app'},
+    {'key': 'net.txKBps', 'label': '上行', 'unit': 'KB/s', 'group': 'net', 'scope': 'app'},
+    {'key': 'gpu', 'label': 'GPU 利用率', 'unit': '%', 'group': 'gpu', 'scope': 'app'},
+    {'key': 'temperature', 'label': '机身温度', 'unit': '°C', 'group': 'temp', 'scope': 'device'},
+    {'key': 'battery.level', 'label': '电量', 'unit': '%', 'group': 'battery', 'scope': 'device'},
+]
 
 # ══════════════════════════════════════════════════════════════════════════
 # CSS
@@ -789,8 +813,127 @@ def inject_library(path, dry=False):
     return content
 
 
+def inject_into_payload(payload):
+    """给一份报告 payload 补口径指标定义（纯函数，不读写文件、不打印、不改入参）。
+
+    返回 dict：payload / changed / status / notice / logs。
+      - 已带 schemaVersion 且带 metricDefinitions（新版 preparePayload 产出）：幂等，原样返回；
+      - 缺 schemaVersion（旧报告）：只补 metricDefinitions，不改任何数值、不伪造版本，
+        用 notice + logs 明确说明「旧报告不可直接跨版本对比」；
+      - 有版本但缺定义：只补定义，保留版本与数值不动。
+    """
+    if not isinstance(payload, dict):
+        return {
+            'payload': payload,
+            'changed': False,
+            'status': 'invalid',
+            'notice': 'payload 不是对象，跳过注入。',
+            'logs': ['payload 不是 dict，跳过口径定义注入'],
+        }
+
+    defs = [dict(d) for d in METRIC_DEFINITIONS]
+    has_version = ('schemaVersion' in payload
+                   and payload.get('schemaVersion') not in (None, ''))
+    defs_val = payload.get('metricDefinitions')
+    has_defs = isinstance(defs_val, list) and bool(defs_val)
+
+    if has_version and has_defs:
+        return {
+            'payload': payload,
+            'changed': False,
+            'status': 'already_current',
+            'notice': '',
+            'logs': ['检测到 schemaVersion 与 metricDefinitions（新版 preparePayload 产出），幂等跳过，不重复注入'],
+        }
+
+    out = dict(payload)
+    out['metricDefinitions'] = defs
+
+    if not has_version:
+        return {
+            'payload': out,
+            'changed': True,
+            'status': 'legacy_injected',
+            'notice': LEGACY_NOTICE,
+            'logs': [
+                '旧报告缺 schemaVersion：已补 metricDefinitions，未改动任何数值，未伪造 schemaVersion',
+                LEGACY_NOTICE,
+            ],
+        }
+    return {
+        'payload': out,
+        'changed': True,
+        'status': 'definitions_injected',
+        'notice': '该报告已有口径版本 %s，已补齐 metricDefinitions（数值与版本未改动）。'
+                  % payload.get('schemaVersion'),
+        'logs': ['已有 schemaVersion=%s 但缺 metricDefinitions，仅补定义'
+                 % payload.get('schemaVersion')],
+    }
+
+
+DATA_JS_RE = re.compile(r'^(\s*var\s+data\s*=\s*)(\{.*\})(\s*;\s*)$', re.S)
+
+
+def inject_into_data_js(text):
+    """对 `var data = {...};` 形式的 data.js 文本注入口径定义，返回 (新文本, 结果)。
+
+    已是新版则原样返回文本（幂等，不重复注入）；解析失败也原样返回，不破坏报告。
+    """
+    m = DATA_JS_RE.match(text or '')
+    if not m:
+        return text, {
+            'payload': None, 'changed': False, 'status': 'invalid',
+            'notice': 'data.js 不是 `var data = {...};` 形式，跳过。',
+            'logs': ['data.js 格式不匹配，跳过'],
+        }
+    try:
+        payload = json.loads(m.group(2))
+    except ValueError as e:
+        return text, {
+            'payload': None, 'changed': False, 'status': 'invalid',
+            'notice': 'data.js 内 JSON 解析失败，跳过。',
+            'logs': ['data.js JSON 解析失败：%s' % e],
+        }
+    res = inject_into_payload(payload)
+    if not res['changed']:
+        return text, res
+    new_text = m.group(1) + json.dumps(res['payload'], ensure_ascii=False) + m.group(3)
+    return new_text, res
+
+
+def _payload_cli():
+    """--payload：从 stdin 读 JSON 对象或 data.js 文本，stdout 输出结果 JSON，
+    日志走 stderr。全程不触碰任何 HTML 文件，便于离线测试直接调用纯函数。"""
+    # Windows 控制台默认可能是 cp936，显式切成 utf-8，避免结果里的中文乱码。
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, OSError):
+        pass
+    raw = sys.stdin.read()
+    if raw.lstrip().startswith('var data'):
+        new_text, res = inject_into_data_js(raw)
+        out = dict(res)
+        out['dataJs'] = new_text
+        out['format'] = 'data.js'
+    else:
+        try:
+            payload = json.loads(raw)
+        except ValueError as e:
+            print(json.dumps({'status': 'invalid', 'error': str(e)}, ensure_ascii=False))
+            return
+        out = inject_into_payload(payload)
+        out['format'] = 'json'
+    for line in out.get('logs', []):
+        print('[metric-info] ' + line, file=sys.stderr)
+    print(json.dumps(out, ensure_ascii=False))
+
+
 def main():
     argv = [a for a in sys.argv[1:]]
+    if '--payload' in argv:
+        _payload_cli()
+        return
     dry = '--dry' in argv
     force = '--force' in argv
     targets = [a for a in argv if not a.startswith('--')]

@@ -65,7 +65,7 @@ function requestJson(url, timeoutMs, requestImpl) {
       req = requestImpl(url, options, (res) => {
         const status = res.statusCode || 0;
         if (status !== 200) {
-          try { res.resume(); } catch (_) {}
+          try { res.resume(); } catch (_) {}   // 排空响应体好让连接复用；失败也不影响下面的 reject
           reject(new Error('HTTP ' + status));
           return;
         }
@@ -78,7 +78,7 @@ function requestJson(url, timeoutMs, requestImpl) {
           if (size > MAX_BODY_BYTES) {
             done = true;
             chunks.length = 0;
-            try { req.destroy(); } catch (_) {}
+            try { req.destroy(); } catch (_) {}   // 结论已是「响应过大」，销毁失败不改变结论
             reject(new Error('response too large'));
             return;
           }
@@ -104,7 +104,7 @@ function requestJson(url, timeoutMs, requestImpl) {
       return;
     }
     req.on('timeout', () => {
-      try { req.destroy(); } catch (_) {}
+      try { req.destroy(); } catch (_) {}   // 已经按超时 reject，销毁失败不影响结果
       reject(new Error('timeout'));
     });
     req.on('error', reject);

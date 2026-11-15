@@ -1,0 +1,1 @@
+var upload={"check":true,"apk":true,"logpannel":false,"usePreGpuIos17": 0,"appname":"Perfara","username":"","uploadurl":"http://106.14.56.114:8099/api/upload","para1":"","para2":"","loginurl":"https://www.appstoreflow.com/api/auth/licence"}

@@ -10,6 +10,7 @@ const http = require('http');
 const IosCollector = require('./ios-collector');
 const iosLog = require('./ios-logger');
 const { readUsePreGpuIos17FromReports } = require('./reports-config');
+const SampleMeta = require('./sample-meta');
 
 const USE_PRE_IOS17_GPU_SCRIPT = readUsePreGpuIos17FromReports();
 
@@ -244,7 +245,11 @@ class IosGpuCollector extends EventEmitter {
               const ms = nowMs + i;
               const t = new Date(ms);
               const timeStr = `${t.toTimeString().slice(0, 8)}.${String(i).padStart(3, '0')}`;
-              return flattenLowGpuEntry(entry, ms, timeStr);
+              const flat = flattenLowGpuEntry(entry, ms, timeStr);
+              if (flat && typeof flat === 'object') {
+                flat.meta = SampleMeta.makeSampleMeta('ios_gpu', flat);
+              }
+              return flat;
             });
             for (const flat of batch) {
               if (this.history.length >= MAX_HISTORY) this.history.shift();

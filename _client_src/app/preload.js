@@ -32,6 +32,12 @@ contextBridge.exposeInMainWorld('perfAPI', {
   },
   removeWeaknetEngineExit: () => ipcRenderer.removeAllListeners('weaknet-engine-exit'),
 
+  // 2.1 旁路取证：默认关闭，只有用户勾选后才抓短 trace
+  traceCaptureConfig: (cfg) => ipcRenderer.invoke('trace-capture-config', cfg),
+  traceCaptureNow: (opts) => ipcRenderer.invoke('trace-capture-now', opts),
+  traceCaptureStatus: () => ipcRenderer.invoke('trace-capture-status'),
+  traceCaptureCancel: () => ipcRenderer.invoke('trace-capture-cancel'),
+
   getDevices: () => ipcRenderer.invoke('get-devices'),
   getAndroidDeviceInfo: (deviceId) => ipcRenderer.invoke('get-android-device-info', deviceId),
   getIosDeviceInfo: (udid) => ipcRenderer.invoke('get-ios-device-info', udid),

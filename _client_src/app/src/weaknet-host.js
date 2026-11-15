@@ -9,6 +9,11 @@
  *   - 引擎端口可能被占用后顺延，硬编码 8899 会连错实例（甚至别的程序），
  *     所以用 --ready-file 握手拿到它自己报告的实际端口。
  *   - 纯 Node 实现，不 require('electron')，测试可以脱离 Electron 直接驱动。
+ *
+ * 空 catch 约定（S-05）：本文件的 `catch (_) {}` 集中在「引擎进程回收」上——
+ * 删 --ready-file、req.destroy()、child.kill()。引擎已经退出或文件已经不在，
+ * 这些动作失败都不改变上层结论（上层看的是进程是否还在、端口是否还通），
+ * 所以不抛；真正需要上报的启动失败走 reject。
  */
 
 const { spawn, execFileSync } = require('child_process');

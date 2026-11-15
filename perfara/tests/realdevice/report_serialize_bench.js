@@ -91,8 +91,12 @@ function oldSummarizePerf(perf, metricConfig) {
     const lo = Math.floor(i), hi = Math.ceil(i);
     const p95 = lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
     let target = null;
-    for (const c of [30, 45, 60, 90, 120, 144, 165]) { if (c >= p95 * 0.97) { target = c; break; } }
-    if (target == null) target = Math.ceil(p95 / 30) * 30;
+    // S-01：与产品同一张 11 档表（去 45、补 24/48/100/185），兜底改 p95 向上取整。
+    // 旧 7 档表 + ceil(p95/30)*30 会把 100Hz 判成 120、24fps 判成 30，基准值跟着失真。
+    for (const c of [24, 30, 48, 60, 90, 100, 120, 144, 165, 185, 240]) {
+      if (c >= p95 * 0.97) { target = c; break; }
+    }
+    if (target == null) target = Math.ceil(p95);
     if (target > 0) {
       const avg = _avg(series.fps);
       const moving = fpsNums.filter(v => v > 0);
@@ -184,11 +188,28 @@ function makeSamples(n, style) {
   return out;
 }
 
+/**
+ * 与「改动前」的 KPI 逐字段比较。
+ * 只比较基准实现产出的键：口径版本 2 新增了帧耗时分位数等 KPI，
+ * 若要求键集完全一致，任何一次「新增指标」都会被误判成口径变了。
+ * 新增键的正确性由下面的专项断言覆盖。
+ */
+// v7：目标帧率来源（D-19/D-20）与吸附上界（非标档位）都改了，这 4 项本来就
+// 应该和改动前不同 —— 不参与「逐字段一致」的比对，其余 KPI 仍全部锁定。
+// 集合是实测出来的（逐键 diff 过 android/ios/sparse/带过滤 四种形态），不是猜的：
+//   fpsTarget  90 → 64    本 fixture 的 P95=64，旧实现吸附到 90（+40%），v7 拒绝
+//   fpsReach   62.3 → 87.6 分母 90→64
+//   fpsLowPct  100 → 9.1   低帧阈值 target×0.5 由 45 降到 32
+//   fpsStutter 14.0 → 4.0  卡顿阈值 2×targetFt 同步变化
+// fpsGeTarget / fpsMedRange 在这四种形态下都没动，因此**继续参与比对** ——
+// 真有变化说明是意料之外的连带影响，应该让门禁红一次而不是先排除掉。
+const TARGET_DERIVED = new Set(['fpsTarget', 'fpsReach', 'fpsLowPct', 'fpsStutter']);
+
 function kpiEqual(a, b) {
-  const ka = Object.keys(a).sort(), kb = Object.keys(b).sort();
-  if (ka.join(',') !== kb.join(',')) return false;
-  for (const k of ka) {
+  const keys = Object.keys(b).filter((k) => !TARGET_DERIVED.has(k)).sort();
+  for (const k of keys) {
     const x = a[k], y = b[k];
+    if (x === undefined) return false;
     if (Object.is(x, null) !== Object.is(y, null)) return false;
     if (x == null) continue;
     if (x.avg !== y.avg || x.min !== y.min || x.max !== y.max) return false;
@@ -208,11 +229,44 @@ function kpiEqual(a, b) {
       a.samples === b.samples && a.durationSec === b.durationSec && kpiEqual(a.kpi, b.kpi),
       `durationSec=${a.durationSec}`);
   }
+  // v7 吸附上界的不变量：目标帧率不得超过 P95 的 110%。
+  // 旧实现把 P95=64 吸附到共享档位 90（+40%），达帧率因此凭空少 30 个百分点。
+  // 上面把 fpsTarget 从「逐字段一致」里排除了，这里补一条正向断言钉住修正结果，
+  // 免得排除集合变成「改坏了也看不出来」的盲区。
+  {
+    const rows = makeSamples(900, 'android');
+    const f = _nums(rows.map(r => r.fps)).sort((x, y) => x - y);
+    const i = (f.length - 1) * 0.95;
+    const lo = Math.floor(i), hi = Math.ceil(i);
+    const p95 = lo === hi ? f[lo] : f[lo] + (f[hi] - f[lo]) * (i - lo);
+    const t = rdj.summarizePerf(rows, null).kpi.fpsTarget.avg;
+    check('目标帧率不超过 P95 的 110%（v7 吸附上界）',
+      t > 0 && t <= p95 * 1.10 + 1e-6,
+      { target: t, p95: _round(p95, 1), limit: _round(p95 * 1.1, 1) });
+  }
+
   // metricConfig 过滤路径
   const rowsF = makeSamples(500, 'android');
   const cfg = { fps: true, cpu: false, mem: true, temp: false, gpu: true };
   check('KPI 与改动前一致（带 metricConfig 过滤）',
     kpiEqual(rdj.summarizePerf(rowsF, cfg).kpi, oldSummarizePerf(rowsF, cfg).kpi));
+
+  // 新增帧指标（口径版本 2）：有字段时必须进 KPI，且不干扰老指标
+  {
+    const rich = makeSamples(300, 'android').map(r => Object.assign({}, r, {
+      ftP50: 16, ftP90: 17, ftP95: 18, ftP99: 30,
+      jankyRatio: 2.5, hitchMsPerSec: 12, overrunP99: 14,
+    }));
+    const k = rdj.summarizePerf(rich, null).kpi;
+    check('新增帧指标进入 KPI 且数值正确',
+      !!k.ftP99 && k.ftP99.avg === 30 && !!k.hitchMsPerSec && k.hitchMsPerSec.avg === 12
+      && !!k.jankyRatio && k.jankyRatio.avg === 2.5,
+      { ftP99: k.ftP99, hitch: k.hitchMsPerSec, jr: k.jankyRatio });
+    // 没有这些字段（老数据 / iOS / PC）时不应凭空多出 KPI 行
+    const plain = rdj.summarizePerf(makeSamples(100, 'android'), null).kpi;
+    check('无字段时不生成空的新帧 KPI', plain.ftP99 === undefined && plain.hitchMsPerSec === undefined,
+      Object.keys(plain).slice(0, 6));
+  }
 
   // 2) 性能：summarizePerf 单趟 vs 旧的多趟
   const big = makeSamples(6000, 'android');
@@ -242,12 +296,22 @@ function kpiEqual(a, b) {
     tag: [{ t: 1, category: 'scene', name: '战斗' }, { t: 2, category: 'scene', name: '加载' }],
     metricConfig: { fps: true, cpu: true, mem: true, temp: true, gpu: true },
   };
-  const s0 = process.hrtime.bigint();
+  // 计时取 3 次最小值：单次测量在批量并行跑时会被 GC / 调度噪声翻盘
+  // （同一份数据 compact 反而报「更慢」），而最优值反映的是代码路径本身。
+  const timeIt = (fn) => {
+    let best = Infinity;
+    for (let i = 0; i < 3; i += 1) {
+      const t0 = process.hrtime.bigint();
+      fn();
+      const dt = Number(process.hrtime.bigint() - t0) / 1e6;
+      if (dt < best) best = dt;
+    }
+    return best;
+  };
   const pretty = JSON.stringify(payload, null, 2);
-  const tPretty = Number(process.hrtime.bigint() - s0) / 1e6;
-  const s1 = process.hrtime.bigint();
   const compact = JSON.stringify(payload);
-  const tCompact = Number(process.hrtime.bigint() - s1) / 1e6;
+  const tPretty = timeIt(() => JSON.stringify(payload, null, 2));
+  const tCompact = timeIt(() => JSON.stringify(payload));
   const shrink = (1 - compact.length / pretty.length) * 100;
   console.log(`  · data.js 序列化 6000 点：indent=2 ${tPretty.toFixed(1)}ms / ${(pretty.length / 1048576).toFixed(2)}MB`
     + `  →  无缩进 ${tCompact.toFixed(1)}ms / ${(compact.length / 1048576).toFixed(2)}MB（省 ${shrink.toFixed(0)}%）`);

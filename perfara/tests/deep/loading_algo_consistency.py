@@ -299,12 +299,24 @@ def main() -> int:
     check("B15 mask 越界 end 被截断", list(mask) == [0, 0, 0, 1, 1], str(list(mask)))
     # B16 fps_target_of 对空序列
     check("B16 fps_target_of 空序列返回 None", fps_target_of([]) is None)
-    # B17 snapFpsTarget 边界
+    # B17~B20b snapFpsTarget 边界
+    #
+    # 规则（v7 起，5 份副本同源）：在 11 档规范表 [24,30,48,60,90,100,120,144,165,185,240]
+    # 里取第一个落在 [p95*0.97, p95*1.10] 的档位；都不到才 ceil(p95)。
+    #
+    # v7 之前只有下界 0.97，200 会被抬到 240（偏高 20%，fpsReach 凭空少 17%）。
+    # 加上界 1.10 后 200 → 200，而 119→120、190→185、240→240、250→250 都不变。
+    # 这里把边界钉死，将来真改规则必须同步改这几条。
     check("B17 snap_fps_target(0) 返回 None", snap_fps_target(0) is None)
     check("B18 snap_fps_target(58.2)→60", snap_fps_target(58.2) == 60, str(snap_fps_target(58.2)))
     check("B19 snap_fps_target(29)→30", snap_fps_target(29) == 30, str(snap_fps_target(29)))
-    check("B20 snap_fps_target(200)→向上取 30 倍数", snap_fps_target(200) == 210,
+    check("B20 snap_fps_target(190)→185（0.97 容差内向下贴档）", snap_fps_target(190) == 185,
+          str(snap_fps_target(190)))
+    check("B20b snap_fps_target(200)→200（超出 1.10 上界不再向上贴档）", snap_fps_target(200) == 200,
           str(snap_fps_target(200)))
+    check("B20c snap_fps_target(240)→240", snap_fps_target(240) == 240, str(snap_fps_target(240)))
+    check("B20d snap_fps_target(250)→250（超过最高档才 ceil）", snap_fps_target(250) == 250,
+          str(snap_fps_target(250)))
 
     print(f"\n==== 加载段算法测试结果: {PASS} PASS / {FAIL} FAIL ====")
     if FAILED:

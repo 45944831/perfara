@@ -1,3 +1,8 @@
+// 空 catch 约定（S-05）：本文件里的 `catch (_) {}` 全在「进程退出 / 窗口关闭」的
+// 清理链上——停采集器、恢复系统代理、取消 inflight、销毁窗口。每一步都必须是
+// best-effort：某一步失败不能阻断后面的清理，否则会留下「系统代理没恢复」「adb
+// 子进程没杀干净」这类残留，比原始错误更难查。需要让用户知道的错误一律不在这里
+// 吞掉，走 dialog / 日志面板。
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -33,6 +38,69 @@ const { isValidVersion, normalizeVersion } = require('./src/version-scheme');
 const { fetchLatestRelease, sanitizeReleaseUrl } = require('./src/update-check');
 const { DEFAULT_APP_NAME, formatWindowTitle } = require('./src/window-title');
 const foregroundApp = require('./src/foreground-app');
+const TraceCapture = require('./src/trace-capture');
+
+// ─── 2.1 Perfetto / simpleperf 旁路取证 ──────────────────────────────────────
+// 默认完全关闭。开启后只在「手动触发」或「低谷截图命中」时抓一段 10s 级 trace，
+// 任何失败都静默降级，绝不参与主采集判定，也不把异常抛回采集链。
+let traceCapture = null;
+let traceDeviceId = '';
+/** 开启旁路时，低谷截图命中是否自动附带取证 */
+let traceAutoOnTrough = true;
+
+function ensureTraceCapture(deviceId) {
+  const id = String(deviceId || '');
+  if (traceCapture && traceDeviceId === id) return traceCapture;
+  if (traceCapture) { try { traceCapture.dispose(); } catch (_) {} }
+  traceDeviceId = id;
+  traceCapture = TraceCapture.createTraceCapture({
+    deviceId: id || 'generic-device',
+    // 放 userData 而不是 resources/reports：后者在 Program Files 下可能只读
+    reportDir: path.join(app.getPath('userData'), 'reports', 'traces'),
+    enabled: false,
+    runAdb: (args, timeout) => require('./src/adb').runAdb(args, timeout),
+    cancelInflight: () => {
+      try { require('./src/adb').cancelAllInflight(); } catch (_) {}
+    },
+    log: (m) => console.log(m),
+  });
+  return traceCapture;
+}
+
+ipcMain.handle('trace-capture-config', async (_e, cfg) => {
+  const c = cfg && typeof cfg === 'object' ? cfg : {};
+  if (typeof c.autoOnTrough === 'boolean') traceAutoOnTrough = c.autoOnTrough;
+  const tc = ensureTraceCapture(c.deviceId || traceDeviceId);
+  tc.setEnabled(!!c.enabled);
+  if (c.enabled) {
+    try {
+      const sup = await tc.isSupported();
+      return { ok: true, enabled: true, supported: sup.supported,
+        backend: sup.backend, sdkInt: sup.sdkInt, diagnostics: tc.getDiagnostics() };
+    } catch (_) { return { ok: true, enabled: true, supported: false }; }
+  }
+  return { ok: true, enabled: false, diagnostics: tc.getDiagnostics() };
+});
+
+ipcMain.handle('trace-capture-now', async (_e, opts) => {
+  const tc = ensureTraceCapture((opts && opts.deviceId) || traceDeviceId);
+  // 手动触发不强开旁路：只有开关打开才抓，避免误触产生无谓开销
+  const r = await tc.capture(Object.assign({ source: 'manual' }, opts || {}));
+  return r;
+});
+
+ipcMain.handle('trace-capture-status', async () => ({
+  enabled: traceCapture ? traceCapture.isEnabled() : false,
+  autoOnTrough: traceAutoOnTrough,
+  diagnostics: traceCapture ? traceCapture.getDiagnostics() : null,
+  records: traceCapture ? traceCapture.list() : [],
+}));
+
+ipcMain.handle('trace-capture-cancel', async () => {
+  if (!traceCapture) return { ok: false, reason: 'not-configured' };
+  try { return { ok: true, result: traceCapture.cancel() }; }
+  catch (_) { return { ok: false, reason: 'exception' }; }
+});
 
 // ─── 窗口标题 / 新版本状态 ───────────────────────────────────────────────────
 // 标题栏由主进程统一生成（应用名 + 版本号 + 新版本标记），渲染进程改不了它。
@@ -158,11 +226,27 @@ function _pushTroughShot(category, data, capture, logChannel) {
   const ctx = {
     jank: data.jank, bigJank: data.bigJank, smallJank: data.smallJank,
     tinyJank: data.tinyJank, jankRate: data.jankRate,
+    // 帧耗时证据：偶发长帧会被 1s 窗口的平均帧率抹平，只看 FPS 会漏（见 trough-detector）
+    overrunP99: data.overrunP99, overrunMax: data.overrunMax, jankyRatio: data.jankyRatio,
   };
   troughShots.feed(category, ts, fps, capture, ctx).then((r) => {
     if (r.meta) {
       sendToRenderer('trough-shot', r.meta);
-      sendToRenderer(logChannel, `已截取低谷截图 ${r.meta.time}（FPS ${r.meta.fps} / 目标 ${r.meta.target}）`);
+      sendToRenderer(logChannel, `已截取低谷截图 ${r.meta.time}（FPS ${r.meta.fps} / 目标 ${r.meta.target}`
+        + `${r.meta.reason === 'overrun' ? ' / 帧耗时超时' : ''}）`);
+      // 2.1 低谷命中自动附带一段旁路取证：截图说明「长什么样」，
+      // trace 回答「这一帧等的是谁」。失败一律静默，不影响截图与主采集。
+      if (traceAutoOnTrough && traceCapture && traceCapture.isEnabled()) {
+        void traceCapture.capture({
+          source: 'auto', reason: r.meta.reason,
+          fps: r.meta.fps, target: r.meta.target, ts,
+          overrunMax: data.overrunMax, durationSec: 10,
+        }).then((t) => {
+          if (t && t.ok) {
+            sendToRenderer(logChannel, `已保存旁路取证片段（${t.kind}）：${t.path}`);
+          }
+        }).catch(() => {});
+      }
     } else if (r.error && !_shotWarned.has(category)) {
       _shotWarned.add(category);
       sendToRenderer(logChannel, `[warn] 低谷截图失败：${r.error.message}（本轮不再提示）`);
@@ -175,9 +259,9 @@ function _pushTroughShot(category, data, capture, logChannel) {
  * 写 data.js 成功才调用：传进来的路径就是实际落盘目录，自动跟随 userData fallback。
  * Excel 属于附加产物，失败只记日志，绝不影响停止采集与报告生成。
  */
-function _writeRunXlsxSafe(payload, dataJsPath, logChannel) {
+async function _writeRunXlsxSafe(payload, dataJsPath, logChannel) {
   try {
-    const r = RunXlsx.writeRunXlsx(payload, dataJsPath);
+    const r = await RunXlsx.writeRunXlsxAsync(payload, dataJsPath);
     if (logChannel) {
       sendToRenderer(logChannel, `已生成 Excel：${r.file}（${r.sheets.length} 个标签页）`);
     }
@@ -389,6 +473,8 @@ app.on('window-all-closed', () => {
     // 既占着 5037，也把便携包里的 adb.exe 文件锁住（整个目录移不走也删不掉）。
     // 先取消在途 adb 子进程，避免 kill 的瞬间又有一条命令把 server 重新拉起来。
     .then(() => {
+      // 2.1 退出前先收掉在途 trace，别留下 adb 子进程
+      try { if (traceCapture) traceCapture.dispose(); } catch (_) {}
       try { require('./src/adb').cancelAllInflight(); } catch (_) {}
       try { return require('./src/adb').killServerIfOwned().catch(() => null); } catch (_) { return null; }
     })
@@ -735,8 +821,14 @@ ipcMain.handle('clear-report-shots', async () => {
 
 ipcMain.handle('stop-collect', async () => {
   trialSession.onCollectStopped();
+  // 关机前先取诊断：采集耗时与历史截断是报告「数据完整性」的一部分
+  let androidDiag = null;
+  let androidSpilled = [];
   if (collector) {
     try {
+      androidDiag = collector.getDiagnostics();
+      // 1.5 先把落盘分片合并回来再 stop（stop 后临时文件会被清理）
+      androidSpilled = collector.drainHistory();
       collector.stop();
     } catch (e) {
       console.error('[stop-collect]', e.message);
@@ -759,17 +851,31 @@ ipcMain.handle('stop-collect', async () => {
           deviceId: androidSession.deviceId || '',
           udid: '',
         },
-        perf: snapshotArr(perfHistory),
+        // 1.5 报告合并：collector 的「分片 + 内存尾部」与主进程逐拍累积
+        // 都包含内存尾部，不能 concat（会重复）。取更完整的一份：
+        // 分片全部成功时两者等长；万一写盘失败，主进程那份仍是全量。
+        perf: (androidSpilled.length >= perfHistory.length
+          ? androidSpilled : snapshotArr(perfHistory)),
         tag: snapshotArr(androidTags),
         // 采集参数配置：报告端据此隐藏被移除指标的图表与指标行；metricOrder 据此重排
         metricConfig: androidSession.metricConfig || null,
         metricOrder: androidSession.metricOrder || null,
         shots: troughShots.getShots('android'),
+        // 采集期诊断（逐拍耗时 / 历史截断 / UID）：写进口径元数据，
+        // 让「采样点变稀」「长时丢点」有据可查，而不是靠猜
+        diagnostics: androidDiag || undefined,
+        // 1.1 设备自报峰值刷新率：目标帧率优先用它，而不是 FPS 序列 P95；
+        // 报告里同时标出来源，避免把「主动锁 30fps」误判成「达标 30 帧」。
+        displayProfile: (androidDiag && androidDiag.displayProfile) || undefined,
+        // 2.1 旁路取证片段（开启过才有）：报告页给出「取证片段」入口
+        traceCaptures: (traceCapture && traceCapture.list().length)
+          ? traceCapture.list() : undefined,
         // 采集期间开过弱网才带这一段，报告页据此追加「弱网总结分析」
         weaknet: weaknet || undefined,
       };
       const dataJsPath = reportsDataJs.writeDataJs(payload);
-      _writeRunXlsxSafe(payload, dataJsPath, 'collect-log');
+      // 异步导出：12 小时报告要建 510 万单元格，同步做会让窗口卡死好几秒
+      await _writeRunXlsxSafe(payload, dataJsPath, 'collect-log');
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);
@@ -894,7 +1000,7 @@ ipcMain.handle('pc-stop-collect', async () => {
       );
       payload.weaknet = weaknet || undefined;
       const dataJsPath = reportsDataJs.writeDataJs(payload);
-      _writeRunXlsxSafe(payload, dataJsPath, 'pc-collect-log');
+      await _writeRunXlsxSafe(payload, dataJsPath, 'pc-collect-log');
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);
@@ -1386,7 +1492,7 @@ ipcMain.handle('ios-stop-collect', async () => {
         weaknet: weaknet || undefined,
       };
       const dataJsPath = reportsDataJs.writeDataJs(payload);
-      _writeRunXlsxSafe(payload, dataJsPath, 'ios-collect-log');
+      await _writeRunXlsxSafe(payload, dataJsPath, 'ios-collect-log');
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);
@@ -1517,7 +1623,7 @@ ipcMain.handle('ios-gpu-stop-collect', async () => {
         weaknet: weaknet || undefined,
       };
       const dataJsPath = reportsDataJs.writeDataJs(payload);
-      _writeRunXlsxSafe(payload, dataJsPath, 'ios-collect-log');
+      await _writeRunXlsxSafe(payload, dataJsPath, 'ios-collect-log');
     }
   } catch (e) {
     console.error('[reports/data.js]', e.message);

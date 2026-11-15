@@ -1,11 +1,9 @@
 #!/bin/bash
 # 起一个隔离的临时库服务（8019），跑 test_api_full.py，跑完自动收
 set -uo pipefail
-cd /e/WorkBuddy1/2026-10-19-13-59-27
-
-PY="E:/WorkBuddy1/2026-10-19-13-59-27/tools/.venv/Scripts/python.exe"
-export no_proxy="127.0.0.1,localhost"
-export NO_PROXY="127.0.0.1,localhost"
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_HERE/env.sh"          # S-09：项目根 / NODE / PY 统一在此解析
+PY="$PY_VENV"              # 要 sqlalchemy/uvicorn，用项目内 venv
 
 TMPDB=$(mktemp -d)/webperf.db
 cp perfara/data/webperf.db "$TMPDB"

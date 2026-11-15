@@ -1558,6 +1558,7 @@ function hideCompare() {
   if (ins) { ins.classList.remove('is-on'); ins.innerHTML = ''; }
   const saveBtn = $('btn-export-compare');
   if (saveBtn) saveBtn.disabled = true;
+  cmpOverrideKey = null;
   CMP_METRIC_ORDER = null;
   destroyCharts();
 }
@@ -1582,8 +1583,10 @@ async function runCompare() {
   renderCompareInsight(reps, payloads);
   renderCompareLegend(reps);
   renderCompareCharts(reps, payloads);
+  const gate = renderCompareNotice(payloads);
   const saveBtn = $('btn-export-compare');
-  if (saveBtn) saveBtn.disabled = false;
+  // 无版本 / 版本不一致时默认禁用导出；点「仍要对比」显式解除后才放行。
+  if (saveBtn) saveBtn.disabled = !!(gate && gate.blocked && !gate.overridden);
   $('compare').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -1610,6 +1613,101 @@ function cmpLabel(rep) {
   const t = String(rep.createdAtLocal || rep.createdAt || '');
   const hm = /\d{2}:\d{2}(:\d{2})?/.exec(t);
   return hm ? hm[0] : t.slice(0, 16);
+}
+
+/* ─── 口径版本提示 ─────────────────────────────────────────────────────────
+ * 对比页最容易踩的坑：把不同口径的报告放在一起比，数值差异被当成性能差异。
+ * 只要参与对比的报告口径版本不一致（或有旧报告无版本），必须在表格上方说明。
+ * ---------------------------------------------------------------------- */
+/* 参与对比的报告是否「不可直接跨版本对比」：任一份无版本，或出现多个不同版本。
+   纯函数、不碰 DOM，便于离线断言。版本一致（哪怕同为非当前版本）不算风险，
+   保持与旧行为一致：只插警示条、不禁用导出。 */
+function compareSchemaRisk(payloads) {
+  const vers = (payloads || []).map(p =>
+    (p && p.schemaVersion != null && String(p.schemaVersion) !== '') ? String(p.schemaVersion) : '');
+  const unversioned = vers.filter(v => v === '').length;
+  const versions = Array.from(new Set(vers.filter(v => v !== '')));
+  return {
+    blocked: unversioned > 0 || versions.length > 1,
+    unversioned: unversioned,
+    versions: versions,
+    current: '2'
+  };
+}
+
+/* 「仍要对比」只对当前这组版本指纹生效；换一组报告就重新默认禁用。 */
+let cmpOverrideKey = null;
+function compareSchemaKey(payloads) {
+  return (payloads || []).map(p =>
+    (p && p.schemaVersion != null && String(p.schemaVersion) !== '') ? String(p.schemaVersion) : '(none)').join('|');
+}
+function isCompareOverridden(payloads) {
+  return cmpOverrideKey != null && cmpOverrideKey === compareSchemaKey(payloads);
+}
+
+function renderCompareNotice(payloads) {
+  const host = $('compare');
+  if (!host) return { blocked: false, overridden: false };
+  const old = document.getElementById('cmp-schema-notice');
+  if (old) old.remove();               // 幂等：重复调用不叠加元素
+  const CUR = '2';
+  const vers = (payloads || []).map(p => (p && p.schemaVersion) ? String(p.schemaVersion) : '');
+  const uniq = Array.from(new Set(vers));
+  let msg = '';
+  if (uniq.length > 1) {
+    msg = '这几份报告的口径版本不一致（' + uniq.map(v => v || '未标注').join(' / ')
+      + '），跨版本数值不可直接比较。';
+  } else if (uniq[0] !== CUR) {
+    msg = uniq[0]
+      ? ('所选报告口径版本为 ' + uniq[0] + '，当前为 ' + CUR + '；指标定义可能已变化，请谨慎解读。')
+      : '所选报告由旧版本生成（无口径版本），跨版本对比可能得出错误结论。';
+  }
+  const risk = compareSchemaRisk(payloads);
+  const overridden = isCompareOverridden(payloads);
+  if (!msg && !risk.blocked) return { blocked: false, overridden: false };
+
+  const el = document.createElement('div');
+  el.id = 'cmp-schema-notice';
+  el.setAttribute('role', 'note');
+  el.style.cssText = 'margin:10px 0;padding:9px 14px;border-radius:8px;background:#fff8e6;'
+    + 'color:#7a4b00;border:1px solid #f2d29b;font-size:13px;line-height:1.6;';
+  if (msg) {
+    const line = document.createElement('div');
+    line.textContent = msg;
+    el.appendChild(line);
+  }
+  if (risk.blocked && !overridden) {
+    const tip = document.createElement('div');
+    tip.textContent = '为避免误读，已默认禁用「保存对比报告」。如确需查看，请点「仍要对比」显式解除。';
+    el.appendChild(tip);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'cmp-force-compare';
+    btn.textContent = '仍要对比';
+    btn.style.cssText = 'margin-top:6px;padding:4px 12px;border:1px solid #c88b2a;'
+      + 'background:#fff3d6;color:#7a4b00;border-radius:6px;cursor:pointer;font-size:12px;';
+    btn.onclick = function () {
+      cmpOverrideKey = compareSchemaKey(payloads);
+      const saveBtn = $('btn-export-compare');
+      if (saveBtn) saveBtn.disabled = false;
+      btn.disabled = true;
+      btn.textContent = '已允许对比';
+      btn.style.opacity = '0.6';
+      btn.style.cursor = 'default';
+      const doneLine = document.createElement('div');
+      doneLine.textContent = '已显式解除：本次对比结果仅供参考，不可作为跨版本结论。';
+      el.appendChild(doneLine);
+    };
+    el.appendChild(btn);
+    const saveBtn = $('btn-export-compare');
+    if (saveBtn) saveBtn.disabled = true;
+  } else if (risk.blocked && overridden) {
+    const doneLine = document.createElement('div');
+    doneLine.textContent = '已显式允许跨版本对比（结果仅供参考）。';
+    el.appendChild(doneLine);
+  }
+  host.insertBefore(el, host.firstChild);
+  return { blocked: risk.blocked, overridden: risk.blocked && overridden };
 }
 
 function renderCompareInsight(reps, payloads) {
@@ -1657,12 +1755,16 @@ function renderCompareInsight(reps, payloads) {
   });
 
   // 目标帧率：各份 P95 的最大值吸附到常见刷新率
+  // S-01：档位表与 adb.js:REFRESH_RATES / perf.html:REFRESH_RATES_SHARED 同源
+  //（去 45、补 24/48/100/185），兜底由 ceil(p95/30)*30 改为 p95 向上取整。
+  // perf_param_audit_test 有「5 份副本完全一致」的断言，改一处必须同步全部。
   let target = null;
   const p95s = cmpNums(stats.map(s => s.fpsP95));
   if (p95s.length) {
     const mx = Math.max.apply(null, p95s);
-    for (const c of [30, 45, 60, 90, 120, 144, 165]) { if (c >= mx * 0.97) { target = c; break; } }
-    if (target == null) target = Math.ceil(mx / 30) * 30;
+    // 上界 1.10：与 fps-loading.js / perf.html / utils.py 同口径（200Hz 不抬到 240）
+    for (const c of [24, 30, 48, 60, 90, 100, 120, 144, 165, 185, 240]) { if (c >= mx * 0.97 && c <= mx * 1.10) { target = c; break; } }
+    if (target == null) target = Math.ceil(mx);
   }
 
   // 综合得分

@@ -1,3 +1,9 @@
+# 忽略规则的唯一真值源：本文件统一定义「是否入库」的通用规则。
+#   · perfara/.gitignore 只补充 perfara 目录特有、本文件未覆盖的局部项
+#     （如任意层级的 build/、dist/；frontend/dist 即由它的 dist/ 排除），
+#     不再重复声明这里的通用规则，避免两份规则漂移。
+#   · perfara/.gitattributes 只声明「入库文件如何存储 / diff」（binary 等），
+#     不决定「是否入库」，与忽略规则职责不同，不是重复定义。
 # ── 依赖 ────────────────────────────────────────────────────────────
 node_modules/
 __pycache__/
@@ -57,9 +63,17 @@ release/交付_*/
 _client_src/app/devimages/
 # 推广素材（含 3.4MB 视频）
 _client_src/app/推广web/
-# 运行期实际用包外 resources/ios-tools
-_client_src/app/ios脚本/
+# 运行期实际用包外 resources/ios-tools；但这里的采集脚本是唯一源码副本，
+# 必须入库 —— 整目录忽略会导致全新 clone 后 PC 采集源码（collect_pc_perf.py）丢失。
+# 只排除编译缓存与打包产物。
+_client_src/app/ios脚本/**/__pycache__/
+_client_src/app/ios脚本/**/*.pyc
 _client_src/app/*.zip
+
+# ── 第三方文档摘录（仅本地参考）──────────────────────────────────────
+# Apple HTR 原文 / PresentMon README 全文，版权归原方，不随本仓库分发
+docs/_*.txt
+docs/_*.md
 
 # ── OS / 编辑器 ─────────────────────────────────────────────────────
 .DS_Store
@@ -76,6 +90,9 @@ logs/
 perfara/data/
 perfara/.run/
 *.db
+# WAL 模式的运行期副产物：主库已由上面的 *.db 排除，这两个后缀不跟上就会漏进来
+*.db-shm
+*.db-wal
 # 例外：脱敏后的种子库**必须入库**。它是 perfara_server.spec 唯一的种子来源，
 # 而它的生成输入 perfara/data/webperf.db 是开发机工作库、不进 git；
 # 不把产物入库就等于「发布包无法从干净 clone 重建」。
@@ -98,6 +115,8 @@ perfara/tests/_run_out/
 
 # ── 发布期临时产物（修复效果图等，不入库）──────────────────────────────────
 release/修复效果图_*/
+# 清理记录：本地运维日志，逐项写着本机路径与被删包信息，不属于源码
+release/清理记录_*.md
 # 泄漏审计用的敏感串模式文件：含真实序列号/机型/包名，绝不能入库
 release/_audit/
 

@@ -44,9 +44,9 @@ function meminfo(totalKB, availKB) {
   return `MemTotal:       ${totalKB} kB\nMemFree:        ${Math.round(availKB * 0.4)} kB\n`
     + `MemAvailable:   ${availKB} kB\nBuffers:         12345 kB\nCached:         987654 kB\n`;
 }
-/** gpu 探针脚本的假输出：只有 kgsl_pct（探针表里第一个）有值 */
+/** gpu 探针脚本的假输出（FIX-08 head -v 格式）：只有 kgsl_pct（探针表里第一个路径）有值 */
 function gpuOut(pct) {
-  return '@@kgsl_pct\n' + pct + '\n@@kgsl_busy\n@@kgsl_load\n@@mali_util\n';
+  return '==> /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage <==\n' + pct + '\n';
 }
 /** 带屏幕状态的假 shell：wake 序列按 mWakefulness 查询次序返回 */
 function screenShell({ wake, thenWake, locked }) {
@@ -56,7 +56,7 @@ function screenShell({ wake, thenWake, locked }) {
     seen.push({ deviceId, cmd });
     if (cmd.includes('__perfara_ok__')) return OK_ECHO;
     if (cmd.includes('/proc/meminfo')) return meminfo(8 * 1024 * 1024, 4 * 1024 * 1024);
-    if (cmd.startsWith('echo "@@')) return gpuOut(30);
+    if (cmd.includes('head -v -c 4096')) return gpuOut(30);
     if (cmd.includes('mWakefulness')) {
       const first = wakeIdx === 0 ? wake : (thenWake === undefined ? wake : thenWake);
       wakeIdx++;
@@ -76,7 +76,7 @@ function screenShell({ wake, thenWake, locked }) {
     const shell = makeShell((cmd) => {
       if (cmd.includes('__perfara_ok__')) return Promise.resolve(OK_ECHO);
       if (cmd.includes('/proc/meminfo')) return Promise.resolve(meminfo(12 * 1024 * 1024, 4 * 1024 * 1024));
-      if (cmd.startsWith('echo "@@')) return Promise.resolve(gpuOut(37));
+      if (cmd.includes('head -v -c 4096')) return Promise.resolve(gpuOut(37));
       return Promise.resolve('');
     });
     const r = await ADB.preflightCheck('dev-1', shell);
@@ -93,7 +93,7 @@ function screenShell({ wake, thenWake, locked }) {
     const shell = makeShell((cmd) => {
       if (cmd.includes('__perfara_ok__')) return Promise.resolve(OK_ECHO);
       if (cmd.includes('/proc/meminfo')) return Promise.resolve(meminfo(8 * 1024 * 1024, 100 * 1024));
-      if (cmd.startsWith('echo "@@')) return Promise.resolve(gpuOut(20));
+      if (cmd.includes('head -v -c 4096')) return Promise.resolve(gpuOut(20));
       return Promise.resolve('');
     });
     const r = await ADB.preflightCheck('dev-1', shell);
@@ -108,7 +108,7 @@ function screenShell({ wake, thenWake, locked }) {
     const shell = makeShell((cmd) => {
       if (cmd.includes('__perfara_ok__')) return Promise.resolve(OK_ECHO);
       if (cmd.includes('/proc/meminfo')) return Promise.resolve(meminfo(8 * 1024 * 1024, 500 * 1024));
-      if (cmd.startsWith('echo "@@')) return Promise.resolve(gpuOut(20));
+      if (cmd.includes('head -v -c 4096')) return Promise.resolve(gpuOut(20));
       return Promise.resolve('');
     });
     const r = await ADB.preflightCheck('dev-1', shell);
@@ -121,7 +121,7 @@ function screenShell({ wake, thenWake, locked }) {
     const shell = makeShell((cmd) => {
       if (cmd.includes('__perfara_ok__')) return Promise.resolve(OK_ECHO);
       if (cmd.includes('/proc/meminfo')) return Promise.resolve(meminfo(12 * 1024 * 1024, 4 * 1024 * 1024));
-      if (cmd.startsWith('echo "@@')) return Promise.resolve(gpuOut(98));
+      if (cmd.includes('head -v -c 4096')) return Promise.resolve(gpuOut(98));
       return Promise.resolve('');
     });
     const r = await ADB.preflightCheck('dev-1', shell);
@@ -146,7 +146,7 @@ function screenShell({ wake, thenWake, locked }) {
     const shell = makeShell((cmd) => {
       if (cmd.includes('__perfara_ok__')) return Promise.resolve(OK_ECHO);
       if (cmd.includes('/proc/meminfo')) return Promise.resolve('');      // 读不到
-      if (cmd.startsWith('echo "@@')) return Promise.resolve(gpuOut(30));
+      if (cmd.includes('head -v -c 4096')) return Promise.resolve(gpuOut(30));
       return Promise.resolve('');
     });
     const r = await ADB.preflightCheck('dev-1', shell);
@@ -160,7 +160,7 @@ function screenShell({ wake, thenWake, locked }) {
     const shell = makeShell((cmd) => {
       if (cmd.includes('__perfara_ok__')) return Promise.resolve(OK_ECHO);
       if (cmd.includes('/proc/meminfo')) return Promise.resolve(meminfo(8 * 1024 * 1024, 3 * 1024 * 1024));
-      if (cmd.startsWith('echo "@@')) return Promise.resolve('@@kgsl_pct\n@@mali_util\n');   // 全是空
+      if (cmd.includes('head -v -c 4096')) return Promise.resolve('@@kgsl_pct\n@@mali_util\n');   // 全是空
       return Promise.resolve('');
     });
     const r = await ADB.preflightCheck('dev-1', shell);

@@ -37,9 +37,33 @@ function firstReportId() {
   return null;
 }
 
+/**
+ * 报告库被清空时（清理过期产物 / 全新机器）用夹具顶上。
+ * perf.html 只认 history/<id>.js，所以必须真写进 history 目录，
+ * 名字带 _fixture_ 前缀，退出时删掉，不污染用户报告库。
+ */
+function ensureFixtureReport() {
+  const src = path.join(__dirname, 'fixtures', 'compare_rep.js');
+  if (!fs.existsSync(src)) throw new Error('既没有真实报告也没有测试夹具：' + src);
+  const id = '_fixture_compare_rep';
+  const dst = path.join(HIST, id + '.js');
+  fs.mkdirSync(HIST, { recursive: true });
+  fs.copyFileSync(src, dst);
+  // 空库时 history/index.js 也不存在，library.html 加载它必然 404、控制台留一条
+  // ERR_FILE_NOT_FOUND（真实客户端即使 0 份报告也会写这个文件）。补一份空索引，退出时删掉。
+  const idx = path.join(HIST, 'index.js');
+  const madeIdx = !fs.existsSync(idx);
+  if (madeIdx) fs.writeFileSync(idx, 'var reportIndex = [];\n', 'utf8');
+  const cleanup = () => {
+    try { fs.unlinkSync(dst); } catch (_) {}
+    if (madeIdx) { try { fs.unlinkSync(idx); } catch (_) {} }
+  };
+  process.on('exit', cleanup);
+  return id;
+}
+
 async function main() {
-  const id = firstReportId();
-  if (!id) throw new Error('没有可用的真实报告');
+  const id = firstReportId() || ensureFixtureReport();
   console.log('报告 id =', id);
   const browser = await pw.chromium.launch({ executablePath: EDGE, args: ['--no-sandbox', '--headless=new'] });
 
@@ -47,8 +71,16 @@ async function main() {
   console.log('\n[单报告] perf.html 统计表去重');
   const page = await browser.newPage({ viewport: { width: 1500, height: 1000 } });
   const errs = [];
+  const missRes = [];
   page.on('pageerror', e => errs.push(e.message));
-  page.on('console', m => { if (m.type() === 'error') errs.push('console: ' + m.text()); });
+  page.on('requestfailed', r => missRes.push(r.url()));
+  page.on('console', m => {
+    if (m.type() !== 'error') return;
+    // 资源 404 单独归类：报告比截图活得久（低谷截图是可选产物，用户清掉 shots/ 之后
+    // 报告页仍要能正常看）。这类失败不该判成 JS 报错，但要单独断言「除截图外无缺失」。
+    if (/Failed to load resource/.test(m.text())) return;
+    errs.push('console: ' + m.text());
+  });
   await page.goto('file:///' + path.join(REPORTS, 'perf.html').replace(/\\/g, '/') + '?r=' + encodeURIComponent(id),
     { waitUntil: 'load' });
   await page.waitForTimeout(2500);
@@ -93,16 +125,35 @@ async function main() {
   check('去重组函数已接线到 buildTableRows', /return dedupeStatRows\(buildTableRowsRaw\(scope\)\);/.test(perfSrc));
 
   check('单报告页无 JS 报错', errs.length === 0, errs.slice(0, 3));
+  const badRes = missRes.filter(u => !/\/shots\//i.test(u));
+  check('单报告页无缺失资源（低谷截图除外）', badRes.length === 0, badRes.slice(0, 3));
 
   // ───────── B. 对比报告指标表 ─────────
   console.log('\n[对比报告] library.html 指标表去重');
   const page2 = await browser.newPage({ viewport: { width: 1500, height: 1000 } });
   const errs2 = [];
+  const missRes2 = [];
   page2.on('pageerror', e => errs2.push(e.message));
-  page2.on('console', m => { if (m.type() === 'error') errs2.push('console: ' + m.text()); });
+  page2.on('requestfailed', r => missRes2.push(r.url()));
+  page2.on('console', m => {
+    if (m.type() !== 'error') return;
+    if (/Failed to load resource/.test(m.text())) return;   // 同上：资源 404 单独断言
+    errs2.push('console: ' + m.text());
+  });
   await page2.goto('file:///' + path.join(REPORTS, 'library.html').replace(/\\/g, '/'), { waitUntil: 'load' });
   await page2.waitForTimeout(2000);
-  const c = await page2.evaluate(async () => {
+  const c = await page2.evaluate(async (fid) => {
+    // 报告库被清空时 index.js 里没有条目：用夹具载荷现造一条。
+    // kpi 必须带上——对比表的指标行完全由 index 条目的 kpi 决定，缺了只剩「采样数/时长/设备」三行。
+    if (!state.reports || !state.reports.length) {
+      const p = await loadReportData(fid);
+      if (!p) throw new Error('夹具载荷读取失败：' + fid);
+      state.reports = [{
+        id: fid, platform: 'android', app: '', createdAtLocal: '00:00:00',
+        deviceName: (p.device && p.device.name) || '夹具设备',
+        samples: (p.perf || []).length, durationSec: p.durationSec, kpi: p.kpi || {},
+      }];
+    }
     // 内存构造第二份报告（副本），不动磁盘上的真实报告库
     const a = state.reports[0];
     const b = Object.assign({}, a, {
@@ -120,7 +171,7 @@ async function main() {
       names: rows.map(tr => ((tr.querySelector('.metric-name') || {}).textContent || '').replace(/\s+/g, ' ').trim()),
       subs: rows.map(tr => ((tr.querySelector('.cmp-sub') || {}).textContent || '').trim()).filter(Boolean),
     };
-  });
+  }, id);
   console.log('  对比表行数 =', c.count);
   check('对比表不再出现 Jank/10min 独立行',
     !c.names.some(n => /\/10min/.test(n) && !/^Jank|BigJank|SmallJank|TinyJank/.test(n)) && !c.names.some(n => /Jank\/10min/.test(n)),
@@ -132,6 +183,8 @@ async function main() {
   check('对比表行数已精简（< 27 行）', c.count < 27, c.count);
   await page2.screenshot({ path: path.join(OUT, 'compare-table-dedupe.png') });
   check('对比页无 JS 报错', errs2.length === 0, errs2.slice(0, 3));
+  const badRes2 = missRes2.filter(u => !/\/shots\//i.test(u));
+  check('对比页无缺失资源', badRes2.length === 0, badRes2.slice(0, 3));
 
   await browser.close();
   console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
