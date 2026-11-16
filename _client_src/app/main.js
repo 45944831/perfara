@@ -55,8 +55,10 @@ function ensureTraceCapture(deviceId) {
   traceDeviceId = id;
   traceCapture = TraceCapture.createTraceCapture({
     deviceId: id || 'generic-device',
-    // 放 userData 而不是 resources/reports：后者在 Program Files 下可能只读
-    reportDir: path.join(app.getPath('userData'), 'reports', 'traces'),
+    // 与报告页同目录（reports/traces）：用户在同一个地方就能管理「报告 + 取证片段」，
+    // 便携包解到 D:/E: 时 trace 也不再往 C 盘 userData 里堆。只有安装目录不可写
+    // （Program Files）才随 data.js 一起退回 userData/reports，保证两者始终同处。
+    reportDir: path.join(reportsDataJs.resolveReportsRootDir(), 'traces'),
     enabled: false,
     runAdb: (args, timeout) => require('./src/adb').runAdb(args, timeout),
     cancelInflight: () => {

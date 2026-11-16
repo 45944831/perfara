@@ -207,6 +207,35 @@ function getReportsRootDir() {
   return path.dirname(getReportsDataJsPath());
 }
 
+/**
+ * 报告产物实际落盘的根目录 —— data.js / data.json / history/ / shots/ / traces/ 都在这一层。
+ *
+ * 首选 `resources/reports`：与安装目录同盘，便携包解到 D:/E: 时报告与取证片段都不占 C 盘。
+ * 仅当它确实不可写（典型是装进 `C:\Program Files`）才退回 `userData/reports`，
+ * 与 writeDataJs 的降级方向保持一致。
+ *
+ * 结果在进程内缓存：同一次运行里「写 data.js」与「写 trace」必须落在同一处，
+ * 否则用户会在两个目录里各看到一半文件，比放错地方更难排查。
+ * @returns {string}
+ */
+let _reportsRootResolved = '';
+function resolveReportsRootDir() {
+  if (_reportsRootResolved) return _reportsRootResolved;
+  const primary = getReportsRootDir();
+  let writable = false;
+  try {
+    fs.mkdirSync(primary, { recursive: true });
+    fs.accessSync(primary, fs.constants.W_OK);
+    writable = true;
+  } catch (_) {
+    writable = false;      // 目录建不出来或不可写，走 userData 降级
+  }
+  _reportsRootResolved = writable
+    ? primary
+    : path.join(app.getPath('userData'), 'reports');
+  return _reportsRootResolved;
+}
+
 function getHistoryDir() {
   return path.join(getReportsRootDir(), HISTORY_DIRNAME);
 }
@@ -585,6 +614,7 @@ function archiveReport(payload, dataJsPath) {
 module.exports = {
   getReportsDataJsPath,
   getReportsRootDir,
+  resolveReportsRootDir,
   getHistoryDir,
   formatReportAppId,
   writeDataJs,

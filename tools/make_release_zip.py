@@ -87,6 +87,11 @@ PRUNE_PREFIXES = (
     'collector/resources/reports/data.json',
     'collector/resources/reports/shots/',
     'collector/resources/reports/history/',
+    # 旁路取证片段（Perfetto / simpleperf）。一段 10s 约 1~8MB，且 trace 里带真实
+    # 包名、线程名与设备时间线，属于典型的「绝不能随包发出去」的产物。
+    # 必须显式整目录剔除：S-04 白名单只拦该层直接子文件（`'/' not in tail`），
+    # 嵌套的 traces/xxx.perfetto-trace 会从白名单缝隙里漏过去。
+    'collector/resources/reports/traces/',
     # 启动器为子进程准备的运行期临时目录（PyInstaller onefile 的 _MEI 解包产物）。
     # 每次启动都会重建，绝不能打进发布包。
     '.run/',

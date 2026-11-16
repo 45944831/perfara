@@ -30,6 +30,11 @@ perfara/collector/**
 !perfara/collector/resources/reports/
 !perfara/collector/resources/reports/*.html
 
+# 旁路取证片段：单文件 1~8MB，且含真实包名与设备时间线，不入库
+*.perfetto-trace
+*.perf.data
+perfara/collector/resources/reports/traces/
+
 # ── 便携版产物副本（与 perfara/collector 重复）──────────────────────
 Perfara-Portable/
 

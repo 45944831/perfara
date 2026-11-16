@@ -5198,8 +5198,8 @@ const pts = perf.map((it) => {
 </script>
 <script>
 /* 2.1 旁路取证片段入口：只在本次采集开过旁路、确实抓到片段时出现。
-   报告是单文件 HTML，片段本体在 userData/reports/traces/，这里只列元数据与路径，
-   用时间戳与低谷截图对齐，避免把大 trace 内联进报告。 */
+   报告是单文件 HTML，片段本体放在报告同目录的 traces/（与 data.js、history/、shots/ 并列），
+   这里只列元数据与路径，用时间戳与低谷截图对齐，避免把大 trace 内联进报告。 */
 (function () {
   try {
     if (typeof data === 'undefined' || !data) return;
@@ -5227,7 +5227,8 @@ const pts = perf.map((it) => {
     box.innerHTML = '<summary style="cursor:pointer;font-weight:600">取证片段（'
       + list.length + ' 段）· 点击展开</summary>'
       + '<div style="margin-top:8px;color:#456">这些是主采集之外的短时系统级 trace，'
-      + '用来定位「这一帧等的是谁」，不参与统计。文件路径可复制到离线分析工具打开。</div>'
+      + '用来定位「这一帧等的是谁」，不参与统计。文件就在本报告同目录的 '
+      + '<code style="font-size:12px">traces/</code> 下，路径可复制到离线分析工具打开。</div>'
       + '<ul style="margin:8px 0 0;padding-left:20px">' + rows + '</ul>';
     var anchor = document.getElementById('root') || document.body;
     anchor.parentNode.insertBefore(box, anchor);
