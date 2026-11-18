@@ -108,6 +108,59 @@ function buckets(obj) {
   check('导出 getDeviceRefreshRate', typeof ADB.getDeviceRefreshRate === 'function');
 }
 
+// ── D-21：峰值刷新率受面板物理能力（supportedModes 最大 fps）硬上界约束 ──────
+// 2026-11-17 真机：60Hz 面板机被 framework vote(120) 误报成 120Hz，达帧率虚低到 48%。
+{
+  const cap = algo.capRefreshRateToPanel;
+  const maxFps = algo.parseMaxSupportedFps;
+  const p = algo.parsePeakRefreshRate;
+  check('D-21.1 导出 capRefreshRateToPanel / parseMaxSupportedFps',
+    typeof cap === 'function' && typeof maxFps === 'function');
+
+  // 从真机 dump 抽象：60Hz 面板 + framework vote 120
+  const dump60 = [
+    'mDisplayModeSpecs={baseModeId=1 primaryRefreshRateRange=[0 120]}',
+    'PRIORITY_USER_SETTING_PEAK_REFRESH_RATE -> Vote{maxRefreshRate=120.0, minRefreshRate=0.0}',
+    'mDefaultPeakRefreshRate: 120.0',
+    'supportedModes [{id=1, fps=60.000004}, {id=2, fps=60.000004}, {id=3, fps=60.000004}]',
+  ].join('\n');
+  const vote60 = p(dump60);
+  const panel60 = maxFps(dump60);
+  check('D-21.2 parsePeakRefreshRate 仍取到 framework vote(120)（证明问题在取数后未约束）',
+    vote60 === 120, vote60);
+  check('D-21.3 parseMaxSupportedFps 取到面板能力 60.000004',
+    Math.abs(panel60 - 60.000004) < 1e-6, panel60);
+  const fixed60 = cap(vote60, panel60);
+  check('D-21.4 60Hz 面板：120 vote 被钳回 60，来源改 display-supported-modes',
+    Math.abs(fixed60.hz - 60.000004) < 1e-6 && fixed60.capped === true
+      && fixed60.source === 'display-supported-modes', fixed60);
+
+  // 120Hz 面板：vote 120 不应被误钳
+  const dump120 = [
+    'PRIORITY_USER_SETTING_PEAK_REFRESH_RATE -> Vote{maxRefreshRate=120.0}',
+    'supportedModes [{id=1, fps=60.000004}, {id=2, fps=120.00001}]',
+  ].join('\n');
+  const vote120 = p(dump120);
+  const panel120 = maxFps(dump120);
+  const fixed120 = cap(vote120, panel120);
+  check('D-21.5 120Hz 面板：vote 120 不被误钳（面板含 120 档）',
+    Math.abs(fixed120.hz - 120) < 0.5 && fixed120.capped === false, fixed120);
+
+  // 容差：面板报 120.00001、vote 60 → 保持 60，不因浮点噪声误钳
+  const tol = cap(60, 120.00001);
+  check('D-21.6 浮点容差：60 ≤ 120×1.1 不误钳', tol.capped === false && tol.hz === 60, tol);
+
+  // settings 分支同样受约束：settings=120 但面板 60 → 钳回 60
+  const fromSettings = cap(120, 60.000004);
+  check('D-21.7 settings 值也受面板能力约束',
+    fromSettings.capped === true && Math.abs(fromSettings.hz - 60.000004) < 1e-6, fromSettings);
+
+  // 读不到 supportedModes（定制 ROM）：保留声明值，不臆造降级
+  const noPanel = cap(120, null);
+  check('D-21.8 无面板能力信息时保留声明值（不臆造）',
+    noPanel.hz === 120 && noPanel.capped === false, noPanel);
+}
+
 // ── 静态接线 ────────────────────────────────────────────────────────────────
 {
   const ROOT = path.join(__dirname, '..', '..');

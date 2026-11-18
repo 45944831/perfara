@@ -357,7 +357,7 @@ check('旧 avgMs 基准确实漏计抖动帧（反例成立）',
 // ─── ⑫ 口径版本 ─────────────────────────────────────────────────────────────
 console.log('\n-- ⑫ 口径版本：S-01 / S-02 改变已发布数值，必须升版 --');
 const Schema = require('../../../_client_src/app/src/metric-schema');
-check('SCHEMA_VERSION = 7（D-19/D-20 已版本化）', Schema.SCHEMA_VERSION === '7', Schema.SCHEMA_VERSION);
+check('SCHEMA_VERSION = 9（D-19/D-20/D-21 + 跨品牌温度归类已版本化）', Schema.SCHEMA_VERSION === '9', Schema.SCHEMA_VERSION);
 check('v5 报告标记为不可直接对比（口径已变）',
   Schema.checkSchema('5').comparable === false && Schema.checkSchema('5').level === 'mismatch',
   Schema.checkSchema('5'));

@@ -64,11 +64,21 @@ run_node "trough_shots"         ../deep/trough_shots_test.js
 run_node "trough_shots_ui"      ../deep/trough_shots_ui_test.js
 # 主界面每张参数卡的「!」口径说明：说明条目 ↔ 卡片一一对应、展开/切换/收起、不出视口、不撑高卡片
 run_node "metric_help_ui"       ../deep/metric_help_ui_test.js
+# 采集顶栏布局：窄窗口下设备/应用保持同行（2026-11-17「采集时换行」截图 bug）
+run_node "topbar_layout"        ../deep/topbar_layout_test.js
+# 温度传感器跨品牌统一解析（2026-11-17）：mType 强制枚举 + mName 别名兜底，
+# 锁定 Samsung/联发科/国产 ROM 取证样本，防止「外壳 -- · 结温 --」回归。
+run_node "thermal_vendor_names" ../deep/thermal_vendor_names_test.js
 # 采集结束自动生成 Excel：分组标签页 / 标记区间 / 空值语义 / OOXML 结构（Python zipfile 独立复核）
 run_node "xlsx_export"          ../deep/xlsx_export_test.js
 # 批次 1.3/1.6/2.1：口径版本守卫、Perfetto 旁路取证核心模块
 run_node "schema_version"       ../deep/schema_version_test.js
 run_node "trace_capture"        ../deep/trace_capture_test.js
+# 会话级指标（冷启动 / 帧归因 / ANR·崩溃）：真机样本驱动的纯解析 + 接线静态守卫
+run_node "session_metrics"      ../deep/session_metrics_test.js
+# 刷新率跟随设备守卫（D-19/D-21 防复发）：同一套解析链路对 60/90/120/144Hz 设备必须给出不同值，
+# 锁死「刷新率来自设备、不是写死的固定常量」。真机那例用 --realdevice 单独跑，不进离线批次。
+run_node "refresh_follows_dev"  ../refresh_rate_follows_device_test.js
 run_node "direct_shell"        ../deep/direct_shell_test.js
 # 弱网总结分析：段状态机 + 接线静态检查；再用合成 data.weaknet 渲染报告页核对数值
 run_node "weaknet_report"       ../deep/weaknet_report_test.js

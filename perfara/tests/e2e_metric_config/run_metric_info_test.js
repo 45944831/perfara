@@ -51,9 +51,17 @@ function mkPerf(category) {
       physFootprint: 400 + i, memResidentSize: 500 + i, cpuUsage: 12 + i,
       threadCount: 40, _diskReadKBps: 12 + i, _diskWriteKBps: 4,
       _ctxSwitchPs: 300 + i, _intWakeupsPs: 100 + i, _vmPageInsPs: 20 + i,
+      jankAttr: { _frames: 60, _total: 1, AppDeadlineMissed: 1 },
     });
   }
-  return { device: { name: 'Pixel 7', category, appName: 'Demo' }, perf, tag: [[0, 5]] };
+  return {
+    device: { name: 'Pixel 7', category, appName: 'Demo' }, perf, tag: [[0, 5]],
+    // 会话级 / 卡顿归因区块的触发数据（脱敏夹具），用于验证其 summary 上的「!」入口
+    session: {
+      launch: { state: 'COLD', totalTimeMs: 931, waitTimeMs: 940 },
+      exit: { supported: true, anr: 0, crash: 0, nativeCrash: 0 },
+    },
+  };
 }
 
 async function main() {
@@ -146,6 +154,22 @@ async function main() {
     return { visible: !mask.hidden, title: mask.querySelector('.mi-title').textContent.trim(), metric: td.textContent.trim() };
   });
   check('统计表「!」可弹出说明', modal2.visible === true, modal2);
+
+  // 会话级 / 卡顿归因区块（动态插入）的 summary「!」入口
+  const blocks = await p1.evaluate(() => {
+    const sess = document.getElementById('session-metrics');
+    const attr = document.getElementById('jank-attr');
+    const sessDot = sess && sess.querySelector('summary .info-dot');
+    const attrDot = attr && attr.querySelector('summary .info-dot');
+    let sessTitle = '', attrTitle = '';
+    if (sessDot) { sessDot.click(); sessTitle = document.querySelector('.mi-title').textContent.trim(); }
+    if (attrDot) { attrDot.click(); attrTitle = document.querySelector('.mi-title').textContent.trim(); }
+    return { sess: !!sess, attr: !!attr, sessDot: !!sessDot, attrDot: !!attrDot, sessTitle, attrTitle };
+  });
+  check('会话级区块存在且 summary 带「!」', blocks.sess && blocks.sessDot, blocks);
+  check('点击会话级「!」弹出会话说明', /会话级指标/.test(blocks.sessTitle), blocks.sessTitle);
+  check('卡顿归因区块存在且 summary 带「!」', blocks.attr && blocks.attrDot, blocks);
+  check('点击卡顿归因「!」弹出归因说明', /卡顿归因/.test(blocks.attrTitle), blocks.attrTitle);
 
   check('android 页无 JS 报错', err1.length === 0, err1);
   await p1.close();

@@ -45,6 +45,8 @@ const TraceCapture = require('./src/trace-capture');
 // 任何失败都静默降级，绝不参与主采集判定，也不把异常抛回采集链。
 let traceCapture = null;
 let traceDeviceId = '';
+/** 当前被测包名：帧归因按包读 gfxinfo framestats（切换应用时同步更新） */
+let tracePackageName = '';
 /** 开启旁路时，低谷截图命中是否自动附带取证 */
 let traceAutoOnTrough = true;
 
@@ -55,6 +57,7 @@ function ensureTraceCapture(deviceId) {
   traceDeviceId = id;
   traceCapture = TraceCapture.createTraceCapture({
     deviceId: id || 'generic-device',
+    packageName: tracePackageName,
     // 与报告页同目录（reports/traces）：用户在同一个地方就能管理「报告 + 取证片段」，
     // 便携包解到 D:/E: 时 trace 也不再往 C 盘 userData 里堆。只有安装目录不可写
     // （Program Files）才随 data.js 一起退回 userData/reports，保证两者始终同处。
@@ -63,6 +66,24 @@ function ensureTraceCapture(deviceId) {
     runAdb: (args, timeout) => require('./src/adb').runAdb(args, timeout),
     cancelInflight: () => {
       try { require('./src/adb').cancelAllInflight(); } catch (_) {}
+    },
+    // 帧归因：优先用最近一拍 timestats 自带的 FrameTimeline 归因（零额外 adb 调用，
+    // 且与曲线里的 jank 是同一图层、同一窗口）；拿不到才退回 gfxinfo framestats 的
+    // 位掩码。绝不再从 perfetto 的 stdout 里猜（那条路永远是空的）。
+    snapshotJank: async (pkg) => {
+      const last = perfHistory.length ? perfHistory[perfHistory.length - 1] : null;
+      const attr = last && last.jankAttr;
+      if (attr && typeof attr === 'object'
+        && typeof attr._frames === 'number' && attr._frames > 0) {
+        return { ok: true, source: 'timestats', counts: attr };
+      }
+      // 兜底：采集正在走 framestats/gfxinfo 通道时跳过 —— 多插一次 dump 会重置帧缓冲，
+      // 让那一拍的帧数变少。宁可这一次没有归因，也不污染主采样。
+      const method = last && last.fpsMethod ? String(last.fpsMethod) : '';
+      if (method === 'framestats' || method === 'gfxinfo-delta') {
+        return { ok: false, reason: 'framestats-channel-in-use' };
+      }
+      return require('./src/adb').getJankSnapshot(traceDeviceId, pkg);
     },
     log: (m) => console.log(m),
   });
@@ -343,6 +364,12 @@ let perfHistory = [];
 let androidTags = [];
 /** @type {{ deviceId: string, packageName: string, deviceLabel: string, appLabel: string } | null} */
 let androidSession = null;
+/**
+ * 会话级指标（Android）：冷启动计时 + 本轮退出原因。
+ * 存在这里而不是 collector 上：采集器 stop 后会被置 null，而报告是用户随后
+ * 手动点「保存」才生成，中间隔着任意长的时间。
+ */
+let androidLastLaunch = null;
 
 let iosCollector = null;
 let iosPerfHistory = [];
@@ -738,6 +765,19 @@ ipcMain.handle('start-collect', async (_event, deviceId, packageName, deviceLabe
     metricConfig: mc,
     metricOrder: extractMetricOrder(metricConfig),
   };
+  androidLastLaunch = null;
+  // 旁路取证的帧归因按包名取 gfxinfo，切换应用时必须同步（否则会读到上一个包的帧）
+  tracePackageName = packageName;
+  if (traceCapture) traceCapture.setPackageName(packageName);
+  // 会话级「退出原因」基线：必须在拉起应用**之前**取。
+  // 之后保存报告时再取一次，差集就是本轮期间的 ANR / 崩溃 / 被系统杀。
+  // 取不到（Android 10 及更早没有 exit-info）→ null，报告显示「本机不支持」。
+  try {
+    const base = await require('./src/adb').getAppExitInfo(deviceId, packageName);
+    androidSession.exitBaseline = base && base.supported ? base.keys : null;
+  } catch (_) {
+    androidSession.exitBaseline = null;
+  }
 
   collector = new Collector(deviceId, packageName, 1000, mc);
   startWeaknetTracking('android', deviceId);
@@ -757,6 +797,8 @@ ipcMain.handle('start-collect', async (_event, deviceId, packageName, deviceLabe
   });
   collector.on('stopped', (payload) => {
     trialSession.onCollectStopped();
+    // 冷启动计时挂在 stopped 上：采集器随后会被置 null，报告却是之后才生成的
+    if (payload && payload.launch) androidLastLaunch = payload.launch;
     // Ensure stale background adb tasks can't keep running/logging.
     try { require('./src/adb').cancelAllInflight(); } catch (_) {}
     collector = null;
@@ -838,6 +880,21 @@ ipcMain.handle('stop-collect', async () => {
     collector = null;
   }
   const weaknet = stopWeaknetTracking();
+  // 会话级退出原因：与开始前的基线做差集 → 本轮期间的 ANR / 崩溃 / 被系统杀。
+  // baseline 为 null（Android 10 及更早没有 exit-info）时不查，报告显示「本机不支持」。
+  let sessionExit = null;
+  if (androidSession && Array.isArray(androidSession.exitBaseline)) {
+    try {
+      sessionExit = await require('./src/adb').getAppExitInfo(
+        androidSession.deviceId, androidSession.packageName, androidSession.exitBaseline);
+    } catch (_) {
+      sessionExit = null;
+    }
+  }
+  const sessionInfo = {
+    launch: androidLastLaunch || (androidDiag && androidDiag.launch) || null,
+    exit: sessionExit || null,
+  };
   try {
     if (perfHistory.length > 0 && androidSession) {
       const disp = reportsDataJs.formatReportAppId(
@@ -872,6 +929,8 @@ ipcMain.handle('stop-collect', async () => {
         // 2.1 旁路取证片段（开启过才有）：报告页给出「取证片段」入口
         traceCaptures: (traceCapture && traceCapture.list().length)
           ? traceCapture.list() : undefined,
+        // 会话级指标：冷启动耗时 + 本轮 ANR/崩溃（都没有则不写字段）
+        session: (sessionInfo.launch || sessionInfo.exit) ? sessionInfo : undefined,
         // 采集期间开过弱网才带这一段，报告页据此追加「弱网总结分析」
         weaknet: weaknet || undefined,
       };

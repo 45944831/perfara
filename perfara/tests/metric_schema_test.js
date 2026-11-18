@@ -27,7 +27,7 @@ function check(name, cond, detail) {
 
 // ── 1. 定义表 ───────────────────────────────────────────────────────────────
 console.log('-- 指标定义表 --');
-check('口径版本为 7', S.SCHEMA_VERSION === '7', S.SCHEMA_VERSION);
+check('口径版本为 9', S.SCHEMA_VERSION === '9', S.SCHEMA_VERSION);
 const defs = S.metricDefinitions();
 check('定义清单非空且字段齐全',
   defs.length >= 15 && defs.every(d => d.key && d.label && d.unit && d.group && d.scope), defs.length);

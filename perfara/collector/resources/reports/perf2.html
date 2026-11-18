@@ -864,7 +864,8 @@
 (function () {
   try {
     if (typeof data === 'undefined' || !data) return;
-    var CUR = '2';
+    // 当前口径版本，必须与 sample-meta.js 的 SCHEMA_VERSION 一致（schema_version_test.js 有守卫）。
+    var CUR = '9';
     var items = [];
     var sv = data.schemaVersion;
     if (!sv) {

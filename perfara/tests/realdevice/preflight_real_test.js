@@ -107,7 +107,10 @@ async function wakeAndUnlock() {
   check('level 合法', ['ok', 'warn', 'fail'].includes(pf.level), pf.level);
   check('设备响应检查通过', pf.checks.responsive === true, pf.checks.responsive);
   check('内存检查有总量/可用量', !!(pf.checks.memory && pf.checks.memory.totalMB > 0 && pf.checks.memory.availMB >= 0), pf.checks.memory);
-  check('GPU 检查为数值或 null（不误判失败）', pf.checks.gpu === null || (typeof pf.checks.gpu === 'object'), pf.checks.gpu);
+  // GPU 占用是 0..100 数值或读不到时的 null；旧断言误写成 object 导致数值 15 被判红
+  check('GPU 检查为数值或 null（不误判失败）',
+    pf.checks.gpu === null || (typeof pf.checks.gpu === 'number' && pf.checks.gpu >= 0 && pf.checks.gpu <= 100),
+    pf.checks.gpu);
   check('屏幕检查有结论', !!(pf.checks.screen && (pf.checks.screen.known === false || typeof pf.checks.screen.awake === 'boolean')), pf.checks.screen);
   check('总耗时有界（<8s，实测应 ~1-3s）', msA < 8000, { ms: msA });
   check('有可读 summary', typeof pf.summary === 'string' && pf.summary.length > 0, pf.summary);

@@ -13,7 +13,7 @@
  *   - 那里回答「整个报告里每个指标的覆盖率、口径、质量」。
  */
 
-const SCHEMA_VERSION = '7';  // v5: P-01 SmallJank 档梯统一（电影帧 1/2/3 倍递进）、
+const SCHEMA_VERSION = '9';  // v5: P-01 SmallJank 档梯统一（电影帧 1/2/3 倍递进）、
                              //      P-04 目标帧率设备自报优先 + 档位表同源
                              // v6（S-01 / S-02）：刷新率档位表 5 份副本统一为 11 档
                              //      （去 45，补 24/48/100/185，兜底改 ceil(p95)），
@@ -23,6 +23,14 @@ const SCHEMA_VERSION = '7';  // v5: P-01 SmallJank 档梯统一（电影帧 1/2/
                              //      dumpsys 排除 mDefault* 框架默认；data.js 补 loading 段，
                              //      报告侧设备自报目标帧率真正生效；吸附加上界 1.10，
                              //      200Hz 面板不再被抬到 240 —— 目标帧率变了，跨版本不可直接比
+                             // v8（D-21）：峰值刷新率受 supportedModes 面板能力硬上界约束，
+                             //      60Hz 面板机不再被 framework vote 误报成 120Hz；
+                             //      只动目标帧率派生项（达帧率/低帧占比），跨版本不可直接比
+                             // v9（跨品牌温度）：thermalservice 归类改为 AOSP mType 强制枚举优先、
+                             //      mName 别名兜底，兼容 Samsung AP/BAT/LRB/LRF/LRP、
+                             //      小写 battery 与带空格命名；外壳多颗取平均，
+                             //      排除 BCL 非温度虚拟量。主温度来源由 board 变 battery，
+                             //      skinTemp/cpuTemp 由空变有值 —— 跨版本不可直接比
 
 const PLATFORM_SOURCE = {
   android: 'adb-dumpsys',

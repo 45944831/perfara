@@ -14,8 +14,8 @@ const path = require('path');
 const MODULE_PATH = path.resolve(__dirname, '..', '..', '..', '_client_src', 'app', 'src', 'trace-capture.js');
 const TC = require(MODULE_PATH);
 const {
-  TraceCapture, createTraceCapture, parseJankTypes, describeJankTypes,
-  JANK_TYPE_SEMANTICS, PERFETTO_CONFIG, sanitizeSegment, resolveLocal,
+  TraceCapture, createTraceCapture, countJankTypes, describeJankTypes,
+  JANK_TYPE_SEMANTICS, JANK_FLAG_BITS, PERFETTO_CONFIG, sanitizeSegment, resolveLocal,
   clampDurationSec, DEFAULTS,
 } = TC;
 
@@ -135,7 +135,12 @@ async function main() {
   // ── 导出形状 / 默认值 ─────────────────────────────────────────────────────
   check('导出 TraceCapture 构造器', typeof TraceCapture === 'function', typeof TraceCapture);
   check('导出 createTraceCapture 工厂', typeof createTraceCapture === 'function', typeof createTraceCapture);
-  check('导出 parseJankTypes 纯函数', typeof parseJankTypes === 'function', typeof parseJankTypes);
+  check('导出 countJankTypes 纯函数', typeof countJankTypes === 'function', typeof countJankTypes);
+  // 回归守卫：旧的「从 perfetto stdout 里正则找 jankType」是一条永远为空的假链路
+  //（perfetto 把 trace 写进 -o 指定的文件，stdout 里没有 jankType 文本）。
+  // 该函数已删除，不允许再以任何名字回到模块里。
+  check('已移除 parseJankTypes（假链路不得复活）', typeof TC.parseJankTypes === 'undefined',
+    typeof TC.parseJankTypes);
   check('默认关闭', DEFAULTS.enabled === false, DEFAULTS.enabled);
   check('默认时长 10s', DEFAULTS.defaultDurationSec === 10, DEFAULTS.defaultDurationSec);
   check('默认 list 上限 20', DEFAULTS.maxRecords === 20, DEFAULTS.maxRecords);
@@ -161,19 +166,34 @@ async function main() {
   })(), true);
   check('resolveLocal 空报告目录报 no-report-dir', resolveLocal('', 'x', path).reason === 'no-report-dir', true);
 
-  // ── 纯函数：jankType 语义 ────────────────────────────────────────────────
-  const fakeSummary = 'jankType: AppDeadlineMissed, BufferStuffing; '
-    + 'jankType=PredictionError; jankType: AppDeadlineMissed; jankType=DisplayHAL';
-  const types = parseJankTypes(fakeSummary);
-  check('jankType 解析出 AppDeadlineMissed', types.indexOf('AppDeadlineMissed') >= 0, types);
-  check('jankType 解析出 BufferStuffing', types.indexOf('BufferStuffing') >= 0, types);
-  check('jankType 解析出 PredictionError', types.indexOf('PredictionError') >= 0, types);
-  check('jankType 解析出 DisplayHAL', types.indexOf('DisplayHAL') >= 0, types);
-  check('jankType 去重', types.filter((t) => t === 'AppDeadlineMissed').length === 1, types);
+  // ── 纯函数：jankType 位掩码统计 ──────────────────────────────────────────
+  // 真机样本（Android 13 / gfxinfo framestats 的 FLAGS 列，已脱敏）：
+  // 绝大多数帧是 0，偶发 1（AppDeadlineMissed）。
+  const realFlags = [0, 1, 0, 0, 1, 0, 0, 0, 2, 0];
+  const jc = countJankTypes(realFlags);
+  check('位统计：总帧数', jc.total === 10, jc.total);
+  check('位统计：卡顿帧数=3', jc.janky === 3, jc.janky);
+  check('位统计：AppDeadlineMissed×2', jc.counts.AppDeadlineMissed === 2, jc.counts);
+  check('位统计：SurfaceFlingerCpuDeadlineMissed×1',
+    jc.counts.SurfaceFlingerCpuDeadlineMissed === 1, jc.counts);
+  check('位统计：无卡顿不入表', !('None' in jc.counts), jc.counts);
+  check('位统计：types 按位序输出', jc.types.join(',') === 'AppDeadlineMissed,SurfaceFlingerCpuDeadlineMissed',
+    jc.types);
+  // 组合位：一帧同时命中两个原因 → 两个计数各 +1（不是二选一）
+  const combo = countJankTypes([1 | 8]);
+  check('组合位分别计数', combo.counts.AppDeadlineMissed === 1 && combo.counts.BufferStuffing === 1,
+    combo.counts);
+  check('组合位只算一帧卡顿', combo.janky === 1, combo.janky);
+  // 未知位不得静默丢弃：记进 Unknown，保证「有卡顿」这件事不会被吞掉
+  const unknownBit = countJankTypes([1024]);
+  check('未知位计入 Unknown', unknownBit.janky === 1 && unknownBit.counts.Unknown === 1, unknownBit);
+  check('空输入不炸', countJankTypes(null).total === 0 && countJankTypes([]).types.length === 0, true);
+  check('位表含 FrameTimeline 扩展位', JANK_FLAG_BITS.some(([b]) => b === 32)
+    && JANK_FLAG_BITS.some(([b]) => b === 128), JANK_FLAG_BITS.length);
   check('jankType 语义含中文说明', /应用/.test(JANK_TYPE_SEMANTICS.AppDeadlineMissed)
     && /缓冲|队列/.test(JANK_TYPE_SEMANTICS.BufferStuffing), JANK_TYPE_SEMANTICS.AppDeadlineMissed);
-  check('describeJankTypes 返回说明映射', describeJankTypes(types).PredictionError
-    === JANK_TYPE_SEMANTICS.PredictionError, describeJankTypes(types));
+  check('describeJankTypes 返回说明映射', describeJankTypes(['PredictionError']).PredictionError
+    === JANK_TYPE_SEMANTICS.PredictionError, describeJankTypes(['PredictionError']));
   check('perfetto 配置含 frametimeline 数据源', PERFETTO_CONFIG.indexOf('android.surfaceflinger.frametimeline') >= 0, true);
   check('perfetto 配置脱敏无真机包名', PERFETTO_CONFIG.indexOf('com.') < 0, true);
 
@@ -218,9 +238,57 @@ async function main() {
     check('产物名不含应用包名（脱敏）', res.path.indexOf('com.') < 0, res.path);
     const base = path.basename(res.path);
     check('产物名仅含安全字符', /^[A-Za-z0-9._-]+$/.test(base), base);
-    check('结果带 jankTypes', Array.isArray(res.jankTypes) && res.jankTypes.indexOf('AppDeadlineMissed') >= 0, res.jankTypes);
-    check('结果带 jankType 语义说明', res.jankTypeSemantics
+    // 回归：未注入 snapshotJank 时，perfetto 的 stdout 里就算写着 jankType 文本
+    // 也**不得**被当成归因结果 —— 这正是旧实现的假数据来源。
+    check('未注入归因源时不产出 jankTypes', res.jankTypes === undefined, res.jankTypes);
+    check('未注入归因源时不产出 jankCounts', res.jankCounts === undefined, res.jankCounts);
+    check('perfetto stdout 不再被当作 trace 摘要',
+      SRC.indexOf('parseJankTypes') < 0 && SRC.indexOf('grabbed.stdout') < 0, true);
+  }
+
+  // ── 注入 snapshotJank：帧归因走真实位掩码 ────────────────────────────────
+  {
+    const calls = [];
+    const { cap } = makeCapture({ sdk: '33' }, {
+      packageName: 'com.example.app',
+      snapshotJank: async (pkg) => {
+        calls.push(pkg);
+        return { ok: true, source: 'gfxinfo-framestats', total: 10, flags: [0, 1, 0, 0, 1, 8, 0, 0, 0, 0] };
+      },
+    });
+    const res = await cap.capture({ source: 'auto', reason: 'fps-drop' });
+    check('注入源后抓取仍成功', res.ok === true, res);
+    check('归因按被测包名取数', calls.length === 1 && calls[0] === 'com.example.app', calls);
+    check('归因带 jankSource', res.jankSource === 'gfxinfo-framestats', res.jankSource);
+    check('归因带帧数/卡顿帧数', res.jankFrames && res.jankFrames.total === 10
+      && res.jankFrames.janky === 3, res.jankFrames);
+    check('归因带计数', res.jankCounts && res.jankCounts.AppDeadlineMissed === 2
+      && res.jankCounts.BufferStuffing === 1, res.jankCounts);
+    check('归因带中文语义', res.jankTypeSemantics
       && /应用/.test(res.jankTypeSemantics.AppDeadlineMissed || ''), res.jankTypeSemantics);
+    check('归因进入 list()', cap.list()[0] && cap.list()[0].jankCounts
+      && cap.list()[0].jankCounts.AppDeadlineMissed === 2, cap.list()[0]);
+  }
+
+  // ── 归因源失败 / 抛异常 / 返回空帧：如实不写字段 ─────────────────────────
+  {
+    const cases = [
+      ['源返回 ok:false', async () => ({ ok: false, reason: 'no-frames' })],
+      ['源抛异常', async () => { throw new Error('boom'); }],
+      ['源返回空 flags', async () => ({ ok: true, source: 'gfxinfo-framestats', total: 0, flags: [] })],
+      // 真机实测：自绘 / SurfaceView 类应用只会给 0~2 帧，用 1 帧算「100% 卡顿」没有意义
+      ['源只有 2 帧（少于下限）', async () => ({
+        ok: true, source: 'gfxinfo-framestats', total: 2, flags: [1, 0],
+      })],
+    ];
+    for (const [label, fn] of cases) {
+      const { cap } = makeCapture({ sdk: '33' }, { packageName: 'com.example.app', snapshotJank: fn });
+      let threw = false, res = null;
+      try { res = await cap.capture({}); } catch (e) { threw = true; }
+      check(`${label}：不抛异常`, threw === false, threw);
+      check(`${label}：抓取不受影响`, res && res.ok === true, res);
+      check(`${label}：不写 jankTypes`, res && res.jankTypes === undefined, res && res.jankTypes);
+    }
   }
 
   // ── 自定义时长 / 钳制落到命令行 ───────────────────────────────────────────

@@ -626,6 +626,14 @@ select:focus, input:focus {
 
 @media (max-width: 1200px) {
   .charts-grid { padding: 0 8px 8px; }
+  /* 窄窗口（1024~1200）顶栏重排：让中间控制块独占一整行，设备 / 应用保持同行。
+     默认 flex 布局下 controls 被 left/right 挤成 ~420px，放不下「设备组+应用组」
+     （合计 ~620px），flex-wrap 就把应用挤到下一行（用户看到的「采集时换行」）。
+     order 把 logo 提到首行、右侧工具组挪到末行，controls 占满中间一整行，
+     设备与应用就能并排；按钮组空间不足时仍在 controls 内换行，不挤设备/应用。 */
+  .topbar-controls { flex: 1 1 100%; order: 0; }
+  .topbar-left     { order: -1; }
+  .topbar-right    { order: 1; flex: 0 0 auto; }
 }
 
 .chart-wrap {

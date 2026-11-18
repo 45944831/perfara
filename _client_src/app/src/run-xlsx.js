@@ -156,8 +156,10 @@ function flattenRow(row, prefix, out) {
   out = out || {};
   if (!row || typeof row !== 'object') return out;
   for (const k of Object.keys(row)) {
-    // 诊断元数据不进任何明细表（见 SKIP_KEYS）；只在汇总页聚合后展示
-    if (!prefix && (k === 'meta' || k === 'shellMs')) continue;
+    // 诊断元数据不进任何明细表（见 SKIP_KEYS）；只在汇总页聚合后展示。
+    // jankAttr 同理：它是逐拍的归因对象（9 个字段），摊开会有 9 列几乎全空，
+    // 而汇总页已给出整轮分布，明细表只保留原始计数没有意义。
+    if (!prefix && (k === 'meta' || k === 'shellMs' || k === 'jankAttr')) continue;
     const key = prefix ? `${prefix}.${k}` : k;
     const v = row[k];
     if (v == null) { out[key] = null; continue; }
@@ -312,6 +314,72 @@ function summarySheet(payload, flatRows, tags, prov) {
   }
   if (prov && prov.truncatedSamples) {
     rows.push(['历史截断点数', `${prov.truncatedSamples}（写盘失败导致，报告不完整）`]);
+  }
+  // 会话级：冷启动耗时 + 本轮 ANR/崩溃。
+  // 这两项不进明细表（一轮只有一个值），但「应用能不能起来、跑着跑着有没有崩」
+  // 是判断整轮数据能不能用的前置条件，必须出现在汇总页最上面。
+  const sess = (payload && payload.session) || null;
+  if (sess && sess.launch && sess.launch.totalTimeMs != null) {
+    const st = sess.launch.state === 'COLD' ? '冷启动'
+      : sess.launch.state === 'WARM' ? '温启动'
+        : sess.launch.state === 'HOT' ? '热启动' : '启动';
+    rows.push([`${st}耗时 (ms)`, sess.launch.totalTimeMs,
+      sess.launch.waitTimeMs != null ? `调度等待 ${sess.launch.waitTimeMs} ms` : '']);
+  }
+  if (sess && sess.exit && sess.exit.supported) {
+    const crashes = (sess.exit.crash || 0) + (sess.exit.nativeCrash || 0);
+    rows.push(['本轮 ANR / 崩溃 / 其它退出',
+      `${sess.exit.anr || 0} / ${crashes} / ${sess.exit.other || 0}`,
+      sess.exit.total ? `共 ${sess.exit.total} 次进程退出` : '未发生进程退出']);
+  }
+  // FrameTimeline 卡顿归因分布：卡顿发生在应用侧还是合成侧，决定该找谁改。
+  // 只有 timestats 通道的采样点带 jankAttr，所以在括号里写清覆盖了多少拍。
+  {
+    const JA_LABELS = {
+      AppDeadlineMissed: '应用未按时提交',
+      BufferStuffing: '应用缓冲堆积（独立计数）',
+      SurfaceFlingerCpuDeadlineMissed: 'SF CPU 合成超时',
+      SurfaceFlingerGpuDeadlineMissed: 'SF GPU 合成超时',
+      SurfaceFlingerScheduling: 'SF 调度延迟',
+      PredictionError: '帧时长预测偏差',
+      Unknown: '归属不明',
+    };
+    const sum = Object.create(null);
+    let covered = 0, janky = 0, frames = 0;
+    for (const r of perf) {
+      const a = r && r.jankAttr;
+      if (!a || typeof a !== 'object') continue;
+      covered += 1;
+      if (typeof a._frames === 'number') frames += a._frames;
+      if (typeof a._total === 'number') janky += a._total;
+      for (const k of Object.keys(a)) {
+        if (k.charAt(0) === '_' || typeof a[k] !== 'number' || a[k] <= 0) continue;
+        sum[k] = (sum[k] || 0) + a[k];
+      }
+    }
+    if (covered > 0) {
+      // BufferStuffing 单独列：真机实测它不是 jankyFrames 的子集
+      //（421 帧 / jankyFrames=19 / appBufferStuffingJankyFrames=213），
+      // 混在一起会得出自相矛盾的合计。其余 6 项是「这一帧为什么算卡」的成因。
+      // ⚠️ 成因可重叠（同一帧既可能应用侧超时、又可能 SF 合成超时），真机实测出现过
+      // 4+2 > 卡顿 4 帧，所以下面是「成因计数」，不是互斥构成，不能相加当卡顿总数。
+      const core = Object.keys(sum)
+        .filter((k) => k !== 'BufferStuffing')
+        .sort((a, b) => sum[b] - sum[a])
+        .map((k) => `${JA_LABELS[k] || k} ${sum[k]}`);
+      const stuffing = sum.BufferStuffing || 0;
+      const coreTotal = Object.keys(sum)
+        .filter((k) => k !== 'BufferStuffing')
+        .reduce((t, k) => t + sum[k], 0);
+      const overlap = (janky > 0 && coreTotal > janky)
+        ? `；成因可重叠，合计 ${coreTotal} 次 > 卡顿 ${janky} 帧，勿按占比相加`
+        : '';
+      rows.push(['卡顿归因（FrameTimeline）',
+        core.length ? core.join(' · ') : '未记录到卡顿帧',
+        `覆盖 ${covered} 拍${frames ? ` / 窗口 ${frames} 帧` : ''}`
+          + (stuffing ? `；另缓冲堆积 ${stuffing} 帧（独立计数，不与卡顿相加）` : '')
+          + overlap]);
+    }
   }
   rows.push([]);
   rows.push(['说明', '未测量到的指标留空，不写 0；各性能明细见底部对应标签页']);

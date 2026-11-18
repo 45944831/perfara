@@ -76,6 +76,14 @@ async function openPage(browser, port, width) {
     cardIds.filter(id => !helpKeys.includes(id)));
   check('说明条目没有指向不存在的卡', helpKeys.every(k => cardIds.includes(k)),
     helpKeys.filter(k => !cardIds.includes(k)));
+  // 2026-11-17 从零筛查：这套「!」与主界面实时采集卡绑定，与报告页三份说明块
+  // 相互独立，历史上从未随报告口径同步。文案必须与源码口径一致，否则用户
+  // 在主界面点「!」读到的是过期说法。
+  check('说明：温度主数值以 BATTERY 优先（与 adb.js 取数顺序一致）',
+    /电池热敏电阻（BATTERY[\s\S]{0,40}其次 SKIN/.test(helpSrc)
+      && !/优先取 thermalservice 的机身节点，取不到时用电池温度兜底/.test(helpSrc), true);
+  check('说明：PSS 按 5 秒降频（与 MEM_FULL_REFRESH_MS=5000 一致，非「5 拍」）',
+    /PSS 家族每 5 秒实测一次/.test(helpSrc) && !/每 5 拍实测一次/.test(helpSrc), true);
 
   const server = await serveRenderer();
   const port = server.address().port;

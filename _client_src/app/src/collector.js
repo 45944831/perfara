@@ -155,7 +155,7 @@ function isLowActivity(fps, ftP50) {
 const ANDROID_METRIC_KEYS = {
   fps: ['fps', 'jank', 'bigJank', 'smallJank', 'tinyJank', 'jankRate',
     'ftP50', 'ftP90', 'ftP95', 'ftP99', 'jankyRatio', 'hitchMsPerSec',
-    'overrunP95', 'overrunP99', 'overrunMax', 'fpsMethod'],
+    'overrunP95', 'overrunP99', 'overrunMax', 'fpsMethod', 'jankAttr'],
   cpu: ['cpu', 'cpuCores', 'freqSource'],
   mem: ['mem'],  // FIX-07：threads/swapMB/ctxVoluntary/ctxNonvoluntary 随 mem 组开关
   // （它们挂在 data.mem 对象里，组开关只控制 mem 对象整体，无需单列键）
@@ -245,6 +245,12 @@ class Collector extends EventEmitter {
     });
     /** @type {boolean} 本轮是否已提示过采集开销偏高 */
     this._overheadWarned = false;
+    /**
+     * 冷启动计时（会话级，只有本轮确实冷启动过才有）：
+     * { state:'COLD'|'WARM'|'HOT', totalTimeMs, waitTimeMs }
+     * 来自 `am start -W` 的 TotalTime/LaunchState，见 adb.ensureAppRunning。
+     */
+    this._launch = null;
   }
 
   _log(msg, token = this._runToken) {
@@ -271,6 +277,7 @@ class Collector extends EventEmitter {
     this._tickMs = [];
     this._droppedSamples = 0;
     this._overheadWarned = false;
+    this._launch = null;
     // 新一轮采集用全新的分段账本，避免把上一轮临时分片混进本次报告
     this.segments = new SegmentedHistory({
       max: MAX_HISTORY, chunkSize: 3600, log: (m) => this._log(m),
@@ -336,6 +343,19 @@ class Collector extends EventEmitter {
     const ensure = await ADB.ensureAppRunning(this.deviceId, this.packageName, (m) => this._log(m, token));
     if (!this._running || token !== this._runToken) return;
     this._pid = ensure.pid;
+    // 冷启动计时（会话级）：只有进程原本不存在时才可能有值。
+    // 拿不到就保持 null —— 报告会显示「未测量」，不会编一个 0ms。
+    this._launch = (ensure && ensure.launch && ensure.launch.totalTimeMs != null)
+      ? {
+        state: ensure.launch.state || null,
+        totalTimeMs: ensure.launch.totalTimeMs,
+        waitTimeMs: ensure.launch.waitTimeMs == null ? null : ensure.launch.waitTimeMs,
+      }
+      : null;
+    if (this._launch) {
+      this._log(`冷启动耗时 ${this._launch.totalTimeMs}ms`
+        + `（${this._launch.state || '状态未知'}）`, token);
+    }
     if (!this._pid) {
       this._running = false;
       throw new Error(ensure.error || '应用未运行且启动失败');
@@ -397,6 +417,8 @@ class Collector extends EventEmitter {
       deviceId: this.deviceId,
       packageName: this.packageName,
       pid: this._pid,
+      // 会话级：冷启动计时（未冷启动 / 未测到为 null）
+      launch: this._launch ? Object.assign({}, this._launch) : null,
       ts: Date.now(),
     });
   }
@@ -471,6 +493,7 @@ class Collector extends EventEmitter {
       intervalMs: this.intervalMs,
       uid: this._uid,
       displayProfile: this._displayProfile,
+      launch: this._launch ? Object.assign({}, this._launch) : null,
       segments: this.segments.diagnostics(),
     };
   }
@@ -758,6 +781,11 @@ class Collector extends EventEmitter {
         // 写进采样点才能让报告说清「这个 FPS 是怎么来的」，也才能统计通道命中率。
         data.fpsMethod = (fpsData && typeof fpsData === 'object' && fpsData.method)
           ? String(fpsData.method) : null;
+        // 本拍 FrameTimeline 卡顿归因（timestats 里自带，零额外 adb 开销）。
+        // 只有 timestats 通道给得出；其它通道 / 计数器重置写 null（不补 0）。
+        data.jankAttr = (fpsData && typeof fpsData === 'object'
+          && fpsData.jankAttr && typeof fpsData.jankAttr === 'object')
+          ? fpsData.jankAttr : null;
       }
       // FIX-01（schema v4）：静置 / 低频渲染的单点兜底。
       // 「1 帧/秒」是真实测到的信息，fps 保留；但 1s 采样窗口里的一帧撑不起
@@ -769,6 +797,8 @@ class Collector extends EventEmitter {
       if (mc.fps && !fpsNoData && isLowActivity(data.fps, data.ftP50)) {
         for (const k of FRAME_STAT_KEYS) data[k] = null;
         data.fpsMethod = 'low-activity';
+        // 归因同理：1 帧的「卡顿构成」没有统计意义，一并清空
+        data.jankAttr = null;
       }
       if (mc.net) {
         data.net = val.net || { rxKBps: null, txKBps: null, netScope: null, netSource: null };

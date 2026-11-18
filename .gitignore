@@ -60,6 +60,10 @@ release/*.zip
 # 交付目录整体不入库：内含 app.asar（1.7MB）+ 报告模板 + 说明文档，
 # 这些都是构建产物，源码在 _client_src/ 与 perfara/collector/resources/ 里已有
 release/交付_*/
+# 真机测试临时解包目录与取证 dump：含真机序列号/包名/SSID，且解包产物 400MB+，
+# 绝不能进公开仓库；源码与测试资产在别处，这些只是本地验证现场。
+release/_unpacked_*/
+release/_sensor_audit_*/
 # 根目录散落的过程截图（各阶段验证用，归档在 F 盘）
 /*.png
 

@@ -724,7 +724,7 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
     // 进程活着还不够：必须在**前台**才有可见图层可供取帧，否则整段 FPS 都是 null
     if (await isAppForeground(deviceId, packageName)) {
       log(`[adb] 应用已在前台运行，无需启动 (PID=${pid})`);
-      return { ok: true, launched: false, pid };
+      return { ok: true, launched: false, pid, launch: null };
     }
     log(`[adb] 应用在后台运行 (PID=${pid})，切到前台以便取帧`);
   } else {
@@ -739,23 +739,44 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
   const comp = await resolveLauncherComponent(deviceId, packageName);
   if (comp) log(`[adb] Launcher 组件: ${comp}`);
   const attempts = [];
-  if (comp) attempts.push(['am start -n', `am start -n ${shellArg(comp)} 2>&1`]);
+  // 冷启动耗时只在「进程原本不存在」时才有意义：进程活着时 am start 只是把
+  // 已有任务带到前台，TotalTime 只有几十毫秒，标成冷启动会严重低估。
+  // -W 让 am 等到首屏绘制完成再返回，顺带输出 LaunchState / TotalTime，
+  // 等于零成本拿到冷启动指标 —— 但它也会**一直等**首帧：设备忙 / 熄屏 / 首屏慢时
+  // 会拖到 adb 超时（真机实测熄屏状态下 start() 被拖到 17.9s，第一个样本迟迟不出）。
+  // 所以：① 只给带 -W 的这一轮短超时；② 一旦这轮结束，后面的兜底路径都不再带 -W。
+  // 代价最多是丢掉「冷启动耗时」这一个指标，绝不能让整轮采集卡在启动阶段。
+  const WAIT_TIMEOUT_MS = 4000;
+  let useWait = !hadProcess;
+  if (comp) attempts.push(['am start -n', (w) => `am start${w} -n ${shellArg(comp)} 2>&1`, true]);
   attempts.push(
-    ['am start -p', `am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p ${pkg} 2>&1`],
-    ['monkey', `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`],
+    ['am start -p', (w) => `am start${w} -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p ${pkg} 2>&1`, true],
+    ['monkey', () => `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`, false],
   );
 
   /** 本次尝试是否明确报「解析不到入口」 */
   const isNoEntry = (s) => /unable to resolve|No activity found|Error type 3|not found|No activities found to run/i.test(s);
   let noEntryCount = 0;
+  /** 最近一次 am start -W 解析出的启动计时（monkey 路径没有） */
+  let launch = null;
 
-  for (const [label, cmd] of attempts) {
+  for (const [label, build, canWait] of attempts) {
+    const w = (useWait && canWait) ? ' -W' : '';
+    const cmd = build(w);
     let out = '';
     try {
-      out = await adbShell(deviceId, cmd, 10000);
+      out = await adbShell(deviceId, cmd, w ? WAIT_TIMEOUT_MS : 10000);
     } catch (e) {
       // execFile 在退出码非 0 时 reject，错误信息里带着设备端输出
       out = String((e && e.message) || '');
+    }
+    if (launch == null) launch = parseAmStartTimings(out);
+    // 带 -W 的这一轮结束就收起 -W：拿到了计时（正常）或没拿到（超时/被 kill）都不该再等一次
+    if (w) {
+      if (launch == null) {
+        log(`[adb] ${label}: -W 未在 ${WAIT_TIMEOUT_MS}ms 内返回，放弃启动计时（不影响采集）`);
+      }
+      useWait = false;
     }
     const noEntry = isNoEntry(out);
     // 累计计数，**不要**在非 noEntry 时清零：
@@ -782,10 +803,12 @@ async function ensureAppRunning(deviceId, packageName, logFn) {
         // 会让采集白白晚 5 秒才开始，日志也误导成「应用已启动」。
         if (hadProcess) {
           log(`[adb] 应用已切换到前台 (PID=${pid})`);
-          return { ok: true, launched: false, switched: true, pid };
+          return { ok: true, launched: false, switched: true, pid, launch: null };
         }
-        log(`[adb] 应用已启动 (PID=${pid})`);
-        return { ok: true, launched: true, pid };
+        log(`[adb] 应用已启动 (PID=${pid})`
+          + (launch && launch.totalTimeMs != null
+            ? `，${launch.state || '启动'} 耗时 ${launch.totalTimeMs}ms` : ''));
+        return { ok: true, launched: true, pid, launch: launch };
       }
     }
   }
@@ -1853,6 +1876,68 @@ function gfxTotalDelta(out, key, now, log) {
            jankRate: null, method: 'gfxinfo-delta' };
 }
 
+/**
+ * timestats「Jank payload for this layer」字段 → FrameTimeline jankType 名称。
+ *
+ * 真机实测（Android 13 / 14）这个区块就在每个 layer 的 totalFrames 之后：
+ *   Jank payload for this layer:
+ *     totalTimelineFrames = 122
+ *     jankyFrames = 0
+ *     sfLongCpuJankyFrames = 0
+ *     sfLongGpuJankyFrames = 0
+ *     sfUnattributedJankyFrames = 0
+ *     appUnattributedJankyFrames = 0
+ *     sfSchedulingJankyFrames = 0
+ *     sfPredictionErrorJankyFrames = 0
+ *     appBufferStuffingJankyFrames = 0
+ *
+ * 这是 SurfaceFlinger 的 FrameTimeline 归因（与 Perfetto 里读出来的是同一份数据），
+ * 关键的是：**它已经在我们每拍必跑的 `--timestats -dump` 输出里** ——
+ * 拿它做归因不需要任何额外 adb 调用，也不像 gfxinfo framestats 那样会重置帧缓冲。
+ * 全部字段都是累计计数，每拍必须取差（见 jankAttrDelta）。
+ */
+const JANK_TS_FIELDS = {
+  appUnattributedJankyFrames: 'AppDeadlineMissed',
+  appBufferStuffingJankyFrames: 'BufferStuffing',
+  sfLongCpuJankyFrames: 'SurfaceFlingerCpuDeadlineMissed',
+  sfLongGpuJankyFrames: 'SurfaceFlingerGpuDeadlineMissed',
+  sfSchedulingJankyFrames: 'SurfaceFlingerScheduling',
+  sfPredictionErrorJankyFrames: 'PredictionError',
+  sfUnattributedJankyFrames: 'Unknown',
+};
+/** 归因区块里的两个总量（下划线前缀＝元数据，报告层不当成 jank 类型渲染） */
+const JANK_TS_META = {
+  totalTimelineFrames: '_frames',
+  jankyFrames: '_total',
+};
+
+/**
+ * 两次 timestats 归因快照取差。
+ *
+ * 计数器是累计值；任一字段变小 = 图层换名/被重建/timestats 被 -clear 重置，
+ * 说明这一拍的差值没有意义 → 返回 null（未测量），绝不把「重置后的绝对值」当增量。
+ */
+function jankAttrDelta(prev, curr) {
+  if (!prev || !curr) return null;
+  const raw = {};
+  for (const k of Object.keys(curr)) {
+    const a = prev[k];
+    const b = curr[k];
+    if (typeof a !== 'number' || typeof b !== 'number') return null;
+    const d = b - a;
+    if (d < 0) return null;
+    raw[k] = d;
+  }
+  if (!Object.keys(raw).length) return null;
+  // 只保留「窗口帧数 / 卡顿帧数」与真正发生过的类型：43200 点 × 9 个恒 0 的键
+  // 会白占约 8 MB 内存，也会把报告 data.js 撑大。缺键 = 0，聚合时按缺省处理。
+  const out = {};
+  for (const k of Object.keys(raw)) {
+    if (k.charAt(0) === '_' || raw[k] > 0) out[k] = raw[k];
+  }
+  return out;
+}
+
 async function getFps(deviceId, packageName, logFn, intervalMs = 1000, actualIntervalMs = null) {
   // FIX-17：framestats 窗口过期判定用「上一拍实际周期」（门闩跳过重叠 / 设备
   // 休眠会让实际周期远大于配置值），配置 intervalMs 仅作首拍缺省。
@@ -1889,6 +1974,9 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000, actualInt
     let inLayer = false, layerTag = '';
     let totalFrames = -1, droppedFrames = 0, averageFPS = 0;
     let present2presentHist = null;
+    // timestats 自带的 FrameTimeline 归因（累计值，见 JANK_TS_FIELDS）
+    let jankRaw = null;
+    let inJankPayload = false;
     // 最近读到的 displayRefreshRate：timestats 在每个 layer 块之前输出所属显示的刷新率，
     // 这是判定 vsync 的唯一可信来源（详见 detectVsync 注释）。
     let lastRefreshRate = 0, layerRefreshRate = 0;
@@ -1909,9 +1997,25 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000, actualInt
         layerTag = line;
         layerRefreshRate = inLayer ? lastRefreshRate : 0;
         totalFrames = -1; droppedFrames = 0; averageFPS = 0; present2presentHist = null;
+        jankRaw = null; inJankPayload = false;
         continue;
       }
       if (!inLayer) continue;
+
+      // ── FrameTimeline 归因区块（累计计数，见 JANK_TS_FIELDS）──────────────
+      // 位置固定在 totalFrames 一组字段之后；只在本图层块内解析。
+      if (line === 'Jank payload for this layer:') { inJankPayload = true; continue; }
+      if (inJankPayload) {
+        const jm = line.match(/^([A-Za-z][\w]*)\s*=\s*(\d+)$/);
+        const mapped = jm ? (JANK_TS_FIELDS[jm[1]] || JANK_TS_META[jm[1]]) : null;
+        if (mapped) {
+          if (!jankRaw) jankRaw = {};
+          jankRaw[mapped] = parseInt(jm[2], 10);
+          continue;
+        }
+        // 该区块结束：后续字段（含另一个 "Jank payload" 的汇总块）不再当本图层归因
+        inJankPayload = false;
+      }
 
       const num = (field) => { const m = line.match(new RegExp(`${field}\\s*=\\s*([\\d.]+)`)); return m ? +m[1] : null; };
 
@@ -1924,7 +2028,8 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000, actualInt
     }
 
     if (inLayer && totalFrames >= 0) {
-      const currState = { totalFrames, droppedFrames, hist: present2presentHist, ts: now, mono, rr: layerRefreshRate };
+      const currState = { totalFrames, droppedFrames, hist: present2presentHist,
+        jank: jankRaw, ts: now, mono, rr: layerRefreshRate };
       _fpsState.set(key, currState);
 
       if (prev && prev.totalFrames !== undefined) {
@@ -1992,6 +2097,8 @@ async function getFps(deviceId, packageName, logFn, intervalMs = 1000, actualInt
           fps,
           jank, bigJank, smallJank, tinyJank,
           jankRate, method: 'timestats',
+          // 本周期（差分后）的 FrameTimeline 归因；计数器重置 / 首次采样时为 null
+          jankAttr: jankAttrDelta(prev.jank, jankRaw),
           ...fstats,
         };
       }
@@ -2280,6 +2387,28 @@ function parseMaxSupportedFps(text) {
 }
 
 /**
+ * D-21（2026-11-17 真机）：把「声明的峰值刷新率」钳到面板物理能力（supportedModes 最大 fps）。
+ *
+ * `PRIORITY_USER_SETTING_PEAK_REFRESH_RATE -> Vote{maxRefreshRate=120}` 是 framework 的
+ * **范围上限 vote**（`mDisplayModeSpecs primaryRefreshRateRange=[0 120]`），不是面板真实能力：
+ * 120Hz 面板机上恰好等于面板能力，60Hz 面板机上却虚高 2 倍。只有 supportedModes 的 fps
+ * 才是硬件真实支持的档位。因此任何来源取到的 hz 都要受 panelCap 约束：
+ *   - hz ≤ panelCap×1.1（容 120.00001 之类浮点噪声）→ 保持原值与来源；
+ *   - hz > panelCap×1.1 → 判为 framework vote 虚高，回退 panelCap，来源标 display-supported-modes。
+ *
+ * 纯函数，便于离线断言（不依赖真机）。
+ */
+function capRefreshRateToPanel(hz, panelCap) {
+  const claimed = Number(hz);
+  const cap = Number(panelCap);
+  if (!Number.isFinite(claimed) || claimed <= 0) return { hz: null, source: null, capped: false };
+  // 读不到 supportedModes（定制 ROM 不给 dump）：无法判定虚高，保留声明值
+  if (!Number.isFinite(cap) || cap <= 0) return { hz: claimed, source: null, capped: false };
+  if (claimed > cap * 1.1) return { hz: cap, source: 'display-supported-modes', capped: true };
+  return { hz: claimed, source: null, capped: false };
+}
+
+/**
  * 1.1 目标帧率的唯一可信来源是设备自报的峰值刷新率，而不是 FPS 序列 P95。
  * 锁 30fps 的应用会把 P95 推成 30，但屏幕其实是 120Hz —— 用推断值当目标
  * 会把「主动限帧」误判成「达标」。两路都读不到时返回 null，报告回退旧推断并标注。
@@ -2288,27 +2417,42 @@ async function getDeviceRefreshRate(deviceId) {
   const key = String(deviceId || '');
   if (_refreshRateCache.has(key)) return _refreshRateCache.get(key);
   const result = { hz: null, source: null };
-  // D-19（2026-11-15 真机）：顺序反过来 —— `settings get system peak_refresh_rate`
-  // 是用户实际设置，比 `dumpsys display` 里的内部状态更贴近「这块屏按多少刷新」。
+  // D-21（2026-11-17）：先读一次 dumpsys display，同时拿到两样东西——
+  //   ① supportedModes 最大 fps = 面板物理能力（panelCap，硬上界）；
+  //   ② framework 的峰值 vote（parsePeakRefreshRate），供 settings 缺失时兜底。
+  // 无论最终用哪个来源，都要经 capRefreshRateToPanel 用 panelCap 钳一遍，
+  // 防止 60Hz 面板机被 framework vote 报成 120Hz。
+  let displayDump = '';
+  let panelCap = null;
+  try {
+    displayDump = await adbShell(deviceId, 'dumpsys display 2>/dev/null');
+    panelCap = parseMaxSupportedFps(displayDump);
+  } catch (_) { /* 定制 ROM 可能不给 display dump：panelCap=null，退回仅用声明值 */ }
+
+  const accept = (hz, source) => {
+    const capped = capRefreshRateToPanel(hz, panelCap);
+    if (capped.hz != null) {
+      result.hz = capped.hz;
+      result.source = capped.capped ? capped.source : source;
+    }
+  };
+
+  // D-19（2026-11-15 真机）：`settings get system peak_refresh_rate` 是用户实际设置，
+  // 比 dumpsys display 里的内部状态更贴近「这块屏按多少刷新」——但仍受 panelCap 约束。
   try {
     const out2 = await adbShell(deviceId, 'settings get system peak_refresh_rate 2>/dev/null');
     const v = parseFloat(String(out2 || '').trim());
-    if (Number.isFinite(v) && v >= 24 && v <= 480) {
-      result.hz = v; result.source = 'settings-system';
-    }
+    if (Number.isFinite(v) && v >= 24 && v <= 480) accept(v, 'settings-system');
   } catch (_) { /* 权限不足：继续看 dumpsys */ }
-  let displayDump = '';
-  if (result.hz == null) {
-    try {
-      displayDump = await adbShell(deviceId, 'dumpsys display 2>/dev/null');
-      const hz = parsePeakRefreshRate(displayDump);
-      if (hz != null) { result.hz = hz; result.source = 'dumpsys-display'; }
-    } catch (_) { /* 定制 ROM 可能不给 display dump */ }
+
+  // settings 取不到时，用 dumpsys display 的峰值 vote 兜底（同样受 panelCap 约束）
+  if (result.hz == null && displayDump) {
+    const hz = parsePeakRefreshRate(displayDump);
+    if (hz != null) accept(hz, 'dumpsys-display');
   }
   // 都取不到时用 supportedModes 的最大 fps 兜底（面板能力，不是当前模式）
-  if (result.hz == null && displayDump) {
-    const hz = parseMaxSupportedFps(displayDump);
-    if (hz != null) { result.hz = hz; result.source = 'display-supported-modes'; }
+  if (result.hz == null && panelCap != null) {
+    result.hz = panelCap; result.source = 'display-supported-modes';
   }
   _refreshRateCache.set(key, result);
   return result;
@@ -2554,6 +2698,78 @@ async function getBatteryInfo(deviceId) {
 //           → sysfs 具名机身/电池热区（老机型）→ dumpsys battery → 无数据。
 // 结温不丢弃，单独写入 cpuTemp / gpuTemp，供降频分析使用。
 
+/**
+ * mName 别名兜底表（仅用于老格式缺 mType、或厂商用了非标准 mType 时）。
+ *
+ * 全网取证（2026-11-17）：
+ *   - AOSP ThermalHAL 1.0/2.0 types.hal：mType 是强制枚举，mName 明确「not standardised」
+ *   - Samsung A52 5G / Tab A7 Lite（StackExchange 246774 实测）：AP/BAT/LRB/LRF/LRP/PA/SUBBAT
+ *   - MediaTek 平台（GitHub gist AndroidHQ254）：CPU/GPU/BATTERY/SKIN/POWER_AMPLIFIER/NPU
+ *   - 廉价国产平板：mName="test temperature sensor"（带空格，旧正则整行丢弃）
+ *   - bytescope.dev：mName 小写 battery 实例
+ *   - 本机真机 <DEVICE_SERIAL>：AP=0 / BAT=2 / LRB,LRF,LRP=3 / USB=4 / PA=5
+ * 结论：名字追不完，mType 才是跨品牌稳定的分类依据；别名表只做兜底。
+ */
+const THERMAL_NAME_ALIAS = Object.freeze({
+  // 电池 / 机身主值
+  BATTERY: 'battery', BAT: 'battery', BATT: 'battery',
+  SUBBAT: 'battery', SUBBATRAW: 'battery', BATTERY_TEMP: 'battery',
+  // 外壳 / 机身
+  SKIN: 'skin', LRB: 'skin', LRF: 'skin', LRP: 'skin',
+  SHELL: 'skin', CASE: 'skin', BACK: 'skin', PANEL: 'skin',
+  SURFACE: 'skin', BODY: 'skin', BOARD: 'skin', CHASSIS: 'skin',
+  // 结温：应用处理器
+  CPU: 'cpu', AP: 'cpu', SOC: 'cpu', APSS: 'cpu', MPSS: 'cpu',
+  // 结温：GPU
+  GPU: 'gpu', GPUTS: 'gpu', GPU0: 'gpu',
+  // 其它结温（不冒充机身温度，也不冒充 CPU 结温）
+  NPU: 'die', DSP: 'die', CDSP: 'die', ADSP: 'die', MODEM: 'die',
+  // 外围器件 / 明确非机身：不进主值
+  USB: 'peripheral', USB_PORT: 'peripheral', PA: 'peripheral',
+  POWER_AMPLIFIER: 'peripheral', WIFI: 'peripheral', WLAN: 'peripheral',
+  CAMERA: 'peripheral', DDR: 'peripheral', PMIC: 'peripheral',
+  CHARGER: 'peripheral',
+  // BCL 虚拟传感器：单位 mV / mA / %. 不是摄氏度
+  BCL_VOLTAGE: 'nonTemp', BCL_CURRENT: 'nonTemp', BCL_PERCENTAGE: 'nonTemp',
+});
+
+/**
+ * AOSP ThermalHAL mType → 语义类别。
+ *   1.0 types.hal: UNKNOWN=-1 CPU=0 GPU=1 BATTERY=2 SKIN=3
+ *   2.0 types.hal: 继承 1.0，追加 USB_PORT=4 POWER_AMPLIFIER=5
+ *                  BCL_VOLTAGE=6 BCL_CURRENT=7 BCL_PERCENTAGE=8 NPU=9
+ * 6/7/8 是电池充电限流虚拟量（mV/mA/%），绝不能当温度 —— 旧版只按
+ * 0<v<150 过滤，BCL_PERCENTAGE=80 会被当成 80°C 冒充机身温度。
+ * 例外：部分非标准 ROM 用 mType=8 标 BOARD 等真实机身传感器，
+ *       若 mName 明确命中别名表，则以 mName 为准（保持老机型兼容）。
+ */
+const THERMAL_TYPE_CATEGORY = Object.freeze({
+  0: 'cpu', 1: 'gpu', 2: 'battery', 3: 'skin',
+  4: 'peripheral', 5: 'peripheral',
+  6: 'nonTemp', 7: 'nonTemp', 8: 'nonTemp',
+  9: 'die',
+});
+
+/** 把一条 thermalservice 读数归入语义类别，供主值/分项取值共用。 */
+function classifyThermalRow(rawName, type) {
+  const key = String(rawName == null ? '' : rawName)
+    .trim().toUpperCase().replace(/[^A-Z0-9]/g, '_')
+    .replace(/_+/g, '_').replace(/^_|_$/g, '');
+  const byName = THERMAL_NAME_ALIAS[key];
+  const byType = type == null ? undefined : THERMAL_TYPE_CATEGORY[type];
+
+  if (byType === 'nonTemp') return byName && byName !== 'nonTemp' ? byName : 'nonTemp';
+  if (byType) return byType;
+  if (byName) return byName;
+
+  // 未知名字的保守兜底：先排除外围/非温度，再认语义关键词。
+  if (/(BATT|BATTERY)/.test(key)) return 'battery';
+  if (/(SKIN|SHELL|CASE|BACK|SURFACE|CHASSIS|BODY)/.test(key)) return 'skin';
+  if (/(CPU|APSS|SOC)/.test(key) || key === 'AP') return 'cpu';
+  if (/(GPU)/.test(key)) return 'gpu';
+  return 'unknown';
+}
+
 /** 芯片结温类传感器：不得作为主温度来源 */
 const DIE_TEMP_NAMES = new Set([
   'CPU', 'GPU', 'NPU', 'MODEM', 'DSP', 'BSP', 'CHARGER', 'WIFI', 'WLAN',
@@ -2652,25 +2868,21 @@ function parseThermalService(out) {
   else section = out;
 
   const rows = [];
-  // FIX-06：mStatus 必须一起捕获并过滤 —— mStatus!=0 表示该传感器已被
-  // 系统判定为异常 / 停用（真机实测：SKIN mStatus=3 时报 53.6°C，比机身
-  // 主值 43.0 还高，物理关系反常）。只保留 mStatus=0（正常）的温度行；
-  // 全部被滤掉时按现有回退链兜底（不要写 0 冒充实测）。
-  // mStatus 缺省（老 ROM 不输出该字段）视为 0，保持旧行为兼容。
-  const re = /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=([A-Z_]+),\s*mStatus=(\d+)\}/g;
-  const reNoStatus = /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=([A-Z_]+)\}/g;
+  // FIX-06：mStatus!=0 表示该传感器被系统判定异常 / 停用，必须过滤
+  // （真机实测 SKIN mStatus=3 报 53.6°C，比机身主值 43.0 还高，物理关系反常）。
+  // 兼容增强：mName 官方明确 "not standardised" —— 放行大小写 / 数字 / 空格，
+  // 避免 Samsung 的 AP/BAT/LRB 与国产 ROM 的 "test temperature sensor" 被整行丢弃。
+  // mType / mStatus 做成可选：老 ROM 精简格式仍能解析；mStatus 缺省视为 0；
+  // mValue=NaN（文档化的无读数哨兵）不匹配数值正则，自然跳过。
+  const re = /Temperature\{mValue=([-\d.]+)(?:,\s*mType=(-?\d+))?(?:,\s*mName=([^,}]+?))?(?:,\s*mStatus=(\d+))?\}/g;
   let m;
   while ((m = re.exec(section)) !== null) {
     const v = parseFloat(m[1]);
-    const st = parseInt(m[4], 10);
-    if (isFinite(v) && v > 0 && v < 150 && st === 0) rows.push({ value: v, name: m[3] });
-  }
-  if (!rows.length) {
-    // 兜底：输出完全不带 mStatus 字段（老格式）才走无状态正则
-    while ((m = reNoStatus.exec(section)) !== null) {
-      const v = parseFloat(m[1]);
-      if (isFinite(v) && v > 0 && v < 150) rows.push({ value: v, name: m[3] });
-    }
+    const type = m[2] == null ? null : parseInt(m[2], 10);
+    const name = (m[3] || '').trim();
+    const st = m[4] == null ? 0 : parseInt(m[4], 10);
+    if (!isFinite(v) || v <= 0 || v >= 150 || st !== 0) continue;
+    rows.push({ value: v, name, type, category: classifyThermalRow(name, type) });
   }
 
   // ADPF Thermal Status（0 NONE ~ 6 SHUTDOWN）：系统判定的节流等级，
@@ -2703,11 +2915,18 @@ function parseThermalService(out) {
     };
   }
 
-  const pick = (name) => rows.find((r) => r.name === name);
-  const skin = pick('SKIN');
-  const battery = pick('BATTERY');
-  const bodyRows = rows.filter((r) => BODY_TEMP_NAMES.has(r.name));
-  const nonDieRows = rows.filter((r) => !DIE_TEMP_NAMES.has(r.name));
+  const rowsOf = (cat) => rows.filter((r) => r.category === cat);
+  // 同一语义的多颗传感器（Samsung LRB/LRF/LRP 三颗外壳）取平均，比只取第一颗
+  // 更接近整机手感；mStatus!=0 的异常颗已在上面滤掉。
+  const skinRows = rowsOf('skin');
+  const batteryRows = rowsOf('battery');
+  const skin = skinRows.length ? { value: _avgRows(skinRows) } : null;
+  const battery = batteryRows.length ? { value: _avgRows(batteryRows) } : null;
+  const isRealTemp = (c) => c !== 'cpu' && c !== 'gpu' && c !== 'die'
+    && c !== 'peripheral' && c !== 'nonTemp' && c !== 'unknown';
+  const bodyRows = rows.filter((r) => isRealTemp(r.category)
+    && BODY_TEMP_NAMES.has(r.name) && r.category !== 'skin' && r.category !== 'battery');
+  const nonDieRows = rows.filter((r) => isRealTemp(r.category));
 
   // 电池热敏电阻是真实、稳定、最贴近手感的读数，优先于厂商算法估算的 SKIN
   let main, source;
@@ -2719,8 +2938,10 @@ function parseThermalService(out) {
   // 否则又会复现「手摸不热却 60 多度」。结温仍在 cpu/gpu 字段里完整保留。
   else                        { main = null;                 source = 'die'; }
 
-  const cpu = pick('CPU');
-  const gpu = pick('GPU');
+  const cpuRow = rows.find((r) => r.category === 'cpu');
+  const gpuRow = rows.find((r) => r.category === 'gpu');
+  const cpu = cpuRow ? { value: cpuRow.value } : null;
+  const gpu = gpuRow ? { value: gpuRow.value } : null;
   return {
     main: main == null ? null : _r1(main),
     source,
@@ -3107,6 +3328,201 @@ function resetDeviceState(deviceId) {
   }
 }
 
+// ─── 会话级指标：冷启动 / 帧归因 / 退出原因 ─────────────────────────────────
+//
+// 这三项都是「一轮采集只有一两个点」的会话级事实，不进 1Hz 主采样：
+//   - 冷启动：启动那一刻测一次（am start -W 的 TotalTime），之后不可能再测；
+//   - 帧归因：旁路取证触发时测一次（约 150ms），回答「这些帧为什么算卡」；
+//   - 退出原因：开始前取一次基线、保存报告时再取一次，差集就是本轮期间的
+//     ANR / 崩溃 / 被系统杀 —— 0 额外常态开销。
+// 全部失败即返回 supported=false 或 null，绝不编 0 冒充「没发生」。
+
+/**
+ * 解析 `am start -W` 的输出。
+ *
+ * 真机实测（Android 13）格式：
+ *   Starting: Intent { cmp=... }
+ *   Status: ok
+ *   LaunchState: COLD
+ *   Activity: ...
+ *   TotalTime: 757
+ *   WaitTime: 760
+ *   Complete
+ *
+ * TotalTime 是「从 startActivityAndWait 到首帧上屏」的毫秒数，就是业界口径的
+ * 冷启动耗时；LaunchState 区分 COLD/WARM/HOT —— 没有它就无法证明这是冷启动
+ *（应用进程已存在时 TotalTime 只有几十毫秒，直接当冷启动会严重低估）。
+ * 解析不到（老 ROM 不认 -W）返回 null，调用方按「未测量」处理。
+ */
+function parseAmStartTimings(out) {
+  const text = String(out == null ? '' : out);
+  const state = (text.match(/LaunchState:\s*([A-Z_]+)/) || [])[1] || null;
+  const total = (text.match(/TotalTime:\s*(\d+)/) || [])[1];
+  const wait = (text.match(/WaitTime:\s*(\d+)/) || [])[1];
+  if (!state && total == null) return null;
+  const n = (v) => (v == null ? null : parseInt(v, 10));
+  return { state: state, totalTimeMs: n(total), waitTimeMs: n(wait) };
+}
+
+/**
+ * 从 `dumpsys gfxinfo <pkg> framestats` 里取出 FLAGS 列（纯数字数组）。
+ *
+ * 输出形如：
+ *   ---PROFILEDATA---
+ *   Flags,FrameTimelineVsyncId,...,FrameCompleted,
+ *   1,207390689,...
+ *   ---PROFILEDATA---
+ *   ...（可能还有第二个窗口的同样的两段）
+ *
+ * ⚠️ 真机实测（Android 14 / ColorOS）**一段输出里会有多个 PROFILEDATA 区块**
+ *（多窗口/多 ViewRootImpl 各一段，实测第一段 3 行、第二段 120 行）。只读第一段
+ * 会拿到 3 帧，把「120 帧里卡了 7 帧」读成「3 帧里卡了 1 帧」。所以按
+ * `---PROFILEDATA---` 成对开关、把所有区块的行合并（与 parseFramestats 同口径）。
+ *
+ * 只做「取数」，位掩码语义在 trace-capture 的 countJankTypes 里翻译 ——
+ * 避免同一张语义表在两个模块各写一份（项目里已有一类双实现漂移的教训）。
+ *
+ * @returns {{total:number, flags:number[]}}
+ */
+function parseFramestatsFlags(out) {
+  const lines = String(out == null ? '' : out).split(/\r?\n/);
+  const flags = [];
+  let inSection = false;
+  for (let i = 0; i < lines.length; i++) {
+    // 区块标记可能与后续内容同处一行（真机见过 `---PROFILEDATA---com.x/...`）
+    if (lines[i].indexOf('---PROFILEDATA---') >= 0) { inSection = !inSection; continue; }
+    if (!inSection) continue;
+    const t = lines[i].trim();
+    if (!t) continue;
+    if (/^Flags/i.test(t)) continue;      // 表头：列名/列数随 ROM 变化，只认首列
+    const first = t.split(',')[0];
+    const v = Number(first);
+    // 非数据行（View hierarchy 标题、空行等）直接跳过，不当作数据段结束
+    if (!Number.isFinite(v) || v < 0) continue;
+    flags.push(v | 0);
+    // 帧窗口上限（gfxinfo 每个窗口约 120 帧，多窗口合并后留 3 倍余量）
+    if (flags.length >= 360) break;
+  }
+  return { total: flags.length, flags: flags };
+}
+
+/**
+ * 帧归因快照：读一次 gfxinfo framestats 的 FLAGS 列。
+ *
+ * ⚠️ 这是**旁路**用途，绝不在 1Hz 主采样里调用：`dumpsys gfxinfo` 会重置帧统计
+ * 缓冲区，若采集正在走 framestats/gfxinfo 通道，多插一次会让那一拍的帧数变少。
+ * 调用方（main.js）在 fpsMethod 命中这两条通道时直接跳过，并如实标注。
+ */
+async function getJankSnapshot(deviceId, packageName) {
+  if (!deviceId || !packageName) return { ok: false, reason: 'no-args' };
+  try {
+    const cmd = `dumpsys gfxinfo ${shellArg(packageName)} framestats 2>/dev/null`;
+    const out = await adbShell(deviceId, cmd, DUMPSYS_TIMEOUT_MS);
+    const parsed = parseFramestatsFlags(out);
+    if (!parsed.total) return { ok: false, reason: 'no-frames' };
+    return { ok: true, source: 'gfxinfo-framestats', total: parsed.total, flags: parsed.flags };
+  } catch (_) {
+    return { ok: false, reason: 'shell-failed' };
+  }
+}
+
+/**
+ * 解析 `dumpsys activity exit-info <pkg>`（纯函数）。
+ *
+ * 真机实测（Android 13，SDK 33）格式：
+ *   ACTIVITY MANAGER PROCESS EXIT INFO (dumpsys activity exit-info)
+ *     package: com.example.app
+ *       Historical Process Exit for uid=10250
+ *           ApplicationExitInfo #0:
+ *             timestamp=2026-11-16 17:59:46.536 pid=22600 realUid=...
+ *             process=com.example.app reason=10 (USER REQUESTED) subreason=21 (FORCE STOP) status=0
+ *             importance=300 pss=0.00 rss=0.00 description=... state=empty trace=null
+ *
+ * Android 11（SDK 30）起才有这个命令；更老的设备输出里没有区块标题，
+ * 这里返回 supported=false，由上层显示「本机不支持」，而不是显示 0 次 ANR。
+ */
+function parseExitInfo(out) {
+  const text = String(out == null ? '' : out);
+  const entries = [];
+  if (!/ACTIVITY MANAGER PROCESS EXIT INFO/i.test(text)) {
+    return { supported: false, entries: entries };
+  }
+  const blocks = text.split(/ApplicationExitInfo\s*#\d+\s*:/).slice(1);
+  for (const b of blocks) {
+    const ts = (b.match(/timestamp=(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/) || [])[1] || null;
+    const pid = (b.match(/\bpid=(\d+)/) || [])[1];
+    const proc = (b.match(/\bprocess=(\S+)/) || [])[1] || null;
+    const rm = b.match(/\breason=(\d+)\s*\(([^)]*)\)/);
+    const sub = b.match(/\bsubreason=(\d+)\s*\(([^)]*)\)/);
+    const desc = (b.match(/\bdescription=([\s\S]*?)(?:\s+state=|$)/) || [])[1];
+    entries.push({
+      // 时间戳 + pid 足够唯一：同进程反复重启也会有不同 pid
+      key: (ts || '') + '#' + (pid || ''),
+      timestamp: ts,
+      pid: pid ? parseInt(pid, 10) : null,
+      process: proc,
+      reasonCode: rm ? parseInt(rm[1], 10) : null,
+      reasonLabel: rm ? rm[2].trim() : null,
+      subreasonCode: sub ? parseInt(sub[1], 10) : null,
+      subreasonLabel: sub ? sub[2].trim() : null,
+      description: desc ? desc.trim() : null,
+    });
+    if (entries.length >= 64) break; // 系统自身也按 64 条上限保留
+  }
+  return { supported: true, entries: entries };
+}
+
+// ApplicationExitInfo.REASON_*（android.app.ApplicationExitInfo，API 30+）
+const EXIT_REASON_ANR = 6;
+const EXIT_REASON_CRASH = 4;
+const EXIT_REASON_CRASH_NATIVE = 5;
+
+/**
+ * 本轮期间的退出事件统计。
+ *
+ * baselineKeys 是开始采集前的快照 keys：用「差集」而不是时间戳比较 ——
+ * 设备时间戳是设备本地时区，PC 端按秒对齐会错杀（跨时区 / 设备时间不准）。
+ *
+ * 只统计被测应用**自身进程**（process 等于包名或以 `包名:` 开头）：
+ * exit-info 会把 WebView 沙箱等子进程一起列出来，它们被系统回收是常态，
+ * 计进「其它退出」会让报告看起来像应用频繁被杀。
+ */
+async function getAppExitInfo(deviceId, packageName, baselineKeys) {
+  const base = new Set(Array.isArray(baselineKeys) ? baselineKeys : []);
+  const unsupported = {
+    supported: false, anr: 0, crash: 0, nativeCrash: 0, other: 0,
+    total: 0, entries: [], keys: [],
+  };
+  if (!deviceId || !packageName) return unsupported;
+  try {
+    const cmd = `dumpsys activity exit-info ${shellArg(packageName)} 2>/dev/null`;
+    const out = await adbShell(deviceId, cmd, DUMPSYS_TIMEOUT_MS);
+    const parsed = parseExitInfo(out);
+    if (!parsed.supported) return unsupported;
+    const keys = parsed.entries.map((e) => e.key);
+    const fresh = parsed.entries.filter((e) => !base.has(e.key));
+    const own = fresh.filter((e) => e.process === packageName
+      || String(e.process || '').indexOf(packageName + ':') === 0);
+    const counts = { anr: 0, crash: 0, nativeCrash: 0, other: 0 };
+    for (const e of own) {
+      if (e.reasonCode === EXIT_REASON_ANR || /^ANR$/i.test(String(e.reasonLabel || ''))) counts.anr += 1;
+      else if (e.reasonCode === EXIT_REASON_CRASH) counts.crash += 1;
+      else if (e.reasonCode === EXIT_REASON_CRASH_NATIVE) counts.nativeCrash += 1;
+      else counts.other += 1;
+    }
+    return {
+      supported: true,
+      anr: counts.anr, crash: counts.crash,
+      nativeCrash: counts.nativeCrash, other: counts.other,
+      total: own.length,
+      entries: own.slice(0, 20),
+      keys: keys,
+    };
+  } catch (_) {
+    return unsupported;
+  }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
@@ -3152,6 +3568,8 @@ module.exports = {
   getDirectStats,
   getDeviceRefreshRate,
   getCpuCoreStats, captureScreen,
+  // 会话级：冷启动 / 帧归因 / 退出原因（ANR、崩溃）
+  getJankSnapshot, getAppExitInfo,
   preflightCheck, probeChannel,
   resetDeviceState, connectWifi, autoConnectWifi, disconnectWifi,
   reverseTcp, removeReverse, listReverses, pushFile,
@@ -3166,16 +3584,23 @@ module.exports = {
     selectFramestatsWindow, FRAMESTATS_MAX_GAP_FACTOR,
     normalizeBatteryVoltageMv, normalizeCurrentMa,
     normalizeThermalSysfsTemp,
+    // 温度传感器跨品牌统一归类：mType 权威 + mName 别名兜底
+    classifyThermalRow, THERMAL_NAME_ALIAS, THERMAL_TYPE_CATEGORY,
     parsePidStat, pairCoreUsage,
     // 采集口径纯函数：整机/单核 CPU、meminfo 分项、电池单位、网络接口白名单
     calcCpuPct, parseMemInfoSections, parseBatteryDump, isMeteredIface,
-    parseQtaguidStats, parseNetstatsUid, parsePeakRefreshRate, parseMemLite,
+    parseQtaguidStats, parseNetstatsUid, parsePeakRefreshRate, parseMaxSupportedFps,
+    capRefreshRateToPanel, parseMemLite,
     nearestRank, frameStatsFromBuckets, pickFrameStats,
     parseGpuBusyCounters, gpuBusyDeltaPct, interpretGpuProbe,
     // FIX-08：GPU 探针脚本生成 / head -v 分节解析（离线用例锁定格式）
     buildGpuProbeScript, splitProbeOutput, gpuPathToTag,
     // FIX-09：thermal sysfs 单次读脚本 / type+temp 配对解析
     buildThermalSysfsScript, parseThermalSysfsDump,
+    // 会话级指标的纯解析器（离线用例直接喂真机样本）
+    parseAmStartTimings, parseFramestatsFlags, parseExitInfo,
+    // timestats 自带 FrameTimeline 归因：字段表 + 差分（累计计数 → 本拍增量）
+    JANK_TS_FIELDS, JANK_TS_META, jankAttrDelta,
     MOVIE_FRAME_X1_MS, MOVIE_FRAME_X2_MS, MOVIE_FRAME_X3_MS, EMPTY_FRAME_STATS,
     // 时间基准：所有速率类 dt 必须用单调时钟（墙钟回拨会放大速率）
     monoMs,

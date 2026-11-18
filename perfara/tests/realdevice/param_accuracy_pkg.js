@@ -363,7 +363,8 @@ requestAnimationFrame(frame);
   check('fps 有效率 ≥ 80%', perf.length > 0 && fpsPts.length / perf.length >= 0.8,
     (fpsPts.length / Math.max(1, perf.length)).toFixed(3));
   check('无 fps=0 的假值（未测量应为 null）', perf.every(p => p.fps !== 0), perf.filter(p => p.fps === 0).length);
-  check('schemaVersion = 7', Number(data.schemaVersion) === 7, data.schemaVersion);
+  check('schemaVersion = 9（跨品牌温度归类口径已版本化）',
+    Number(data.schemaVersion) === 9, data.schemaVersion);
 
   // B. 刷新率 / 目标帧率
   // 三路独立来源：用户设置、支持模式列表、SurfaceFlinger 自己报的 displayRefreshRate
@@ -540,11 +541,15 @@ requestAnimationFrame(frame);
     const shown1Low = parseFloat(kpi.oneLow);
 
     if (shownTarget && Number.isFinite(shownFps)) {
-      // 报告页的均值已剔除加载段，用页面自己显示的均值反推才可比（±0.6 吸收取整）
+      // 报告页的均值已剔除加载段，用页面自己显示的均值反推才可比。
+      // 容差 = ±0.6（页面自身取整） + 显示 FPS ±0.5 的取整传导
+      //   （截图显示 FPS 取整到整数，57.5→57 时 57.5/60 与 57/60 差 0.83%，
+      //     ×.5 边界会超过原 ±0.6 容差；目标 60Hz 时传导上限 = 100/60*0.5≈0.83）。
       const expectReach = (shownFps / shownTarget) * 100;
-      check('达帧率 = 平均FPS ÷ 目标 × 100（±0.6，显示值取整）',
-        Number.isFinite(shownReach) && Math.abs(shownReach - expectReach) <= 0.6,
-        { shownReach, expect: +expectReach.toFixed(1) });
+      const reachTol = 0.6 + (100 / shownTarget) * 0.5;
+      check('达帧率 = 平均FPS ÷ 目标 × 100（±容差，显示值取整）',
+        Number.isFinite(shownReach) && Math.abs(shownReach - expectReach) <= reachTol,
+        { shownReach, expect: +expectReach.toFixed(1), tol: +reachTol.toFixed(2) });
       check('均帧 = 1000 ÷ 平均FPS（±8%）',
         Number.isFinite(shownFt) && Math.abs(shownFt - 1000 / shownFps) / (1000 / shownFps) <= 0.08,
         { shownFt, expect: +(1000 / shownFps).toFixed(1) });

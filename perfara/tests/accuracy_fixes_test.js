@@ -250,10 +250,13 @@ console.log('\n-- FIX-09（P2）：thermal sysfs 单次读 + 配对 --');
 
 console.log('\n-- 口径版本（FIX-02 随工单第 4 节）--');
 {
-  // v7：D-19（刷新率取错字段）/ D-20（data.js 缺 loading 段）/ 非标档位加上界，
-  // 三者都改变目标帧率与达帧率，已版本化
-  check('V1 SCHEMA_VERSION 已升到 7', Schema.checkSchema('7').comparable === true
+  // v7：D-19（刷新率取错字段）/ D-20（data.js 缺 loading 段）/ 非标档位加上界；
+  // v8：D-21（60Hz 面板机被 framework vote 误报成 120Hz，受面板能力约束）。
+  // 都改变目标帧率与达帧率，已版本化
+  check('V1 SCHEMA_VERSION 已升到 9', Schema.SCHEMA_VERSION === '9'
+    && Schema.checkSchema('9').comparable === true
     && Schema.checkSchema('3').level === 'mismatch', Schema.checkSchema('3'));
+  check('V1b D-21：v7 报告已被判不可直接对比', Schema.checkSchema('7').comparable === false);
   const defs = Schema.metricDefinitions();
   const jr = defs.find((d) => d.key === 'jankyRatio');
   check('V2 jankyRatio 说明改为「相对实际帧节奏」', !!jr && /实际帧节奏/.test(jr.note || ''), jr && jr.note);

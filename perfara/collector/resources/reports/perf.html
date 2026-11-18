@@ -613,7 +613,7 @@ body { overflow-x: hidden; }
     fpsMin: { t: 'FPS 最低', u: '帧/s',
       d: '整段测试中的最小帧率值。',
       h: '取所有采样点 FPS 的最小值。',
-      g: '看最差时刻跌到多少；单点极低值通常与加载、切换、GC 等瞬时事件相关。' },
+      g: '看最差时刻跌到多少；单点极低值通常与加载、页面切换或调度波动等瞬时事件相关。' },
     fpsstd: { t: '帧率标准差', u: '帧/s',
       d: 'FPS 相对自身均值的离散程度。',
       h: '对整段 FPS 求标准差。',
@@ -621,7 +621,8 @@ body { overflow-x: hidden; }
     reach: { t: '达帧率', u: '%',
       d: '平均帧率相对目标帧率的达成比例。',
       h: '平均 FPS ÷ 目标帧率 × 100%。',
-      g: '≥95% 优秀，80%~95% 一般，低于 80% 需要优化渲染或主线程。' },
+      g: '≥95% 达标较充分，80%~95% 有掉帧，低于 80% 需结合逐帧指标与卡顿归因定位'
+        + '（渲染耗时、GPU、温控都可能，达帧率低本身不指向具体原因）。' },
     frametime: { t: '均帧 Avg(FTime)', u: 'ms',
       d: '平均每帧耗时，即每一帧从开始到呈现在屏幕上的平均时间。',
       h: '对 FPS > 0 的采样点计算 1000 / FPS，再取算术平均。',
@@ -639,9 +640,10 @@ body { overflow-x: hidden; }
       h: '统计 FPS < 目标帧率 × 0.8 的采样点数 ÷ 总采样点数。',
       g: '超过 10% 表示明显不达标；可在曲线上框选这些区间定位具体场景。' },
     onelow: { t: '1%Low', u: '帧/s',
-      d: '最慢的 1% 帧的平均帧率，代表场景中最差时刻的流畅度。',
-      h: '取帧耗时最长的 1% 采样点，求平均帧耗时后用 1000 折算回帧率。',
-      g: '比平均 FPS 更贴近主观卡顿感受，一般要求 ≥ 目标帧率的 85%。' },
+      d: '最慢的 1% 采样点的平均帧率，反映采样周期内的最差时段。',
+      h: '取帧耗时最长的 1% 采样点（每点约 1 秒），求平均帧耗时后用 1000 折算回帧率。',
+      g: '⚠ 口径：这是秒级采样点口径，不是行业的逐帧 1% Low（PresentMon 口径）；'
+        + '一秒内的单帧 hitch 会被秒均抹平。判断单帧卡顿请看帧耗时 P99 / Hitch / 超帧时限。' },
     drop: { t: 'Drop', u: '帧/时',
       d: '折算到每小时的帧率骤降次数。',
       h: 'PerfDog 口径：相邻采样点 FPS 下降超过 8 帧计一次，再按测试时长折算到每小时。',
@@ -673,6 +675,46 @@ body { overflow-x: hidden; }
       d: '单帧超出 deadline 的时长 P99（最长单帧为 overrunMax）。',
       h: '对「每帧超出 deadline 的部分」取分位数；零超时帧计入分布，避免偶发长帧夸大 P99。',
       g: 'P99 大而 P50 小 = 偶发长帧；P99 与 P50 一起高 = 持续重载。' },
+    ftP50: { t: '帧耗时 P50', u: 'ms',
+      d: '帧耗时的中位数，代表本段「典型」的单帧耗时。',
+      h: '取采样点帧耗时分布的第 50 百分位；本段实际帧节奏 P50 也是 Jank / Hitch / 超帧时限的判定基准（deadline）的一部分。',
+      g: '锁帧场景会稳定在目标帧间隔附近（60fps≈16.7ms）；它与 P99 的差距反映长帧的突发程度。' },
+    ftP90: { t: '帧耗时 P90', u: 'ms',
+      d: '90% 的帧耗时不超过该值。',
+      h: '取采样点帧耗时分布的第 90 百分位。',
+      g: '介于 P50 与 P99 之间，用来看「大部分帧里较慢的那批」；P90 已超标说明卡顿不是极少数。' },
+    ftP95: { t: '帧耗时 P95', u: 'ms',
+      d: '95% 的帧耗时不超过该值，常作为帧率达标与长帧筛查的参考。',
+      h: '取采样点帧耗时分布的第 95 百分位。',
+      g: '与 1000÷目标帧率比较可判断是否达标；注意这是采样点级统计，不等于逐帧 PresentMon 口径。' },
+    ftP99: { t: '帧耗时 P99', u: 'ms',
+      d: '99% 的帧耗时不超过该值，反映最差的 1% 时段。',
+      h: '取采样点帧耗时分布的第 99 百分位。',
+      g: 'P99 大而 P50 小 = 偶发长帧；判断单帧卡顿优先看它，而不是看 1%Low 的秒均值。' },
+    overrunMax: { t: '最长单帧超时', u: 'ms',
+      d: '本段单帧超出 deadline 的最大值。',
+      h: '取所有帧「帧耗时 − deadline」的最大值；deadline = max(屏幕刷新周期, 本段实际帧节奏 P50)。',
+      g: '单点尖刺可能来自加载 / GC / 系统抢占，需结合 FrameTimeline 归因定位，不能仅凭一个最大值下结论。' },
+    thermal: { t: '热节流', u: '级',
+      d: '系统自报的 ADPF 热节流等级（0 正常，1~6 逐级加重），是判断是否真降频的直接证据。',
+      h: '读 thermalservice 的 thermalStatus；coolingValue 为动作幅度最大的冷却设备（如 cpu_adaptive）的动作量。ROM 未暴露时留空。',
+      g: '⚠ 跨机型判断降频以本等级为准，不要用「机身温度超过 45°C」这类绝对阈值——各厂商温控策略差异极大。' },
+    session: { t: '会话级指标', u: '',
+      d: '一次采集会话的启动耗时与稳定性事实：冷启动耗时、ANR、崩溃次数。',
+      h: '冷启动来自 am start -W（仅进程不存在时计一次，4 秒超时则放弃该指标）；ANR / 崩溃来自 dumpsys activity exit-info 按 timestamp#pid 差集统计。',
+      g: '这些是「发生了没有」的事实，可直接使用；但 ANR / 崩溃的成因仍需结合主线程 Trace 判断。' },
+    jankAttr: { t: '卡顿归因', u: '',
+      d: '把卡顿帧按成因拆分：应用侧未按时提交、SF 合成超时、调度延迟、预测偏差等（来自 FrameTimeline）。',
+      h: '读 SurfaceFlinger --timestats 的 Jank payload，逐拍取差累计；只有 timestats 通道有归因，走 framestats 的采样点无法归因。',
+      g: '⚠ BufferStuffing（缓冲堆积）不是 jankyFrames 的子集，单独列、不参与卡顿占比；同一帧可命中多个成因，各项占比之和可能 >100%，不能读成构成比。' },
+    fpsChannel: { t: '取帧通道', u: '',
+      d: '每个采样点取帧用的通道：SurfaceFlinger timestats / gfxinfo framestats / gfxinfo delta。',
+      h: '优先 timestats（帧分布与卡顿归因最全），失败退 framestats，再退 delta；实际命中通道记在日志与 fpsMethod 字段。',
+      g: '通道不同数值分布可能不同；归因缺失或曲线不连续时，先看通道覆盖，不要直接当成「卡顿变少」。' },
+    overhead: { t: '采集开销', u: 'ms',
+      d: '采集端自身每拍耗时（P50 / P95 / 最大），用于判断采集是否干扰了被测应用。',
+      h: '记录每拍采集循环的 wall-clock 耗时，取最近秩分位数；只在实际拿到逐拍耗时时展示，绝不用估值补齐。',
+      g: '开销 P95 接近采样间隔（默认 1 秒）时说明采集偏重，可能与被测应用争抢 CPU；长时采集被截断 / 分片也会单独标注，不静默。' },
 
     // 「旧口径」标注（1.1）：Jank 家族基于固定电影帧绝对门槛，60/90/120/144Hz
     // 之间不可直接比较；保留只为与历史报告对照，新分析请看帧耗时 P99 /
@@ -684,7 +726,8 @@ body { overflow-x: hidden; }
     bigjank: { t: 'BigJank 严重卡顿帧（旧口径）', u: '帧', legacy: true,
       d: '【旧口径】耗时特别长的卡顿帧，用户几乎必感知。统计口径同 Jank（每采样点帧数），保留用于历史对照。',
       h: 'PerfDog 口径：当前帧耗时 > 前三帧平均耗时 2 倍，且 > 3 个电影帧（125ms）判定为 1 次 BigJank。',
-      g: '优先级最高：通常对应 GC、磁盘 IO、资源加载或布局重排。' },
+      g: '优先级最高；PerfDog 只定义阈值不定义成因。可能来自调度延迟、中断、锁竞争、IO 等，'
+        + '请结合下方 FrameTimeline 归因确认，不能仅凭阈值断定是 GC。' },
     smalljank: { t: 'SmallJank 微小卡顿帧（旧口径）', u: '帧', legacy: true,
       d: '【旧口径 · v5 档梯统一】PerfDog 定义「在 Jank 基础上对更细微卡顿的捕捉」（阈值应低于 Jank），但其从未公布数值。本项目按电影帧 1/2/3 倍递进推导：Small = max(2×基准, 41.67ms) ⊃ Jank = max(2×基准, 83.34ms)，方向已修正。',
       h: '相对条件与 Jank 相同（> 2×基准），绝对门槛为 1 个电影帧（41.67ms，推导值非官方口径）。',
@@ -725,42 +768,47 @@ body { overflow-x: hidden; }
     cpulimit: { t: 'CPU 限频', u: '%',
       d: 'CPU 实际运行频率相对最高频率的比例。',
       h: '取各核心当前频率 ÷ 硬件最高频率。',
-      g: '长时间偏低说明已发生温控降频或调度限制，重负载场景会算力不足。' },
+      g: '长时间偏低说明频率被限制（温控或功耗策略均可能），是否降频请对照「热节流」条目。' },
     cpucores: { t: '各核心 CPU 使用率', u: '%',
       d: '每个 CPU 核心各自的占用率。',
       h: '读取 /proc/stat（或等价接口）中各核心的时间片差值。',
-      g: '大核打满而小核空闲，通常是线程亲和性或主线程瓶颈的信号。' },
+      g: '大核打满而小核空闲，可提示线程亲和性或主线程集中，但需结合线程/Trace 才能确认。' },
     cpufreq: { t: '各核心 CPU 频率', u: 'MHz',
       d: '每个 CPU 核心当前的运行频率。',
       h: '读取 cpufreq 节点的 cur_freq / cpuinfo_cur_freq。',
-      g: '持续低于最高频且伴随掉帧，说明触发了温控降频。' },
+      g: '持续低于最高频且伴随掉帧，提示可能有限频，是否温控所致请对照「热节流」条目。' },
 
     mem: { t: '内存', u: 'MB',
       d: 'Android 为内存 PSS（按共享页比例分摊后的实际物理内存，官方推荐口径）；iOS 为物理内存足迹 phys_footprint；PC 为进程常驻内存。',
       h: 'Android 汇总 /proc/<pid>/smaps 或 dumpsys meminfo 的 PSS；iOS 取 task_vm_info 的 phys_footprint。',
-      g: '重点看峰值与增长趋势：长时间运行持续增长通常意味着内存压力或泄漏。' },
+      g: '重点看峰值与增长趋势：持续增长提示内存压力，但需更长时段才能区分泄漏与正常缓存积累。' },
     memdetail: { t: '内存详情', u: 'MB',
       d: '内存的组成部分。Android / PC：NativeHeap、JavaHeap、Code、Stack、Graphics、PrivateOther、System；iOS：私有常驻、共享常驻、匿名、压缩、可清除。',
       h: '由 meminfo / task_vm_info 的各分项原始值换算为 MB。',
       g: 'JavaHeap 持续增长多为对象未释放，Graphics 增长多为纹理 / RenderTarget 未回收。' },
 
     net: { t: '网络 ↓/↑', u: 'KB/s',
-      d: '下行（接收）与上行（发送）速率。',
-      h: '取网卡流量计数（Android /proc/net/dev 或系统流量接口，iOS / PC 用系统计数器）在采样间隔内的差值。',
-      g: '下行尖刺通常对应资源下载；做弱网测试时应配合真实带宽限制一起看。' },
+      d: '下行（接收）与上行（发送）速率，默认按被测应用口径统计。',
+      h: 'Android 优先按 UID 取 dumpsys netstats，合并 DEFAULT（非前台）与 FOREGROUND（前台）'
+        + '两个互斥分桶的累计字节增量 ÷ 采样间隔；ROM 不支持按 UID 时才退回整机口径。'
+        + 'iOS / PC 取系统计数器。报告里的 netScope / netSource 会标明本次实际口径。',
+      g: '⚠ 应用口径与整机口径不可直接比；netstats 按分桶存储（实测常 1~2 小时），'
+        + '短周期突发流量可能被桶粒度抹平。低于 9.0 的旧 Android 无 netstats UID 计数，会明确标为缺失而非填 0。' },
 
     gpu: { t: 'GPU 使用率', u: '%',
       d: 'GPU 计算单元的占用比例。',
       h: '高通读取 /sys/class/kgsl 节点，Mali 读取 GPU 设备节点；部分 MTK 非 root 机型读不到，此时报告会自动改用 GPU 温度展示。',
-      g: '长期高于 90% 说明 GPU 已成瓶颈，应从分辨率、后处理、Overdraw 入手。' },
+      g: '长期高于 90% 提示 GPU 可能成为瓶颈，可从分辨率、后处理、Overdraw 入手排查。' },
     gputemp: { t: 'GPU 温度', u: '°C',
       d: 'GPU 芯片温度，用于在读不到利用率时侧面反映 GPU 负载。',
       h: '读取 GPU 温度传感器节点。',
-      g: '与温度同为降频前兆；持续升高说明渲染负载偏高。' },
+      g: '持续升高提示渲染负载偏高；是否降频请对照「热节流」条目。' },
     temp: { t: '温度', u: '°C',
       d: '机身 / 电池温度（贴近手持体感），不是 CPU 芯片结温。',
       h: '优先读取 thermalservice 的 BATTERY 热敏电阻，缺失时取 SKIN 外壳估算，最后回退 dumpsys battery；CPU / GPU / NPU 结温单独记录，不与机身温度混用。',
-      g: '超过 45°C 通常会开始降频，超过 50°C 会明显影响帧率与手感。芯片结温轻载也常在 55~70°C，属正常现象，不能据此判断机身发烫。' },
+      g: '⚠ 热阈值因机型/厂商策略而异，45°C / 50°C 只是粗略经验参考，跨机型不可比；'
+        + '是否真的降频请看「热节流」条目（系统自报 ADPF thermalStatus）。'
+        + '芯片结温轻载也常在 55~70°C，属正常现象，不能据此判断机身发烫。' },
     cputemp: { t: 'CPU 结温', u: '°C',
       d: 'SoC 芯片内部温度，用于判断是否触发温控降频；不是机身 / 环境温度。',
       h: 'Android 读取 thermalservice 的 TYPE_CPU 传感器；PC 读取 psutil.sensors_temperatures() 的最大值（同为芯片结温）。在温度图中与机身温度并列展示。',
@@ -874,6 +922,16 @@ body { overflow-x: hidden; }
     'jank10': 'jank10', 'bigJank10': 'bigjank10', 'smallJank10': 'smalljank10', 'tinyJank10': 'tinyjank10',
     'cpuLimit': 'cpulimit', 'gpuTemp': 'gputemp', 'fpsTarget': 'fpsTarget',
     'cpu': 'proccpu', 'syscpu': 'syscpu', 'disk': 'disk', 'bandwidth': 'gpu_bw',
+    // 新帧指标 / 会话级 / 归因（统计表 raw 名或中文标题 → 说明 key）
+    '帧耗时 P50': 'ftP50', '帧耗时 P90': 'ftP90', '帧耗时 P95': 'ftP95', '帧耗时 P99': 'ftP99',
+    '卡顿帧占比': 'jankyr', 'Hitch': 'hitch', '超帧时限 P99': 'overrun', '最长单帧超时': 'overrunMax',
+    'ftP50': 'ftP50', 'ftP90': 'ftP90', 'ftP95': 'ftP95', 'ftP99': 'ftP99',
+    'jankyRatio': 'jankyr', 'hitchMsPerSec': 'hitch', 'overrunP99': 'overrun', 'overrunMax': 'overrunMax',
+    '热节流': 'thermal', 'thermalStatus': 'thermal', 'coolingValue': 'thermal',
+    '会话级指标': 'session', '冷启动': 'session', 'ANR': 'session', '崩溃': 'session',
+    '卡顿归因': 'jankAttr', 'FrameTimeline': 'jankAttr', 'BufferStuffing': 'jankAttr',
+    'fpsMethod': 'fpsChannel', '取帧通道': 'fpsChannel', 'fpsRenderChannel': 'fpsChannel',
+    '采集开销': 'overhead', 'overhead': 'overhead',
   };
 
   function esc(s) {
@@ -1789,7 +1847,7 @@ body { overflow-x: hidden; }
     if (ov) {
       const itv = (data.diagnostics && data.diagnostics.intervalMs) || 1000;
       const pct = Math.round((ov.p50Ms || 0) / itv * 100);
-      chips.push(`<span class="rm-chip"${pct > 30 ? ' style="background:#fff1e6"' : ''}`
+      chips.push(`<span class="rm-chip"${pct > 30 ? ' style="background:#5a4318;border-color:#8a6a24"' : ''}`
         + ` title="采集自身耗时占采样周期 ${pct}%；过高会反过来拖慢被测应用"><i>采集耗时</i>`
         + `P50 ${ov.p50Ms} / P95 ${ov.p95Ms} ms（${pct}%）</span>`);
     }
@@ -1800,7 +1858,7 @@ body { overflow-x: hidden; }
         + `${prov0.spilledSamples} 点已合并</span>`);
     }
     if (prov0.truncatedSamples) {
-      chips.push(`<span class="rm-chip" style="background:#ffecec" title="分片写盘失败，报告不完整"><i>丢失</i>`
+      chips.push(`<span class="rm-chip" style="background:#5a2020;border-color:#8a3030" title="分片写盘失败，报告不完整"><i>丢失</i>`
         + `${prov0.truncatedSamples} 点</span>`);
     }
 
@@ -1829,7 +1887,7 @@ body { overflow-x: hidden; }
         '</div>' +
         '<div class="rm-chips">' + chips.join('') + '</div>' +
         (subParts.length ? '<div class="rm-sub">' + escapeHtml(subParts.join('   ·   ')) + '</div>' : '') +
-        (scopeNote ? '<div class="rm-sub" style="color:#8a6100">'
+        (scopeNote ? '<div class="rm-sub" style="color:var(--orange)">'
           + escapeHtml(scopeNote) + '</div>' : '') +
       '</div>';
   }
@@ -2440,6 +2498,9 @@ body { overflow-x: hidden; }
         ? Object.assign({}, p, {
             fps: null, jank: null, bigJank: null, bigjank: null,
             smallJank: null, tinyJank: null,
+            // v1.9：归因计数也必须随加载段一起剔除，否则解读写「已排除加载段」，
+            // 但卡顿归因条目仍把加载段的 FrameTimeline 计数算进去，两处口径打架。
+            jankAttr: null,
           })
         : p);
     }
@@ -2673,7 +2734,9 @@ body { overflow-x: hidden; }
       const moving = nums.filter(v => v > 0);
       const frameTime = moving.length ? moving.reduce((a, v) => a + 1000 / v, 0) / moving.length : null;
       const low = nums.filter(v => v < target * 0.8).length;
-      // 1%Low：帧耗时最长的 1% 求平均，再 1000 ÷ 该均值（业界主流流畅度指标）
+      // 1%Low：从秒级 FPS 反推帧时，取最慢 1% 采样点求平均再折算。
+      // 注意这不是行业（PresentMon）的逐帧 1% Low：一秒内的单帧 hitch 会被秒均抹平，
+      // 判断单帧卡顿请看帧耗时 P99 / Hitch / 超帧时限。
       let oneLow = null;
       if (moving.length) {
         const ftList = moving.map(v => 1000 / v).sort((a, b) => b - a);
@@ -3064,12 +3127,39 @@ body { overflow-x: hidden; }
     }
 
     /**
+     * 复合指数的可信度分层（不改变分数本身，只说清它能信到什么程度）。
+     * 依据三条与「分数波动幅度」直接相关的实测因素：样本点数、有效时长、目标帧率来源。
+     * 阈值是保守的经验界限（短采集分位数不稳、目标靠吸附会带系统偏差），不是统计检验。
+     * @returns {{level:'high'|'mid'|'low', text:string, reasons:string[]}}
+     */
+    function iScoreConfidence(n, durSec, targetFromDevice) {
+      const reasons = [];
+      let level = 'high';
+      if (n < 60) { level = 'low'; reasons.push('样本仅 ' + n + ' 个（<60，分位数不稳）'); }
+      else if (n < 120) { level = 'mid'; reasons.push('样本 ' + n + ' 个（60~119）'); }
+      if (durSec != null && durSec < 60) {
+        level = 'low'; reasons.push('有效时长 ' + iDurationText(durSec) + '（<1 分钟）');
+      } else if (durSec != null && durSec < 180 && level !== 'low') {
+        level = 'mid'; reasons.push('有效时长 ' + iDurationText(durSec) + '（<3 分钟）');
+      }
+      if (!targetFromDevice && level !== 'low') {
+        level = 'mid'; reasons.push('目标帧率由数据推断（非设备自报）');
+      }
+      const text = level === 'high' ? '较高' : (level === 'mid' ? '中等' : '较低');
+      return { level, text, reasons };
+    }
+
+    /**
      * 生成解读数据。
      * @returns {{level:string,levelText:string,lead:string,items:Array,risks:Array}}
      */
     function buildInsight(pts, category) {
       const out = { level: 'good', levelText: '良好', lead: '', items: [], risks: [] };
       const n = (pts || []).length;
+      // v1.9：会话级指标（冷启动 / ANR / 崩溃）必须同步进「解读总结」。
+      // 它们原本只在页面下方的独立区块展示，曾出现「区块写着发生 ANR、解读却说
+      // 未发现明显风险」的自相矛盾。data 是 data.js 注入的全局变量，这里防御读取。
+      const sess = (typeof data !== 'undefined' && data && data.session) ? data.session : null;
       // 时长先按全程取，后面算完加载段再折算成「有效时长」（见「统计时长」段）
       const durSecAll = iDurationSec();
       let durSec = durSecAll;
@@ -3128,12 +3218,14 @@ body { overflow-x: hidden; }
           + '。' + (alu != null ? ('ALU 利用率均值 <b>' + iFmt(alu, 1) + '%</b>') : '')
           + (frag != null ? ('，Fragment 占用 <b>' + iFmt(frag, 1) + '%</b>') : '')
           + (rbw != null ? ('，读带宽 <b>' + iFmt(rbw, 2) + ' GB/s</b>') : '')
-          + '。' + (hot ? (hot + ' 是本次采集的主要压力点。') : '各阶段占用均衡，未发现明显瓶颈。');
+          + '。' + (hot ? (hot + ' 是本次采集相对最重的阶段（不代表应用整体瓶颈）。')
+            : '各阶段占用相对均衡，未达到高负载阈值。')
+          + '本页为 GPU 专项采集，不含 FPS / CPU / 内存，不能据此判断整体流畅度。';
 
         if (alu != null && alu >= 90) out.risks.push({ tone: 'high', text: 'ALU 利用率长期高于 90%，着色器指令数或循环次数可能需要优化。' });
         if (frag != null && frag >= 85) out.risks.push({ tone: 'mid', text: 'Fragment 占用 ' + iFmt(frag, 1) + '%，建议检查过度绘制、透明混合与后处理链路。' });
         if (tex != null && tex >= 80) out.risks.push({ tone: 'mid', text: '纹理采样限制偏高，可考虑压缩纹理、降低采样次数或开启 mipmap。' });
-        if (!out.risks.length) out.risks.push({ tone: 'info', text: '未发现明显 GPU 瓶颈，各阶段占用处于合理区间。' });
+        if (!out.risks.length) out.risks.push({ tone: 'info', text: '本次未触发 GPU 高负载阈值（仅覆盖渲染管线计数器，不代表应用整体无性能问题）。' });
         return out;
       }
 
@@ -3166,6 +3258,10 @@ body { overflow-x: hidden; }
       const gpuTMax  = iPct(gpuTCol, 1);
       const hasGpuUtil = gpuMean != null && iNums(gpuCol).some(v => v > 0);
       const hasGpuTemp = gpuTMean != null && iNums(gpuTCol).some(v => v > 0);
+      // 热节流信号优先于绝对温度：Android 官方明确热阈值是 product policy specific，
+      // 跨机型不可比；是否真的触发降频要看系统自报的 ADPF thermalStatus（0~4）。
+      const thermalNums = iNums(iCol(pts, ['thermalStatus'])).filter(v => v != null);
+      const thermalThrottling = thermalNums.some(v => v > 0);
 
       /* ---------- 统计时长：必须用剔除加载段后的有效时长 ----------
        * 「次/分钟」「次/时」这类按时间折算的指标，分母要是实际参与统计的时长。
@@ -3192,20 +3288,45 @@ body { overflow-x: hidden; }
         if (fpsTarget == null) fpsTarget = Math.ceil(fpsP95);
       }
 
-      /* ---------- 评分 ---------- */
+      /* ---------- 综合性能指数（参考） ----------
+       * 口径诚实性修正（2026-11-17 全网核查）：复合指标方法论禁止给缺失维度填「中性偏好」值。
+       * 旧实现给缺测的 Jank 维度硬编码 85 分、给缺测的 P5 硬编码 0.85 比例，
+       * 会让「没测到 Jank」的报告得分高于「测到轻度 Jank」（约 73 分）—— 这是制造数据。
+       * 现在核心维度（Jank、FPS P5）缺任一就不出综合指数，但分项解读与风险提示
+       * 仍基于实测数据给出，避免整份报告失去解读。
+       */
       let score = null;
-      if (fpsMean != null && fpsTarget) {
+      const scoreMissing = [];
+      if (jankMean == null) scoreMissing.push('Jank');
+      if (fpsP5 == null) scoreMissing.push('FPS P5');
+      out.scoreMissing = scoreMissing;
+      if (fpsMean != null && fpsTarget && !scoreMissing.length) {
         const fpsScore = Math.max(0, Math.min(100, (fpsMean / fpsTarget) * 100));
-        const jankScore = jankMean == null ? 85 : Math.max(0, Math.min(100, 100 - jankMean * 9));
-        const lowRatio = fpsP5 != null ? Math.max(0, Math.min(1, fpsP5 / fpsTarget)) : 0.85;
+        const jankScore = Math.max(0, Math.min(100, 100 - jankMean * 9));
+        const lowRatio = Math.max(0, Math.min(1, fpsP5 / fpsTarget));
         const stabScore = Math.max(0, Math.min(100, lowRatio * 100));
         let bjPenalty = 0;
         if (bjNums.length) {
-          const perMin = durSec ? (bjSum / Math.max(1, durSec / 60)) : bjSum;
+          const perMin = durSec ? (bjSum / (durSec / 60)) : bjSum;
           bjPenalty = Math.min(25, perMin * 2);
         }
         score = Math.round(0.5 * fpsScore + 0.28 * jankScore + 0.22 * stabScore - bjPenalty);
         score = Math.max(0, Math.min(100, score));
+      }
+
+      /* ---------- 指数可信度分层（第五次筛查，2026-11-17）----------
+       * 复合指数无法靠「调权重」变得客观：权重是内部经验值，没有 MOS / 用户主观打分
+       * 标定，也没有行业统一标准——这部分的可信度天花板在代码之外，需外部真值数据。
+       * 代码能诚实做的是：不要让一个 48 点 / 51s 的短采集显示成和 300 点 / 5min 一样
+       * 精确的「28 分」。这里按样本量、有效时长、目标帧率来源给出可信度分层，
+       * 分数照旧显示（保持历史可比），但明确说出来它此刻能信到什么程度。
+       */
+      if (score != null) {
+        const conf = iScoreConfidence(n, durSec, fpsTarget != null && (() => {
+          const L = (typeof data !== 'undefined' && data && data.loading) || null;
+          return !!(L && L.targetSource === 'device-peak-refresh-rate' && Number(L.targetHz) > 0);
+        })());
+        out.scoreConfidence = conf;
       }
 
       /* ================= 分项解读 =================
@@ -3259,7 +3380,7 @@ body { overflow-x: hidden; }
         const parts = [];
         let tone = 'good', note = '';
         if (q.oneLow != null) {
-          parts.push('1%Low ' + iFmt(q.oneLow, 1));
+          parts.push('1%Low ' + iFmt(q.oneLow, 1) + '（采样点口径）');
           if (q.oneLow >= fpsTarget * 0.95) { tone = worst(tone, 'good'); note = '最差 1% 时段仍接近满帧'; }
           else if (q.oneLow >= fpsTarget * 0.85) { tone = worst(tone, 'warn'); note = '最差 1% 时段略有下滑'; }
           else { tone = worst(tone, 'bad'); note = '最差 1% 时段掉帧明显，卡顿集中在这里'; }
@@ -3292,10 +3413,28 @@ body { overflow-x: hidden; }
         push('稳定性', parts.join(' · '), note, worst.apply(null, tones));
       }
 
+      // ③b 启动耗时（v1.9）：只有「进程原本不存在」的冷启动才有评价意义。
+      // 温/热启动只是把已有任务带到前台，不参与冷启动快慢的判断。
+      if (sess && sess.launch && typeof sess.launch.totalTimeMs === 'number') {
+        const launchInfo = sess.launch;
+        const st = String(launchInfo.state || '');
+        const label = st === 'COLD' ? '冷启动' : (st === 'WARM' ? '温启动' : (st === 'HOT' ? '热启动' : '启动'));
+        const ms = launchInfo.totalTimeMs;
+        let tone = 'info', note = '仅作参考，温/热启动不参与冷启动评价';
+        if (st === 'COLD') {
+          tone = ms > 2000 ? 'warn' : (ms <= 1000 ? 'good' : 'info');
+          note = ms > 2000 ? '超过 2s，用户可明显感知'
+            : (ms <= 1000 ? '启动迅速' : '处于常见区间');
+        }
+        push('启动', label + ' ' + iFmt(ms, 0) + 'ms'
+          + (typeof launchInfo.waitTimeMs === 'number'
+            ? '（调度等待 ' + iFmt(launchInfo.waitTimeMs, 0) + 'ms）' : ''), note, tone);
+      }
+
       // ④ 卡顿：Jank 次数 + BigJank（两条都在说掉帧，合并）
       // 注意用 `jank`（采集器归一化后的「次/秒」）而不是 jankRate：
       // pts 里没有 jankRate 字段，原实现取它导致「Jank 率」这一条从来没渲染出来过。
-      const bjPerMin = (bjNums.length && durSec) ? (bjSum / Math.max(1, durSec / 60)) : null;
+      const bjPerMin = (bjNums.length && durSec) ? (bjSum / (durSec / 60)) : null;
       if (jankMean != null || bjNums.length) {
         const parts = [];
         const tones = [];
@@ -3311,10 +3450,52 @@ body { overflow-x: hidden; }
             : 'good');
         }
         let note;
-        if (bjSum > 0) note = '>125ms 的严重卡顿多与 GC、IO 或布局重排有关';
+        if (bjSum > 0) note = '>125ms 严重卡顿：成因请结合下方 FrameTimeline 归因确认';
         else if (jankMean != null && jankMean <= 0.5) note = '几乎没有可感知的卡顿';
         else note = '偶发掉帧，未出现 >125ms 严重卡顿';
         push('卡顿', parts.join(' · '), note, worst.apply(null, tones));
+      }
+
+      // ④b 卡顿归因（FrameTimeline / timestats，v1.9）：与下方 `jank-attr`
+      // 独立区块同一口径。一帧可同时命中多个原因位，这里是「命中次数」不是构成比；
+      // BufferStuffing 不是 jankyFrames 的子集，必须单列，不参与卡顿占比。
+      {
+        const ATTR_LABEL = {
+          AppDeadlineMissed: '应用超时',
+          SurfaceFlingerCpuDeadlineMissed: 'SF CPU 超时',
+          SurfaceFlingerGpuDeadlineMissed: 'SF GPU 超时',
+          SurfaceFlingerScheduling: 'SF 调度',
+          PredictionError: '预测错误',
+          Unknown: '未知原因',
+        };
+        const attrSum = {};
+        let covered = 0, windowFrames = 0, jankyFrames = 0, stuffing = 0;
+        pts.forEach((p) => {
+          const a = p && p.jankAttr;
+          if (!a || typeof a !== 'object' || typeof a._frames !== 'number' || a._frames <= 0) return;
+          covered += 1;
+          windowFrames += a._frames;
+          jankyFrames += (typeof a._total === 'number' ? a._total : 0);
+          Object.keys(a).forEach((k) => {
+            if (k.charAt(0) === '_' || typeof a[k] !== 'number' || a[k] <= 0) return;
+            if (k === 'BufferStuffing') stuffing += a[k];
+            else attrSum[k] = (attrSum[k] || 0) + a[k];
+          });
+        });
+        if (covered > 0) {
+          const top = Object.keys(attrSum).sort((a, b) => attrSum[b] - attrSum[a]).slice(0, 2)
+            .map((k) => (ATTR_LABEL[k] || k) + ' ' + attrSum[k]);
+          const coreTotal = Object.keys(attrSum).reduce((s, k) => s + attrSum[k], 0);
+          const noteParts = ['覆盖 ' + covered + '/' + n + ' 拍'
+            + (windowFrames ? ' / 窗口 ' + windowFrames + ' 帧' : '')];
+          if (top.length) noteParts.push('主因 ' + top.join(' · '));
+          if (coreTotal > jankyFrames) {
+            noteParts.push('成因可重叠（合计 ' + coreTotal + ' 次 > 卡顿 ' + jankyFrames + ' 帧），勿按占比相加');
+          }
+          if (stuffing) noteParts.push('另缓冲堆积 ' + stuffing + ' 次（独立计数，不与卡顿相加）');
+          push('卡顿归因', jankyFrames > 0 ? '卡顿 ' + jankyFrames + ' 帧' : '未记录到卡顿帧',
+            noteParts.join('；'), (!top.length && jankyFrames > 0) ? 'warn' : 'info');
+        }
       }
 
       // ⑤ 上下文切换：正常时不占版面（统计表里仍有），偏高才单列
@@ -3324,10 +3505,14 @@ body { overflow-x: hidden; }
       const limitCol = iCol(pts, ['cpuLimit']);
       const limitNums = iNums(limitCol);
       const limitMin = limitNums.length ? Math.min.apply(null, limitNums) : null;
+      // 14000/s 出自 PerfDog 的 iOS「单核」经验阈值（Core/Second），不是 Android 官方机制；
+      // 拿整机/进程均值套到 Android 并断言「会被 kill」缺乏依据。两档都降为提示，措辞注明来源。
       if (csAvg != null && csAvg >= 8000) {
         push('上下文切换', '均值 ' + iFmt(csAvg, 0) + ' 次/s',
-          csAvg >= 14000 ? '超过 14000/s，存在被系统 kill 风险' : '偏高，线程调度开销大',
-          csAvg >= 14000 ? 'bad' : 'warn');
+          csAvg >= 14000
+            ? '偏高（14000/s 为 iOS 单核经验阈值，Android 无官方对应阈值，仅供参考）'
+            : '偏高，线程调度开销大（Android 无官方统一阈值）',
+          'warn');
       }
 
       // ⑥ CPU
@@ -3337,7 +3522,7 @@ body { overflow-x: hidden; }
         if (cpuProcMean != null) parts.push('进程 ' + iFmt(cpuProcMean, 1) + '%');
         let tone = 'good', note = '负载轻，CPU 不是瓶颈';
         const load = cpuSysMean != null ? cpuSysMean : cpuProcMean;
-        if (load >= 85) { tone = 'bad'; note = '接近满载，CPU 已成瓶颈'; }
+        if (load >= 85) { tone = 'bad'; note = '接近满载，可能成为瓶颈（需区分系统与其他进程占用）'; }
         else if (load >= 65) { tone = 'warn'; note = '负载偏高'; }
         else if (load >= 40) { tone = 'info'; note = '负载中等'; }
         push('CPU', parts.join('，'), note, tone);
@@ -3349,20 +3534,33 @@ body { overflow-x: hidden; }
         let tone = 'good';
         if (memTrend) {
           note += '，首段→末段 ' + (memTrend.delta >= 0 ? '+' : '') + iFmt(memTrend.pct, 1) + '%';
-          if (memTrend.pct >= 20 && memTrend.delta >= 30) { tone = 'bad'; note += '，疑似内存泄漏'; }
+          // 单次首尾对比不足以判定「泄漏」：资源加载、缓存积累、GC 未回收都会增长。
+          if (memTrend.pct >= 20 && memTrend.delta >= 30) { tone = 'bad'; note += '，持续增长（需更长时段才能区分泄漏与正常缓存）'; }
           else if (memTrend.pct >= 8 && memTrend.delta >= 15) { tone = 'warn'; note += '，有持续增长'; }
           else if (memTrend.pct <= -8) { tone = 'good'; note += '，有回落'; }
         }
         push('内存', '均值 ' + iFmt(memMean, 0) + ' MB', note, tone);
       }
 
-      // ⑧ 温度
+      // ⑧ 温度（辅助指标）
+      // 45/50°C 这类绝对阈值跨机型不可靠（厂商温控策略不同），是否降频以 thermalStatus 为准。
       if (tempMean != null && iNums(tempCol).some(v => v > 0)) {
-        let tone = 'good', note = '';
-        if (tempMax != null && tempMax >= 50) { tone = 'bad'; note = '峰值偏高，可能触发温控降频'; }
-        else if (tempMax != null && tempMax >= 45) { tone = 'warn'; note = '峰值偏高'; }
-        else if (tempMax != null && tempMax >= 40) { tone = 'info'; note = '温度正常'; }
-        else { tone = 'good'; note = '温度良好'; }
+        let tone = 'info';
+        let note;
+        if (thermalNums.length) {
+          tone = thermalThrottling ? 'warn' : 'info';
+          note = thermalThrottling
+            ? '系统已报告热节流，温度偏高与限频一致'
+            : '系统热节流全程 0 级，未观察到降频；绝对温度仅供参考';
+        } else if (tempMax != null && tempMax >= 50) {
+          tone = 'warn';
+          note = '绝对温度较高，但本机未暴露热节流信号，是否已降频无法确认';
+        } else if (tempMax != null && tempMax >= 45) {
+          note = '绝对温度偏高，是否降频请以热节流信号为准';
+        } else {
+          tone = 'good';
+          note = '绝对温度正常';
+        }
         push('温度', '均值 ' + iFmt(tempMean, 1) + '°C / 峰值 ' + iFmt(tempMax, 1) + '°C', note, tone);
       }
 
@@ -3407,7 +3605,8 @@ body { overflow-x: hidden; }
       // 措辞跟随统计口径：剔除了加载段就不能再说「全程」
       const scopeWord = hasExclusion ? '排除加载段后' : '全程';
       if (fpsTarget && fpsMean != null && fpsMean / fpsTarget < 0.85) {
-        out.risks.push({ tone: 'high', text: '帧率仅达目标 ' + Math.round((fpsMean / fpsTarget) * 100) + '%，建议排查渲染耗时与主线程阻塞。' });
+        out.risks.push({ tone: 'high', text: '帧率仅达目标 ' + Math.round((fpsMean / fpsTarget) * 100)
+          + '%，请结合逐帧指标与卡顿归因定位（渲染耗时、GPU 负载、温控都可能）。' });
       }
       if (fm && fm.lowPct >= 20) {
         out.risks.push({
@@ -3421,22 +3620,40 @@ body { overflow-x: hidden; }
         out.risks.push({ tone: 'high', text: 'Jank 平均 ' + iFmt(jankMean, 1) + ' 次/秒，掉帧已可被用户明显感知。' });
       }
       if (bjNums.length && bjSum > 0 && durSec) {
-        const perMin = bjSum / Math.max(1, durSec / 60);
+        const perMin = bjSum / (durSec / 60);
         if (perMin >= 1) {
-          out.risks.push({ tone: 'mid', text: '出现 ' + iFmt(bjSum, 0) + ' 次 >125ms 卡顿帧（约 ' + iFmt(perMin, 1) + ' 次/分钟），通常对应 GC、IO 或布局重排。' });
+          out.risks.push({ tone: 'mid', text: '出现 ' + iFmt(bjSum, 0) + ' 次 >125ms 卡顿帧（约 ' + iFmt(perMin, 1)
+            + ' 次/分钟）。125ms 只是严重卡顿的判定阈值，并不指向具体成因；请结合下方 FrameTimeline 归因确认。' });
+        }
+      }
+      // v1.9：本轮 ANR / 崩溃必须进风险清单。否则独立区块显示「ANR 1」，
+      // 解读总结却按性能指标说「未发现明显风险」，两处结论互相打架。
+      if (sess && sess.exit && sess.exit.supported !== false) {
+        const exitInfo = sess.exit;
+        if ((exitInfo.anr || 0) > 0) {
+          out.risks.push({ tone: 'high', text: '本轮发生 ' + exitInfo.anr + ' 次 ANR，请结合主线程阻塞与卡顿归因排查。' });
+        }
+        const crashN = (exitInfo.crash || 0) + (exitInfo.nativeCrash || 0);
+        if (crashN > 0) {
+          out.risks.push({ tone: 'high', text: '本轮发生 ' + crashN + ' 次崩溃，采集期间应用进程可能已重启。' });
         }
       }
       if (memTrend && memTrend.pct >= 8 && memTrend.delta >= 15) {
         out.risks.push({ tone: 'mid', text: '内存首段→末段增长 ' + iFmt(memTrend.pct, 1) + '%（+' + iFmt(memTrend.delta, 0) + ' MB），长时间运行存在内存压力。' });
       }
-      if (tempMax != null && tempMax >= 45) {
-        out.risks.push({ tone: tempMax >= 50 ? 'high' : 'mid', text: '温度峰值 ' + iFmt(tempMax, 1) + '°C，接近温控阈值，长时间测试可能降频。' });
+      // 温度不单独构成 high 风险：绝对阈值跨机型不可比，是否降频以系统热节流信号为准。
+      if (thermalThrottling) {
+        out.risks.push({ tone: 'mid', text: '系统上报热节流（ADPF status > 0），当前帧率下降需与温度曲线对照。' });
+      } else if (tempMax != null && tempMax >= 50 && !thermalNums.length) {
+        out.risks.push({ tone: 'info', text: '温度峰值 ' + iFmt(tempMax, 1) + '°C 较高，但本机未上报热节流状态；绝对阈值跨机型不可比，仅供参考。' });
       }
       if (cpuSysMean != null && cpuSysMean >= 80) {
         out.risks.push({ tone: 'mid', text: '系统 CPU 均值 ' + iFmt(cpuSysMean, 1) + '%，整机负载饱和会放大掉帧。' });
       }
       if (csAvg != null && csAvg >= 14000) {
-        out.risks.push({ tone: 'high', text: '上下文切换均值 ' + iFmt(csAvg, 0) + ' 次/s，超过 PerfDog 阈值 14000/s，进程可能被系统终止。' });
+        out.risks.push({ tone: 'mid', text: '上下文切换均值 ' + iFmt(csAvg, 0) + ' 次/s，调度开销偏高。'
+          + '注：14000/s 是 PerfDog 对 iOS 单核的经验阈值（Core/Second），Android 无官方对应阈值，'
+          + '不能据此断定进程会被系统终止。' });
       } else if (csAvg != null && csAvg >= 8000) {
         out.risks.push({ tone: 'mid', text: '上下文切换 ' + iFmt(csAvg, 0) + ' 次/s 偏高，线程调度开销大，可排查频繁唤醒。' });
       }
@@ -3452,7 +3669,8 @@ body { overflow-x: hidden; }
         out.risks.push({ tone: 'info', text: 'GPU 利用率需 root 才能读取，已改用 GPU 温度反映负载趋势。' });
       }
       if (!out.risks.length) {
-        out.risks.push({ tone: 'info', text: '未发现明显性能风险，各项指标均在合理区间。' });
+        out.risks.push({ tone: 'info', text: '本次采集的指标未触发预警阈值；这不等于应用没有性能问题，'
+          + '短时/特定场景的问题需要用对应场景复测才能暴露。' });
       }
       // 风险按严重程度排序：high → mid → info，第一条会被拿去当结论的收尾
       const RISK_RANK = { high: 0, mid: 1, info: 2 };
@@ -3461,6 +3679,16 @@ body { overflow-x: hidden; }
 
       /* ================= 总评 ================= */
       if (score == null) {
+        // 第三种「无指数」：有 FPS 均值但核心维度缺测。必须说清是「没测到」而非「没问题」，
+        // 更不能沿用旧实现的估计分（那会让缺测报告看起来比轻度卡顿还好）。
+        if (fpsMean != null && fpsTarget && scoreMissing.length) {
+          out.level = 'warn';
+          out.levelText = '部分指标缺测';
+          out.lead = '本次采集到 FPS 均值 <b>' + iFmt(fpsMean, 1) + '</b>，但缺少 '
+            + scoreMissing.join(' / ') + '，按口径诚实原则不给出综合性能指数（不以估计值代替实测）。'
+            + '以下分项解读与风险提示仍基于实测数据。';
+          return out;
+        }
         // 区分两种「没有 FPS 指标」：真没有 fps 字段（专项采集）vs 有字段但全是 0
         const fpsAll = iNums(fpsCol);
         const allZero = fpsAll.length > 0 && fpsAll.every(v => v <= 0);
@@ -3479,14 +3707,31 @@ body { overflow-x: hidden; }
       out.score = score;
 
       const bits = [];
-      bits.push('整体流畅度<b>' + lv.text + '</b>（综合 ' + score + ' 分）');
+      // 「整体流畅度」这个命名与权威结论冲突：PerfDog 明确「平均 FPS 与卡顿无直接关系」，
+      // 而本指数 50% 权重来自平均 FPS。改名为「综合性能指数（参考）」，并在末尾公开公式。
+      bits.push('综合性能指数（参考）<b>' + lv.text + '</b>（' + score + ' 分）');
       if (fpsMean != null) bits.push('FPS 均值 <b>' + iFmt(fpsMean, 1) + '</b>' + (fpsTarget ? '（目标 ' + fpsTarget + '）' : ''));
       if (fm) bits.push('达帧率 <b>' + iFmt(fm.reach, 1) + '%</b>');
       if (hasExclusion) bits.push('已排除 ' + out.excludedSegs + ' 段加载期（' + out.excludedSec + 's）');
       // 收尾用最高级别的真实风险，而不是固定的「表现稳定」
       const topRisk = out.risks.find(r => r.tone === 'high') || out.risks.find(r => r.tone === 'mid');
-      const tail = topRisk ? ('最需关注：' + topRisk.text) : (scopeWord + '各项指标平稳，未发现明显性能问题。');
-      out.lead = bits.join('，') + '。' + tail;
+      const tail = topRisk ? ('最需关注：' + topRisk.text)
+        : (scopeWord + '各项采集到的指标未触发预警阈值（不等同于所有场景都没有问题）。');
+      // 评分必须可追溯：公开权重、惩罚上限与分档，并说明它不等于用户感知流畅度。
+      // 复合指标若无依据且不表达不确定性，参考价值很有限（见核查记录）。
+      let formula = '<br><span class="sub-cut">指数口径：帧率 50% + 卡顿 28% + 稳定 22% − BigJank 罚分（上限 25）；'
+        + '优秀≥88 / 良好≥72 / 一般≥55。权重与分档为内部经验值，非行业统一标准；'
+        + '平均 FPS 反映吞吐而非主观流畅度，判断卡顿请优先看下方逐帧指标与卡顿归因。</span>';
+      // 可信度分层：分数照旧给出（保历史可比），但把「这次能信到什么程度」写明。
+      // 权重无 MOS 标定这条属于指数本身的天花板，不能靠文案消除——如实写在末尾。
+      if (out.scoreConfidence) {
+        const c = out.scoreConfidence;
+        formula += '<br><span class="sub-cut">本次指数可信度 <b>' + c.text + '</b>'
+          + (c.reasons.length ? '（' + c.reasons.join('；') + '）' : '')
+          + '。指数未经主观体验打分（MOS）标定，不能跨机型 / 跨版本当作验收阈值；'
+          + '分数接近时请以下方逐项指标与风险提示为准。</span>';
+      }
+      out.lead = bits.join('，') + '。' + tail + formula;
 
       return out;
     }
@@ -3507,6 +3752,14 @@ body { overflow-x: hidden; }
       }
       const r = buildInsight(pts, category);
       const subParts = [r.n + ' 个采样点'];
+      // 样本量置信度：3 拍和 300 拍不能给出同样确定的「优秀/较差」。
+      if (r.n < 30) {
+        subParts.push('<span class="sub-cut">样本仅 ' + r.n + ' 个（分位数与占比不稳定，结论仅供参考）</span>');
+      }
+      // 核心维度缺测时综合指数未计算，副标题必须说清，别让空白被读成「没风险」。
+      if (r.scoreMissing && r.scoreMissing.length) {
+        subParts.push('<span class="sub-cut">综合指数未计算：缺 ' + r.scoreMissing.join(' / ') + '</span>');
+      }
       // FIX-05：等距 category 轴的提示——采样间隔不恒定（采集耗时波动），
       // 精确定位请看各指标的原始采样页（Excel「原始采样」表含 tickStartTs/timestamp）。
       if (!subParts.__intervalNoted) subParts.push('采样间隔不恒定（含采集耗时）');
@@ -3519,6 +3772,26 @@ body { overflow-x: hidden; }
           .includes(p.fpsMethod)).length;
         if (lowN > 0) subParts.push(`<span class="sub-cut">${lowN} 拍帧数不足（帧分布未统计，FPS 为实测）</span>`);
         if (noneN > 0) subParts.push(`<span class="sub-cut">${noneN} 拍无渲染帧</span>`);
+        // FIX-03：取帧通道命中率。同一轮里出现多个通道时，各通道的 jank 口径本就不同
+        //（timestats 走 present2present 直方图、framestats 走逐帧 vsync 差、gfxinfo-delta
+        // 只给计数），把曲线当连续趋势读会得出错误结论。这里显式列出通道与拍数，
+        // 真正发生切换时给出提示，而不是让用户自己从 Excel 里数 fpsMethod。
+        {
+          const chCount = {};
+          pts.forEach((p) => {
+            const m = p && p.fpsMethod ? String(p.fpsMethod) : '';
+            if (!m) return;
+            chCount[m] = (chCount[m] || 0) + 1;
+          });
+          const real = ['timestats', 'framestats', 'gfxinfo-delta']
+            .filter((m) => chCount[m] > 0);
+          if (real.length === 1) {
+            subParts.push(`取帧通道 ${real[0]}（${chCount[real[0]]} 拍）`);
+          } else if (real.length > 1) {
+            subParts.push(`<span class="sub-cut">取帧通道切换 ${real
+              .map((m) => `${m}×${chCount[m]}`).join(' / ')}（各通道 jank 口径不同，跨通道段不宜直接比较）</span>`);
+          }
+        }
         // r3 遗留项闭环（FIX-13 dtMs 下游消费）：长间隔拍（>3s，瞬时指标已断截）
         const staleN = pts.filter((p) => typeof p.dtMs === 'number' && p.dtMs > 3000).length;
         if (staleN > 0) subParts.push(`<span class="sub-cut">${staleN} 拍长间隔（&gt;3s，瞬时指标断截）</span>`);
@@ -4137,6 +4410,11 @@ const pts = perf.map((it) => {
           bigJank: it.bigJank ?? null,
           smallJank: it.smallJank ?? null,
           tinyJank: it.tinyJank ?? null,
+          // v1.9：FrameTimeline 归因必须跟着归一化对象走。下方 `jank-attr` 区块
+          // 直接读 data.perf 所以一直正常，但 buildInsight 读的是 pts —— 不在这里
+          // 带上就永远为 null，整条「卡顿归因」解读静默消失（与 fpsMethod 同一类坑）。
+          // 非 timestats 通道本来就没有归因，保持 null 即可。
+          jankAttr: it.jankAttr ?? null,
           ...(() => {
             const m = it.mem || {};
             const ctxNow = (m.ctxVoluntary != null && m.ctxNonvoluntary != null)
@@ -5161,7 +5439,9 @@ const pts = perf.map((it) => {
 (function () {
   try {
     if (typeof data === 'undefined' || !data) return;
-    var CUR = '2';
+    // 当前口径版本，必须与 _client_src/app/src/sample-meta.js 的 SCHEMA_VERSION 一致；
+    // schema_version_test.js 有守卫锁这一条（v2 时代遗留的硬编码曾导致 v8 报告误报跨版本）。
+    var CUR = '9';
     var items = [];
     var sv = data.schemaVersion;
     if (!sv) {
@@ -5212,26 +5492,201 @@ const pts = perf.map((it) => {
     };
     var box = document.createElement('details');
     box.id = 'trace-captures';
-    box.style.cssText = 'margin:12px 16px;padding:10px 14px;border:1px solid #d9e2ec;'
-      + 'border-radius:8px;background:#f8fbff;font:13px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif;';
+    box.style.cssText = 'margin:12px 16px;padding:10px 14px;border:1px solid var(--border);'
+      + 'border-radius:8px;background:var(--bg2);color:var(--text);font:13px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif;';
     var rows = list.map(function (r) {
       var when = r.ts ? new Date(r.ts).toLocaleString() : '—';
       var kind = r.kind === 'simpleperf' ? 'simpleperf (perf.data)' : 'Perfetto';
-      var jt = (r.jankTypes && r.jankTypes.length)
-        ? '；FrameTimeline 归因：' + esc(r.jankTypes.join(' / ')) : '';
+      // 帧归因：改成带计数（「哪一类卡了几帧」比「出现过哪几类」有用得多）。
+      // 数据来自 SurfaceFlinger timestats / gfxinfo framestats 的真实掩码；
+      // 连帧数都没有时这一整段不出现（不写「归因：无」冒充测过）。
+      var jt = '';
+      var parts = [];
+      if (r.jankCounts && typeof r.jankCounts === 'object') {
+        parts = Object.keys(r.jankCounts).map(function (k) {
+          var n = r.jankCounts[k];
+          var sem = (r.jankTypeSemantics && r.jankTypeSemantics[k]) || '';
+          return esc(k) + '×' + esc(String(n)) + (sem ? '（' + esc(sem) + '）' : '');
+        });
+      }
+      if (r.jankFrames && r.jankFrames.total) {
+        var frameInfo = '（近 ' + esc(String(r.jankFrames.total)) + ' 帧中 '
+          + esc(String(r.jankFrames.janky || 0)) + ' 帧卡顿）';
+        jt = '；帧归因' + frameInfo + '：'
+          + (parts.length ? parts.join(' / ') : '未观测到卡顿类别');
+      } else if (parts.length) {
+        jt = '；帧归因：' + parts.join(' / ');
+      }
       return '<li style="margin:4px 0">' + esc(when) + ' · ' + kind
         + ' · ' + esc(r.source || 'manual') + (r.reason ? '（' + esc(r.reason) + '）' : '')
         + (r.fps != null ? ' · FPS ' + esc(r.fps) : '')
-        + jt + '<br><code style="font-size:12px;color:#476">' + esc(r.path || '') + '</code></li>';
+        + jt + '<br><code style="font-size:12px;color:var(--text2)">' + esc(r.path || '') + '</code></li>';
     }).join('');
     box.innerHTML = '<summary style="cursor:pointer;font-weight:600">取证片段（'
       + list.length + ' 段）· 点击展开</summary>'
-      + '<div style="margin-top:8px;color:#456">这些是主采集之外的短时系统级 trace，'
+      + '<div style="margin-top:8px;color:var(--text2)">这些是主采集之外的短时系统级 trace，'
       + '用来定位「这一帧等的是谁」，不参与统计。文件就在本报告同目录的 '
-      + '<code style="font-size:12px">traces/</code> 下，路径可复制到离线分析工具打开。</div>'
+      + '<code style="font-size:12px">traces/</code> 下。'
+      + '<b style="color:var(--text)">查看方法</b>：这是 protobuf 二进制，'
+      + '<b style="color:var(--text)">浏览器双击打不开</b>；打开 '
+      + '<a href="https://ui.perfetto.dev/" target="_blank" rel="noopener" style="color:var(--accent)">ui.perfetto.dev</a>'
+      + '（打开后点 <b style="color:var(--text)">Open trace file</b> 选对应 .perfetto-trace，'
+      + '文件只在本地浏览器解析、不上传），或把这个文件拖进该页面。</div>'
       + '<ul style="margin:8px 0 0;padding-left:20px">' + rows + '</ul>';
     var anchor = document.getElementById('root') || document.body;
     anchor.parentNode.insertBefore(box, anchor);
+  } catch (_) {}
+})();
+</script>
+<script>
+/* 会话级指标：冷启动耗时 + 本轮 ANR / 崩溃。
+   这两项都不是 1Hz 采样能表达的「曲线」，而是「这一轮发生过什么」的事实，
+   所以单独成块放在报告顶部，不混进指标卡与统计表。 */
+(function () {
+  try {
+    if (typeof data === 'undefined' || !data || !data.session) return;
+    var s = data.session;
+    var esc = function (t) {
+      return String(t == null ? '' : t).replace(/[<>&"]/g, function (c) {
+        return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c];
+      });
+    };
+    var items = [];
+    var L = s.launch;
+    if (L && L.totalTimeMs != null) {
+      var stateText = L.state === 'COLD' ? '冷启动'
+        : L.state === 'WARM' ? '温启动'
+          : L.state === 'HOT' ? '热启动'
+            : '启动';
+      items.push('<b>' + esc(stateText) + '耗时</b>：' + esc(String(L.totalTimeMs)) + ' ms'
+        + (L.waitTimeMs != null ? '（含调度等待 ' + esc(String(L.waitTimeMs)) + ' ms）' : '')
+        + '<span style="color:var(--text2)"> · 来源：am start -W 的 TotalTime</span>');
+    }
+    var E = s.exit;
+    if (E && E.supported) {
+      var bad = (E.anr || 0) + (E.crash || 0) + (E.nativeCrash || 0);
+      items.push('<b>本轮 ANR / 崩溃</b>：' + esc(String(E.anr || 0)) + ' / '
+        + esc(String((E.crash || 0) + (E.nativeCrash || 0)))
+        + (bad === 0
+          ? '<span style="color:var(--green)"> · 未发生</span>'
+          : '<span style="color:var(--red)"> · 发生过，请看下方退出明细</span>')
+        + (E.other ? '（另有 ' + esc(String(E.other)) + ' 次其它退出来自系统回收 / 用户操作）' : ''));
+      if (E.entries && E.entries.length) {
+        var rows2 = E.entries.map(function (e) {
+          return '<li style="margin:2px 0">' + esc(e.timestamp || '') + ' · '
+            + esc(e.reasonLabel || ('reason=' + e.reasonCode)) + ' · '
+            + esc(e.process || '') + ' · PID ' + esc(String(e.pid == null ? '—' : e.pid))
+            + (e.description ? ' · ' + esc(e.description) : '') + '</li>';
+        }).join('');
+        items.push('<ul style="margin:4px 0 0;padding-left:20px;color:var(--text2)">' + rows2 + '</ul>');
+      }
+    } else if (E && E.supported === false) {
+      // 老系统没有 exit-info：必须写「不支持」，否则「没显示 ANR」会被读成「没发生 ANR」
+      items.push('<b>本轮退出原因</b>：<span style="color:var(--text2)">本机不支持'
+        + '（dumpsys activity exit-info 需 Android 11 / API 30 以上）</span>');
+    }
+    if (!items.length) return;
+    var box = document.createElement('details');
+    box.id = 'session-metrics';
+    box.style.cssText = 'margin:12px 16px;padding:10px 14px;border:1px solid var(--border);'
+      + 'border-radius:8px;background:var(--bg2);color:var(--text);font:13px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif;';
+    box.innerHTML = '<summary data-info="session" style="cursor:pointer;font-weight:600">会话级指标（启动 / 稳定性）· 点击展开</summary>'
+      + '<div style="margin-top:8px">' + items.map(function (t) {
+        return '<div style="margin:4px 0">· ' + t + '</div>';
+      }).join('') + '</div>';
+    var anchor2 = document.getElementById('root') || document.body;
+    anchor2.parentNode.insertBefore(box, anchor2);
+    if (window.MetricInfo) MetricInfo.decorate(box);
+  } catch (_) {}
+})();
+</script>
+<script>
+/* FrameTimeline 卡顿归因：把逐拍的归因计数（SurfaceFlinger timestats 差分）汇总成分布。
+   它回答的是「卡顿发生在哪一侧」—— 应用没按时提交 / SF 合成超时 / 缓冲堆积 …，
+   比只有「卡了 N 次」更接近根因；数据与 fps 同源（同一次 --timestats -dump），
+   零额外采集开销，也不会像 gfxinfo framestats 那样重置帧缓冲。 */
+(function () {
+  try {
+    if (typeof data === 'undefined' || !data || !Array.isArray(data.perf)) return;
+    var LABELS = {
+      AppDeadlineMissed: '应用侧未按时提交（未细分）',
+      BufferStuffing: '应用缓冲堆积（独立计数）',
+      SurfaceFlingerCpuDeadlineMissed: 'SurfaceFlinger CPU 合成超时',
+      SurfaceFlingerGpuDeadlineMissed: 'SurfaceFlinger GPU/HWC 合成超时',
+      SurfaceFlingerScheduling: 'SurfaceFlinger 调度延迟',
+      PredictionError: '帧时长预测偏差',
+      Unknown: '归属不明（SurfaceFlinger 侧）'
+    };
+    // ⚠️ BufferStuffing 不参与「卡顿构成」的百分比：真机实测它**不是 jankyFrames 的子集**
+    //（同一窗口 421 帧里 jankyFrames=19、appBufferStuffingJankyFrames=213），
+    // 把它混进分母会得出「213 帧卡顿里有 71 帧是缓冲堆积，但总卡顿只有 2 帧」这种矛盾。
+    // 其余 6 项才是「某一帧为什么算卡」的成因，可以按 jankyFrames 算占比。
+    // ⚠️ 但成因是**可重叠**的：同一帧既能「应用侧超时」又能「SF 合成超时」，
+    // 真机实测出现过 4+2 > 卡顿 4 帧。所以下面的百分比是「命中该成因的卡顿帧占比」，
+    // 各类之和可能超过 100%，页面必须写明，否则会被读成构成比。
+    var CORE = ['AppDeadlineMissed', 'SurfaceFlingerCpuDeadlineMissed',
+      'SurfaceFlingerGpuDeadlineMissed', 'SurfaceFlingerScheduling',
+      'PredictionError', 'Unknown'];
+    var sum = {}, covered = 0, frames = 0, janky = 0;
+    for (var i = 0; i < data.perf.length; i++) {
+      var a = data.perf[i] && data.perf[i].jankAttr;
+      if (!a || typeof a !== 'object') continue;
+      covered += 1;
+      if (typeof a._frames === 'number') frames += a._frames;
+      if (typeof a._total === 'number') janky += a._total;
+      for (var k in a) {
+        if (!Object.prototype.hasOwnProperty.call(a, k)) continue;
+        if (k.charAt(0) === '_') continue;
+        if (typeof a[k] !== 'number' || !(a[k] > 0)) continue;
+        sum[k] = (sum[k] || 0) + a[k];
+      }
+    }
+    if (!covered) return;
+    var esc = function (t) {
+      return String(t == null ? '' : t).replace(/[<>&"]/g, function (c) {
+        return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c];
+      });
+    };
+    var rows = CORE.filter(function (k) { return sum[k] > 0; }).map(function (k) {
+      var pct = janky > 0 ? Math.round((sum[k] / janky) * 1000) / 10 : null;
+      return '<li style="margin:3px 0">' + esc(LABELS[k] || k)
+        + '：<b>' + esc(String(sum[k])) + '</b> 帧'
+        + (pct != null ? '（占卡顿帧 ' + esc(String(pct)) + '%）' : '')
+        + '<span style="color:var(--text2)"> · ' + esc(k) + '</span></li>';
+    }).join('');
+    // 缓冲堆积单列：它统计的是「应用提交过快」的帧，与「卡顿帧」不是一个分母
+    var stuffing = sum.BufferStuffing > 0
+      ? '<div style="margin-top:6px;color:var(--text)">应用缓冲堆积：<b>'
+        + esc(String(sum.BufferStuffing)) + '</b> 帧'
+        + '<span style="color:var(--text2)">（独立计数：提交过快但未必丢帧，不与上面的卡顿帧相加）</span></div>'
+      : '';
+    // 成因可重叠：只在真的出现「各类之和 > 卡顿帧数」时提示，正常报告不多一行噪音
+    var coreTotal = CORE.reduce(function (t, k) { return t + (sum[k] || 0); }, 0);
+    var multi = (janky > 0 && coreTotal > janky)
+      ? '<div style="margin-top:6px;color:var(--text2)">同一帧可能同时命中多个成因，'
+        + '各类占比之和大于 100%（本轮合计 ' + esc(String(coreTotal)) + ' 次 / '
+        + esc(String(janky)) + ' 帧卡顿）</div>'
+      : '';
+    // 覆盖信息必须写出来：只有 timestats 通道能给归因，走 framestats/gfxinfo 的拍没有值，
+    // 不写覆盖率会让「总量偏小」被误读成「卡顿很少」。
+    var head = janky > 0
+      ? '可归因卡顿 <b>' + esc(String(janky)) + '</b> 帧'
+      : '<span style="color:var(--green)">本轮 FrameTimeline 未记录到卡顿帧</span>';
+    var cover = '（覆盖 ' + esc(String(covered)) + ' 个采样点'
+      + (frames ? ' / 窗口 ' + esc(String(frames)) + ' 帧' : '')
+      + '；其余采样点走 framestats 等通道，无法归因）';
+    var box2 = document.createElement('details');
+    box2.id = 'jank-attr';
+    box2.style.cssText = 'margin:12px 16px;padding:10px 14px;border:1px solid var(--border);'
+      + 'border-radius:8px;background:var(--bg2);color:var(--text);font:13px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif;';
+    box2.innerHTML = '<summary data-info="jankAttr" style="cursor:pointer;font-weight:600">卡顿归因（FrameTimeline）· 点击展开</summary>'
+      + '<div style="margin-top:8px">' + head + cover + '</div>'
+      + (rows ? '<ul style="margin:6px 0 0;padding-left:20px">' + rows + '</ul>' : '')
+      + multi
+      + stuffing;
+    var anchor3 = document.getElementById('root') || document.body;
+    anchor3.parentNode.insertBefore(box2, anchor3);
+    if (window.MetricInfo) MetricInfo.decorate(box2);
   } catch (_) {}
 })();
 </script>

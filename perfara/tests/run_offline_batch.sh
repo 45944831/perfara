@@ -66,6 +66,10 @@ run_node "shared_report"        realdevice/shared_report_test.js
 run_node "chart_perf_bench"     realdevice/chart_perf_bench.js
 run_node "fps_legend_overlap"   realdevice/fps_legend_overlap_test.js
 run_node "perf_html"            e2e_metric_config/run_perf_html_test.js
+# 报告页深色主题配色守卫：会话级指标/卡顿归因/取证片段三区块的浅底浅字回归（2026-11-17 截图 bug）
+run_node "report_theme"         e2e_metric_config/run_report_theme_test.js
+# 报告页口径提示守卫：schemaVersion=8 无「当前为 2」误报（2026-11-17 截图 bug）
+run_node "schema_notice"        e2e_metric_config/run_schema_notice_test.js
 run_node "library"              e2e_metric_config/run_library_test.js
 run_node "collector_pages"      e2e_metric_config/run_collector_pages_test.js
 run_node "metric_order"         e2e_metric_config/run_metric_order_test.js

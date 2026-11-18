@@ -17,8 +17,12 @@ const { spawnSync } = require('child_process');
 
 const PROJ = path.resolve(__dirname, '..', '..', '..');
 const REPORTS = path.join(PROJ, 'perfara', 'collector', 'resources', 'reports');
+const PERF = fs.readFileSync(path.join(REPORTS, 'perf.html'), 'utf8');
 const PERF2 = fs.readFileSync(path.join(REPORTS, 'perf2.html'), 'utf8');
 const LIB = fs.readFileSync(path.join(REPORTS, 'library.html'), 'utf8');
+// 口径版本单一真值源：任何报告页的「当前版本」常量都必须与它一致。
+// v2 时代遗留的硬编码 CUR='2' 曾导致 v8 报告在顶部误报「当前为 2」。
+const SCHEMA = require(path.join(PROJ, '_client_src', 'app', 'src', 'metric-schema.js')).SCHEMA_VERSION;
 const TOOLS = path.join(PROJ, 'tools').replace(/\\/g, '/');
 const INJECT = path.join(PROJ, 'tools', 'inject_metric_info.py').replace(/\\/g, '/');
 const PY = 'E:/WorkBuddy1/2026-10-19-13-59-27/tools/.venv/Scripts/python.exe';
@@ -63,8 +67,9 @@ console.log('\n[A] perf2.html 温度口径对齐 + 口径版本提示');
 check('A01 接入 schemaVersion：读取 data.schemaVersion', () => {
   assert(/data\.schemaVersion/.test(PERF2));
 });
-check('A02 当前口径版本常量为 2', () => {
-  assert(PERF2.includes("var CUR = '2'"));
+check('A02 当前口径版本常量与 SCHEMA_VERSION 一致', () => {
+  assert(PERF2.includes("var CUR = '" + SCHEMA + "'"),
+    'perf2.html 的 var CUR 必须等于 SCHEMA_VERSION=' + SCHEMA);
 });
 check('A03 提示文案含「跨版本不可直接对比」', () => {
   assert(PERF2.includes('跨版本不可直接对比'));
@@ -235,9 +240,9 @@ const notices = (dom) => dom.compare.children.filter((c) => c.id === 'cmp-schema
 
 console.log('\n[B] library.html 对比视图默认禁用（极简 DOM 真跑）');
 
-check('B13 版本一致且=2：不插警示条、不禁用（行为不变）', () => {
+check('B13 版本一致且等于 SCHEMA_VERSION：不插警示条、不禁用（行为不变）', () => {
   const dom = makeDom();
-  const gate = runNotice(dom, [{ schemaVersion: '2' }, { schemaVersion: '2' }]);
+  const gate = runNotice(dom, [{ schemaVersion: SCHEMA }, { schemaVersion: SCHEMA }]);
   assert.strictEqual(gate.blocked, false);
   assert.strictEqual(dom.saveBtn.disabled, false);
   assert.strictEqual(notices(dom).length, 0);
@@ -439,6 +444,36 @@ check('C16 纯函数可直接 import 且不修改入参', () => {
   assert.strictEqual(out.pure, true);
   assert.strictEqual(out.status, 'legacy_injected');
   assert(out.defs > 0);
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// D. 报告页「当前口径版本」常量与 SCHEMA_VERSION 一致性
+//    v2 时代遗留的硬编码 CUR='2' 曾导致 v8 报告顶部误报「当前为 2」。
+//    这里锁死所有报告页当前版本常量，升 SCHEMA_VERSION 时若漏改会立刻失败。
+// ══════════════════════════════════════════════════════════════════════════
+console.log('\n[D] 报告页当前口径版本常量一致性守卫');
+
+check('D01 perf.html 的 var CUR 等于 SCHEMA_VERSION', () => {
+  assert(PERF.includes("var CUR = '" + SCHEMA + "'"),
+    'perf.html 的 var CUR 必须等于 ' + SCHEMA);
+});
+check('D02 perf2.html 的 var CUR 等于 SCHEMA_VERSION', () => {
+  assert(PERF2.includes("var CUR = '" + SCHEMA + "'"),
+    'perf2.html 的 var CUR 必须等于 ' + SCHEMA);
+});
+check('D03 library.html 的 const CUR 等于 SCHEMA_VERSION', () => {
+  assert(LIB.includes("const CUR = '" + SCHEMA + "'"),
+    'library.html 的 const CUR 必须等于 ' + SCHEMA);
+});
+check('D04 library.html compareSchemaRisk().current 等于 SCHEMA_VERSION', () => {
+  const fn = extractFn(LIB, 'compareSchemaRisk');
+  assert(fn.includes("current: '" + SCHEMA + "'"),
+    'compareSchemaRisk().current 必须等于 ' + SCHEMA);
+});
+check('D05 三份报告页不得残留 CUR=\'2\' 旧硬编码', () => {
+  [PERF, PERF2, LIB].forEach((src, i) => {
+    assert(!/CUR\s*=\s*'2'/.test(src), '第 ' + (i + 1) + ' 份报告页仍残留 CUR=2');
+  });
 });
 
 console.log('\n==== schema_version_test: ' + passed + ' PASS / ' + failed + ' FAIL ====');

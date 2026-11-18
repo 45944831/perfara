@@ -56,7 +56,14 @@ run "round2_realdevice" round2_realdevice.js "$D" "$P"
 # 弱网 USB 接管专项：会真的改手机系统代理并起拔线守护，串号只从环境变量进。
 # 未设置 PERFARA_TEST_SERIAL 时跳过（不能拿本机序列号当默认值，本文件会进公开仓库）。
 if [ -n "${PERFARA_TEST_SERIAL:-}" ]; then
-  run "weaknet_phone"   weaknet_phone_realdevice.js
+  # 弱网 USB 接管专项从 PERFARA_PKG_ROOT（解包后的当前交付包）取采集端；
+  # 不设时脚本会回退到写死的旧包路径（已被清理 → ENOENT）。透传为 PERFARA_RD_ROOT。
+  if [ -n "${PERFARA_PKG_ROOT:-}" ]; then
+    export PERFARA_RD_ROOT="$PERFARA_PKG_ROOT/collector"
+    run "weaknet_phone" weaknet_phone_realdevice.js
+  else
+    echo "    [skip] weaknet_phone：未设置 PERFARA_PKG_ROOT（脚本默认指向的旧包已清理，需先解包当前交付包）"
+  fi
 else
   echo "    [skip] weaknet_phone：未设置 PERFARA_TEST_SERIAL（串号不入库，需现场指定）"
 fi
@@ -64,7 +71,14 @@ fi
 # 需要先解包发布包并指定 PERFARA_PKG_ROOT（未指定时跳过，默认批处理仍只跑源码侧）。
 # 2026-11-15 首次跑出 2 项红：D-19 刷新率取错字段、D-20 data.js 缺 loading 段。
 if [ -n "${PERFARA_PKG_ROOT:-}" ]; then
-  run "param_accuracy_pkg" param_accuracy_pkg.js "$D" "$P" 60
+  # run() 会 cd 到 perfara/tests/realdevice，相对路径在那里解析不到 → 统一转绝对路径。
+  # 不转的话 param_accuracy_pkg 的 existsSync(ROOT/collector/Perfara.exe) 会失败、
+  # 回退到 ROOT 本身去找 Perfara.exe（那是启动器不是采集端）→ 误报包不完整。
+  case "$PERFARA_PKG_ROOT" in
+    /*|[A-Za-z]:/*) PKG_ROOT_ABS="$PERFARA_PKG_ROOT" ;;
+    *)               PKG_ROOT_ABS="$PROJ/$PERFARA_PKG_ROOT" ;;
+  esac
+  PERFARA_PKG_ROOT="$PKG_ROOT_ABS" run "param_accuracy_pkg" param_accuracy_pkg.js "$D" "$P" 60
 else
   echo "    [skip] param_accuracy_pkg：未设置 PERFARA_PKG_ROOT（先解包发布包再跑）"
 fi

@@ -73,6 +73,7 @@ const JANK_TYPE_SEMANTICS = {
   SurfaceFlingerGpuDeadlineMissed: 'SurfaceFlinger GPU / HWC 合成超时',
   BufferStuffing: '应用连续提交缓冲导致队列堆积（生产过快）',
   BufferStarvation: '缓冲不足，消费端拿不到新帧',
+  SurfaceFlingerScheduling: 'SurfaceFlinger 调度延迟（合成线程未被及时唤醒）',
   PredictionError: '帧时长预测偏差导致调度错位',
   DisplayHAL: '显示 HAL 层延迟',
   DroppedFrame: '帧被丢弃',
@@ -80,8 +81,43 @@ const JANK_TYPE_SEMANTICS = {
 };
 
 /**
+ * gfxinfo framestats `FLAGS` 列 → jankType 名称。
+ *
+ * 低 5 位是 HWUI `FrameInfo.h` 的 JankType（Android 8 起稳定，语义与
+ * FrameTimeline 一致）；32 以上是 Android 12 FrameTimeline 的扩展位。
+ * 真机只观察到 0 / 1（AppDeadlineMissed），扩展位按 AOSP
+ * `libgui/FrameTimeline.h` 的位序登记 —— 未观测到的位不臆测语义，
+ * 命中时按表给名，超出表范围的残余位统一记 Unknown，绝不静默丢掉。
+ */
+const JANK_FLAG_BITS = [
+  [1, 'AppDeadlineMissed'],
+  [2, 'SurfaceFlingerCpuDeadlineMissed'],
+  [4, 'SurfaceFlingerGpuDeadlineMissed'],
+  [8, 'BufferStuffing'],
+  [16, 'Unknown'],
+  [32, 'SurfaceFlingerScheduling'],
+  [64, 'PredictionError'],
+  [128, 'DisplayHAL'],
+  [256, 'DroppedFrame'],
+];
+const JANK_FLAG_KNOWN_MASK = JANK_FLAG_BITS.reduce((a, [bit]) => a | bit, 0);
+
+/**
+ * 归因要求的最小帧数。
+ *
+ * 真机实测：`dumpsys gfxinfo <pkg> framestats` 每次调用都会重置帧缓冲，
+ * 走 HWUI 窗口渲染的应用一次能给到几十~120 帧；而自绘 / SurfaceView 类应用
+ * （游戏、部分 IM 的 Web 容器）只会给 0~2 帧。用 1 帧算出来的「100% 卡顿」
+ * 在物理上无从解释，不如如实不给结论。
+ */
+const JANK_MIN_FRAMES = 8;
+
+/**
  * 最小 perfetto 文本配置（单行，避免设备端 sh 把换行当命令分隔符）。
- * 含 android.surfaceflinger.frametimeline：其 jankType 语义见 JANK_TYPE_SEMANTICS。
+ * 含 android.surfaceflinger.frametimeline：trace 文件里会带每一帧的 timeline 片，
+ * 供离线分析工具（ui.perfetto.dev）直接看「这一帧等的是谁」。
+ * 注意：jankType 归因**不从 trace 文件里解析**（proto 二进制，本模块不引 trace_processor），
+ * 而是另外读一次 gfxinfo framestats 的 FLAGS 位掩码，见 countJankTypes。
  * 时长由命令行 -t <sec>s 控制，配置里不写死。
  */
 const PERFETTO_CONFIG =
@@ -125,16 +161,46 @@ function resolveLocal(reportDir, filename, P) {
   return { ok: true, path: full };
 }
 
-/** 从一段 trace 摘要文本里提取出现过的 jankType（去重、按语义表顺序）。 */
-function parseJankTypes(text) {
-  const src = String(text == null ? '' : text);
-  const found = [];
-  const names = Object.keys(JANK_TYPE_SEMANTICS);
-  for (let i = 0; i < names.length; i++) {
-    const re = new RegExp('(^|[^A-Za-z0-9_])' + names[i] + '(?![A-Za-z0-9_])');
-    if (re.test(src)) found.push(names[i]);
+/**
+ * 把 FLAGS 位掩码数组统计成 jankType 计数。
+ *
+ * ⚠️ 这里替换掉了旧实现的一段**假数据链路**：旧代码把 `perfetto --txt -c - -o <file>`
+ * 的 stdout 当 trace 摘要去正则匹配 jankType —— 而 perfetto 把 trace 写进文件、
+ * stdout 只有零星日志，那段正则永远匹配不到，`jankTypes` 字段实际上从未产出过。
+ * 现在归因只认 gfxinfo framestats 的 FLAGS（FrameTimeline 真实位掩码），
+ * 拿不到就如实留空，不再「看起来有能力、实际永远为空」。
+ *
+ * @param {number[]} flags 每帧一个位掩码
+ * @returns {{total:number, janky:number, counts:Object, types:string[]}}
+ */
+function countJankTypes(flags) {
+  const list = Array.isArray(flags) ? flags : [];
+  const counts = Object.create(null);
+  let janky = 0;
+  for (let i = 0; i < list.length; i++) {
+    const v = Number(list[i]) | 0;
+    if (!v) continue;
+    janky += 1;
+    let matched = false;
+    for (let j = 0; j < JANK_FLAG_BITS.length; j++) {
+      const bit = JANK_FLAG_BITS[j][0];
+      if (v & bit) {
+        const name = JANK_FLAG_BITS[j][1];
+        counts[name] = (counts[name] || 0) + 1;
+        matched = true;
+      }
+    }
+    if (!matched || (v & ~JANK_FLAG_KNOWN_MASK) !== 0) {
+      counts.Unknown = (counts.Unknown || 0) + 1;
+    }
   }
-  return found;
+  // 按位序输出，保证同一份帧序列在不同运行里字段顺序一致（报告/测试可对比）
+  const types = [];
+  for (let j = 0; j < JANK_FLAG_BITS.length; j++) {
+    const name = JANK_FLAG_BITS[j][1];
+    if (counts[name]) types.push(name);
+  }
+  return { total: list.length, janky: janky, counts: Object.assign({}, counts), types: types };
 }
 
 /** 把 jankType 数组翻成 名->中文说明 的映射，供报告页展示。 */
@@ -170,6 +236,10 @@ class TraceCapture {
     const o = Object.assign({}, DEFAULTS, options || {});
     this._runAdb = typeof o.runAdb === 'function' ? o.runAdb : null;
     this._cancelInflight = typeof o.cancelInflight === 'function' ? o.cancelInflight : null;
+    // 帧归因数据源（由接线方注入，通常是 adb.getJankSnapshot）。不注入 = 不做归因，
+    // 绝不退化成「从 trace 文本里猜」——那条路永远是空的（见 countJankTypes 注释）。
+    this._snapshotJank = typeof o.snapshotJank === 'function' ? o.snapshotJank : null;
+    this._packageName = String(o.packageName || '');
     this._now = typeof o.now === 'function' ? o.now : Date.now;
     this._fsImpl = o.fs || null;
     this._pImpl = o.path || null;
@@ -220,6 +290,79 @@ class TraceCapture {
   setEnabled(v) { return v ? this.enable() : this.disable(); }
   isEnabled() { return this._enabled; }
   isRunning() { return this._running; }
+
+  /** 被测包名：帧归因要按包读 gfxinfo framestats（切换应用时由接线方更新）。 */
+  setPackageName(p) {
+    this._packageName = String(p || '');
+    return this._packageName;
+  }
+
+  /**
+   * 读一次帧归因快照。
+   *
+   * 数据源由注入方决定，本模块只认两种载荷：
+   *   { counts: {AppDeadlineMissed: 5, _frames: 60, _total: 5} }  —— timestats 差分（首选，零额外 adb）
+   *   { flags: [0,1,0,...] }                                      —— gfxinfo framestats 位掩码（兜底）
+   *
+   * 任何失败（未注入 / 通道冲突 / 无帧 / 命令失败 / 帧数太少）都返回 null，
+   * 由 capture() 如实不写 jank 字段 —— 这个模块的约定是「宁缺勿假」。
+   */
+  async _readJank() {
+    if (!this._snapshotJank || !this._packageName) return null;
+    try {
+      const r = await this._snapshotJank(this._packageName);
+      if (!r || r.ok !== true) return null;
+
+      let source = String(r.source || 'gfxinfo-framestats');
+      let total = null;
+      let janky = null;
+      let counts = null;
+
+      if (r.counts && typeof r.counts === 'object') {
+        // timestats 差分载荷：下划线前缀是元数据（窗口帧数 / 卡顿帧数），不当类型渲染
+        total = typeof r.counts._frames === 'number' ? r.counts._frames : null;
+        janky = typeof r.counts._total === 'number' ? r.counts._total : null;
+        counts = Object.create(null);
+        for (const k of Object.keys(r.counts)) {
+          if (k.charAt(0) === '_') continue;
+          const v = Number(r.counts[k]);
+          if (Number.isFinite(v) && v > 0) counts[k] = v;
+        }
+        counts = Object.assign({}, counts);
+      } else if (Array.isArray(r.flags) && r.flags.length) {
+        const c = countJankTypes(r.flags);
+        total = c.total;
+        janky = c.janky;
+        counts = c.counts;
+      } else {
+        return null;
+      }
+
+      // 帧数太少不下结论：见 JANK_MIN_FRAMES（自绘应用只给 0~2 帧）
+      if (total != null && total < JANK_MIN_FRAMES) {
+        this._log('[旁路取证] 帧归因跳过：本窗口只有 ' + total + ' 帧（少于 '
+          + JANK_MIN_FRAMES + ' 帧，样本不足以说明卡顿构成）');
+        return null;
+      }
+
+      // 类型按固定位序输出，保证不同来源/不同运行的字段顺序一致
+      const order = JANK_FLAG_BITS.map(([, name]) => name);
+      const types = Object.keys(counts).sort((a, b) => {
+        const ia = order.indexOf(a);
+        const ib = order.indexOf(b);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      });
+      return {
+        source: source,
+        total: total,
+        janky: janky == null ? null : janky,
+        counts: counts,
+        types: types,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
 
   /** 轻量能力探测（只读）；结果缓存，重复调用不再跑探测命令。 */
   isSupported() {
@@ -353,9 +496,12 @@ class TraceCapture {
         timeout = (sec + 12) * 1000;
       }
       this._log('[旁路取证] 尝试 ' + kind + '（' + sec + 's）');
-      const out = await this._callAdb(args, timeout);
+      // 不再收集 stdout：perfetto / simpleperf 都把产物写进 -o 指定的文件，
+      // stdout 只有零星日志。旧实现拿它当 trace 摘要去正则找 jankType，
+      // 永远匹配不到（假链路），归因已改为 gfxinfo framestats 的真实位掩码。
+      await this._callAdb(args, timeout);
       if (this._isCancelled(token)) return { ok: false, error: 'cancelled', remote: remote, cleanPath: cleanPath };
-      return { ok: true, kind: kind, remote: remote, cleanPath: cleanPath, stdout: String(out == null ? '' : out) };
+      return { ok: true, kind: kind, remote: remote, cleanPath: cleanPath };
     } catch (e) {
       this._log('[旁路取证] ' + kind + ' 失败，准备降级');
       return { ok: false, error: errText(e), remote: remote, cleanPath: cleanPath };
@@ -418,8 +564,11 @@ class TraceCapture {
   /**
    * 触发一次短 trace（手动 / 自动低谷命中都走这里）。
    * @param {object} [opts] { durationSec, source:'manual'|'auto', reason, fps, target, ts, overrunMax }
-   * @returns {Promise<{ok:boolean,path?:string,kind?:string,durationMs?:number,jankTypes?:string[],reason?:string}>}
+   * @returns {Promise<{ok:boolean,path?:string,kind?:string,durationMs?:number,
+   *   jankTypes?:string[],jankCounts?:Object,jankFrames?:{total:number,janky:number},
+   *   jankSource?:string,reason?:string}>}
    *   永不抛异常；失败一律 { ok:false, reason }。
+   *   帧归因（jankTypes/jankCounts）只在注入的 snapshotJank 真的给出帧掩码时出现。
    */
   async capture(opts) {
     if (this._disposed) return { ok: false, reason: 'disposed' };
@@ -448,6 +597,11 @@ class TraceCapture {
       if (this._isCancelled(token)) return this._fail('cancelled');
       if (!sup.supported) return this._fail('unsupported');
 
+      // 帧归因必须取在抓 trace **之前**：它回答的是「触发这一刻为什么卡」，
+      // 抓完 10s 后 gfxinfo 的帧窗口早被后续帧刷掉了。
+      const jank = await this._readJank();
+      if (this._isCancelled(token)) return this._fail('cancelled');
+
       const order = sup.backend === 'simpleperf'
         ? ['simpleperf'] : ['perfetto', 'simpleperf'];
       let grabbed = null;
@@ -472,11 +626,14 @@ class TraceCapture {
         kind: grabbed.kind,
         durationMs: durationMs,
       };
-      if (grabbed.kind === 'perfetto') {
-        const types = parseJankTypes(grabbed.stdout || '');
-        if (types.length) {
-          result.jankTypes = types;
-          result.jankTypeSemantics = describeJankTypes(types);
+      if (jank) {
+        // 有归因才写字段：拿不到就一个字段都不写，报告页不会出现空块。
+        result.jankSource = jank.source;
+        result.jankFrames = { total: jank.total, janky: jank.janky };
+        if (jank.types.length) {
+          result.jankTypes = jank.types;
+          result.jankCounts = jank.counts;
+          result.jankTypeSemantics = describeJankTypes(jank.types);
         }
       }
       this._record(result, trigger, sup);
@@ -561,9 +718,11 @@ function createTraceCapture(options) {
 module.exports = {
   TraceCapture,
   createTraceCapture,
-  parseJankTypes,
+  countJankTypes,
   describeJankTypes,
   JANK_TYPE_SEMANTICS,
+  JANK_FLAG_BITS,
+  JANK_MIN_FRAMES,
   PERFETTO_CONFIG,
   sanitizeSegment,
   resolveLocal,

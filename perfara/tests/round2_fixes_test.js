@@ -117,8 +117,8 @@ console.log('\n-- FIX-17（P2）：framestats 窗口用实际周期 --');
 console.log('\n-- 口径版本 --');
 {
   const Schema = require(path.resolve(__dirname, '..', '..', '_client_src', 'app', 'src', 'metric-schema.js'));
-  check('R2 SCHEMA_VERSION 已升到 7（P-01/P-04 + S-01/S-02 + D-19/D-20 改变已发布指标数值）',
-    Schema.SCHEMA_VERSION === '7', Schema.SCHEMA_VERSION);
+  check('R2 SCHEMA_VERSION 已升到 9（D-19/D-20/D-21 + 跨品牌温度归类改变已发布指标数值）',
+    Schema.SCHEMA_VERSION === '9', Schema.SCHEMA_VERSION);
 }
 
 console.log('\n-- 参数准确性报告（P-02 / P-03）--');
@@ -159,8 +159,8 @@ console.log('-- P-01 / P-04（参数准确性调研落地）--');
   check('P-01.3 MOVIE_FRAME_X1_MS = 1000/24（推导值，非官方口径）',
     Math.abs(algo.MOVIE_FRAME_X1_MS - 1000 / 24) < 1e-9, algo.MOVIE_FRAME_X1_MS);
   const Schema2 = require(path.resolve(__dirname, '..', '..', '_client_src', 'app', 'src', 'metric-schema.js'));
-  // v7（D-19/D-20）：目标帧率来源修正 + data.js 补 loading 段
-  check('P-01.4 SCHEMA_VERSION = 7（口径变更已版本化）', Schema2.SCHEMA_VERSION === '7', Schema2.SCHEMA_VERSION);
+  // v7（D-19/D-20）：目标帧率来源修正 + data.js 补 loading 段；v8（D-21）：受面板能力约束
+  check('P-01.4 SCHEMA_VERSION = 9（口径变更已版本化）', Schema2.SCHEMA_VERSION === '9', Schema2.SCHEMA_VERSION);
 }
 {
   // P-04：perf.html 的 snapFpsTarget / 设备值优先 / 档位同源

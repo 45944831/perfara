@@ -74,9 +74,11 @@ const sh = (cmd, timeoutMs) => ADB.shell(DEVICE, cmd, timeoutMs);
   check('dumpsys netstats --uid 有输出', netstatsOut.length > 500, netstatsOut.length);
   let netstatsDefault = '';
   try { netstatsDefault = String(await sh('dumpsys netstats 2>/dev/null', 20000)); } catch (_) {}
-  check('默认视图（不带 --uid）确实解析不出 per-UID 计数（记录 ROM 事实）',
-    algo.parseNetstatsUid(netstatsDefault, uid) === null,
-    { defaultLen: netstatsDefault.length });
+  // 信息性记录（非门禁）：不同 ROM 的默认视图差异大——多数不含 per-UID 行，
+  // 少数（如本机 OneUI）默认视图也带 UID 计数。产品走的是 --uid 通道，
+  // 默认视图能否解析不影响正确性，故不做 PASS/FAIL 断言。
+  const defaultHasUid = algo.parseNetstatsUid(netstatsDefault, uid) !== null;
+  console.log(`    [info] 默认视图 per-UID 解析: ${defaultHasUid ? '可见（该 ROM 默认视图也带 UID 行）' : '不可见（需 --uid）'}，defaultLen=${netstatsDefault.length}`);
   const parsedUid = algo.parseNetstatsUid(netstatsOut, uid);
   check('parseNetstatsUid 在真实输出中命中该 UID（②级可用）', !!parsedUid
     && parsedUid.rx >= 0 && parsedUid.tx >= 0, parsedUid);
