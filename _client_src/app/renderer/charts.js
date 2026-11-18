@@ -70,6 +70,27 @@ function toNumOrNull(v) {
   return (isNaN(n) || !isFinite(n)) ? null : n;
 }
 
+/**
+ * FPS 展示层的「无帧」处理（仅画图，不改数据 / 统计口径）。
+ *
+ * 采集端对本周期没有可见渲染帧的拍写 null（method=no-frames / none），
+ * 统计层据此跳过、不污染均值与 1%Low —— 这个语义必须保留。
+ * 但实时曲线若遇到 null 就断线，看起来像「曲线坏了」，尤其在低谷截图附近
+ * （截屏短暂占用设备，取帧那拍容易 delta=0）会连出好几个断口。
+ *
+ * 这里只把 FPS 线的 null 映射成**贴地 0**让曲线连续：画面静止时本就没有新帧，
+ * 画成 0 是对「这段时间没有帧输出」的如实呈现；同时给数据项打 noFrame 标记，
+ * tooltip 据此显示「无帧（本周期无渲染）」而不是「0 fps」，避免被误读成实测 0。
+ * data.js / 报告统计仍是 null，口径不变，无需升 SCHEMA_VERSION。
+ */
+const FPS_NOFRAME_VALUE = 0;
+function fpsPlotValue(v) {
+  if (v == null || v === '') return { value: FPS_NOFRAME_VALUE, noFrame: true };
+  const n = +v;
+  if (isNaN(n) || !isFinite(n)) return { value: FPS_NOFRAME_VALUE, noFrame: true };
+  return { value: n };
+}
+
 /** 'HH:MM:SS' → 当日秒数；无法解析返回 null（曲线 x 轴与截图时间都是这个格式） */
 function hmsToSec(s) {
   const m = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(String(s == null ? '' : s).trim());
@@ -505,10 +526,17 @@ class ChartManager {
       }
       if (wantData || wantRebuild) {
         const yAxisPatch = cfg.mixed ? [{ min: 0 }, { min: 0 }] : [{ min: 0 }];
+        // FPS 是混排图：series[0]=FPS 线，[1]=Jank 柱，[2]=BigJank 柱。
+        // 只有 FPS 线把 null 映射成贴地 0（带 noFrame 标记），曲线不再断开；
+        // 柱子与其余图表照旧用原值，避免把「没测到」画成「测得 0」。
+        const seriesData = (name === 'fps' && state.series.length)
+          ? [{ data: state.series[0].map(fpsPlotValue) }]
+            .concat(state.series.slice(1).map(s => ({ data: s })))
+          : state.series.map(s => ({ data: s }));
         chart.setOption({
           xAxis:  [{ data: state.times }],
           yAxis:  yAxisPatch,
-          series: state.series.map(s => ({ data: s })),
+          series: seriesData,
         }, LAZY_OPT);
         this._dirty.delete(name);
       }
@@ -778,7 +806,12 @@ class ChartManager {
             const suf = p.seriesName === 'FPS' ? ' fps'
                       : p.seriesName === 'Jank' ? ' 帧'
                       : ' 帧';
-            const shown = p.value == null ? '--' : `<b>${p.value}</b>${suf}`;
+            // 无帧点在图上画成贴地 0，但 tooltip 还原真实语义，避免误读成实测 0 fps。
+            // echarts 把数据项对象展开后，标记在 p.data 上（p.value 是数值 0）。
+            const d = p.data;
+            const noFrame = d && typeof d === 'object' && d.noFrame === true;
+            const shown = noFrame ? '无帧（本周期无渲染）'
+                        : p.value == null ? '--' : `<b>${p.value}</b>${suf}`;
             return `${p.marker}${p.seriesName}: ${shown}`;
           }).join('<br>');
         },
