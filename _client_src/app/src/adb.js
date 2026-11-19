@@ -1132,7 +1132,16 @@ async function getMemInfoLite(deviceId, pid) {
   }
 }
 
-async function getMemInfo(deviceId, packageName, pid) {
+/**
+ * P2a：mem 重通道超时预算的解析（纯函数，离线可测）。
+ * 非法/缺省值回落到 dumpsys 默认值，保证预检与其它调用方行为不变。
+ */
+function resolveMemInfoTimeout(timeoutMs) {
+  return (typeof timeoutMs === 'number' && isFinite(timeoutMs) && timeoutMs > 0)
+    ? timeoutMs : DUMPSYS_TIMEOUT_MS;
+}
+
+async function getMemInfo(deviceId, packageName, pid, timeoutMs) {
   // 一次 shell 取三段：dumpsys meminfo（进程 PSS 家族） + /proc/meminfo（整机）
   // + /proc/<pid>/status（RSS，和轻量通道同源，保证两个通道的 rss 口径一致）。
   // 旧实现分多次 adb，几个值来自不同时刻；合并后只解析同一份输出。
@@ -1140,8 +1149,12 @@ async function getMemInfo(deviceId, packageName, pid) {
     + 'echo "---PROCMEM---"; cat /proc/meminfo 2>/dev/null; '
     + 'echo "---PROCSTATUS---"; '
     + (pid ? `cat /proc/${pid}/status 2>/dev/null` : 'true');
+  // timeoutMs 可选：采集端对「重通道」传熔断预算（P2a），超时由 adb 层 kill 子进程
+  // 并 reject → 下方 catch 返回全 null → collector 走「沿用缓存 PSS + 标 lite」回退。
+  // 默认仍用 DUMPSYS_TIMEOUT_MS，保持其它调用方（预检/工具）行为不变。
+  const budget = resolveMemInfoTimeout(timeoutMs);
   try {
-    const raw = await adbShell(deviceId, cmd, DUMPSYS_TIMEOUT_MS);
+    const raw = await adbShell(deviceId, cmd, budget);
     const M1 = '---PROCMEM---';
     const M2 = '---PROCSTATUS---';
     const i1 = raw.indexOf(M1);
@@ -3590,7 +3603,7 @@ module.exports = {
     // 采集口径纯函数：整机/单核 CPU、meminfo 分项、电池单位、网络接口白名单
     calcCpuPct, parseMemInfoSections, parseBatteryDump, isMeteredIface,
     parseQtaguidStats, parseNetstatsUid, parsePeakRefreshRate, parseMaxSupportedFps,
-    capRefreshRateToPanel, parseMemLite,
+    capRefreshRateToPanel, parseMemLite, resolveMemInfoTimeout,
     nearestRank, frameStatsFromBuckets, pickFrameStats,
     parseGpuBusyCounters, gpuBusyDeltaPct, interpretGpuProbe,
     // FIX-08：GPU 探针脚本生成 / head -v 分节解析（离线用例锁定格式）

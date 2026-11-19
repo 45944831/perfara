@@ -62,6 +62,8 @@ run_py   "upload_edge"          perfara/tests/deep/upload_edge_test.py
 run_node "compare_lanes"        ../deep/compare_lanes_test.js
 run_node "trough_shots"         ../deep/trough_shots_test.js
 run_node "trough_shots_ui"      ../deep/trough_shots_ui_test.js
+# P2b 采集参数优化：低谷截图分段配额（每 600 拍最多 12 张，避免前段用光额度）
+run_node "trough_seg_quota"     ../trough_segment_quota_test.js
 # 主界面每张参数卡的「!」口径说明：说明条目 ↔ 卡片一一对应、展开/切换/收起、不出视口、不撑高卡片
 run_node "metric_help_ui"       ../deep/metric_help_ui_test.js
 # 采集顶栏布局：窄窗口下设备/应用保持同行（2026-11-17「采集时换行」截图 bug）
@@ -69,6 +71,8 @@ run_node "topbar_layout"        ../deep/topbar_layout_test.js
 # FPS 实时曲线无帧点连续显示（2026-11-18「曲线断开」截图）：展示层贴地 0，
 # 统计口径仍跳过 null；tooltip 标注「无帧」，防止断线观感与实测 0 误读。
 run_node "fps_curve_cont"       ../fps_curve_continuity_test.js
+# 报告解读优化：时段趋势识别前后半帧率劣化（分项+风险同步，防均值掩盖后段拐点）
+run_node "report_phase_trend"   ../report_phase_trend_test.js
 # 温度传感器跨品牌统一解析（2026-11-17）：mType 强制枚举 + mName 别名兜底，
 # 锁定 Samsung/联发科/国产 ROM 取证样本，防止「外壳 -- · 结温 --」回归。
 run_node "thermal_vendor_names" ../deep/thermal_vendor_names_test.js

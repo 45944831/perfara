@@ -67,6 +67,63 @@ const PID_REFRESH_EVERY = 5;
 const MEM_FULL_REFRESH_MS = 5000;
 
 /**
+ * mem「重通道」单次读取的熔断预算（P2a，2026-11-19）。
+ * 真机报告实证：mem 通道 p95=286ms / max=383ms，是七通道里毛刺最大的一条，
+ * 个别拍能拖到数百毫秒；而 getMemInfo 原本吃的是 10s 的 DUMPSYS_TIMEOUT_MS，
+ * 设备抖动时会把整拍 tick 拖出采样周期（报告里 16:26:32 那拍 tick=330ms 就是它）。
+ *
+ * 取 1200ms：远高于实测 p95(286ms)/max(383ms)，正常 full 采样不会被误杀；
+ * 只有真正卡住的长尾（>1.2s）才熔断。超时后 getMemInfo 返回全 null，
+ * _collectMem 已有的回退分支会沿用上次缓存的 PSS 并标 src:'lite'——口径不变，
+ * 报告侧本就知道 PSS 不是逐拍实测。代价仅那 1 拍的 PSS 用缓存值（5s 内本就没重测）。
+ */
+const MEM_FULL_TIMEOUT_MS = 1200;
+
+/**
+ * GPU 通道「无节点降频」策略（2026-11-19 采集参数优化 P1）。
+ *
+ * 背景：真机报告实证——某机型 2883 拍 GPU busy 节点全部不可读（gpu 值 100% 为 null），
+ * 但每拍仍无条件跑一次 adb 探针脚本（p50 69ms / 单拍最慢通道之一）。这是纯开销。
+ *
+ * 为什么不直接用启动预检 probeGpuLoad 的 null 结果永久跳过：
+ *   预检刻意跳过 kgsl_busy（开机累计值，判"此刻是否被占满"没意义）且不带 root 兜底，
+ *   它的 null 只代表"瞬时节点没读出值"，不等于"整个采集期都读不到"。若据此永久跳过，
+ *   会在 kgsl_busy 可用（两次采样 delta 有效）或有 root 的机型上误杀 GPU 数据。
+ *
+ * 策略（渐进、可逆，读不到仍写 null，口径不变）：
+ *   连续 GPU_NO_NODE_STREAK 拍探测都返回 null → 进入降频，每 GPU_IDLE_PROBE_EVERY 拍才探一次；
+ *   降频期间任何一拍探到非 null → 立即恢复每拍探测（节点可能在运行中变为可读）。
+ * 收益：无节点机型从每拍 1 次 adb 降到 1/N 次，减少约 1/7 的 adb 命令与设备端负载。
+ */
+const GPU_NO_NODE_STREAK = 5;
+const GPU_IDLE_PROBE_EVERY = 20;
+
+/**
+ * GPU 是否在本拍发起探测（纯函数，供离线回归锁定降频口径）。
+ * @param {{nullStreak:number}} state 采集器维护的连续-null 状态
+ * @param {number} tick 当前拍序号（从 1 起）
+ * @returns {boolean}
+ */
+function gpuShouldProbe(state, tick) {
+  const streak = state && Number.isFinite(state.nullStreak) ? state.nullStreak : 0;
+  if (streak < GPU_NO_NODE_STREAK) return true;
+  return ((tick - 1) % GPU_IDLE_PROBE_EVERY) === 0;
+}
+
+/**
+ * 用本拍探测结果推进连续-null 状态（纯函数）。
+ * 探到非 null（含 0）→ 视为节点可用，重置计数；null/undefined/异常 → +1。
+ * @param {{nullStreak:number}} state
+ * @param {*} value 本拍 getGpuUsage 的结果
+ * @returns {{nullStreak:number}}
+ */
+function gpuNextState(state, value) {
+  const prev = state && Number.isFinite(state.nullStreak) ? state.nullStreak : 0;
+  const gotValue = value != null && (typeof value !== 'number' || !isNaN(value));
+  return { nullStreak: gotValue ? 0 : Math.min(prev + 1, GPU_NO_NODE_STREAK + 1) };
+}
+
+/**
  * 采集期的时间常量。集中放在一个对象里，一是便于单测按比例缩小验证熔断逻辑，
  * 二是避免「16s」「20s」这类魔数散落在代码各处说不清来历。
  */
@@ -211,6 +268,8 @@ class Collector extends EventEmitter {
     this._tickBusy = false;
     /** @type {number} 本轮已执行的 tick 数，用于 PID 刷新节流 */
     this._tickCount = 0;
+    /** @type {{nullStreak:number}} GPU 连续无节点状态（P1 降频探测用，start 时重置） */
+    this._gpuState = { nullStreak: 0 };
     /** @type {number} 连续跳过的重叠 tick 数（只用于日志降噪） */
     this._skippedTicks = 0;
     /** @type {number} 最近一次成功产出采样点的时间戳（熔断判定用） */
@@ -266,6 +325,7 @@ class Collector extends EventEmitter {
     this._processGoneGraceUntil = 0;
     this._tickBusy = false;
     this._tickCount = 0;
+    this._gpuState = { nullStreak: 0 };
     this._skippedTicks = 0;
     this._breakerTripped = false;
     this._deadTicks = 0;
@@ -567,7 +627,8 @@ class Collector extends EventEmitter {
     const now = Date.now();
     const dueFull = !this._memFullCache || (now - this._memFullAt >= MEM_FULL_REFRESH_MS);
     if (dueFull) {
-      const full = await ADB.getMemInfo(this.deviceId, this.packageName, this._pid);
+      // P2a：传熔断预算。超时 → getMemInfo 返回全 null → 下方沿用缓存 PSS 并标 lite。
+      const full = await ADB.getMemInfo(this.deviceId, this.packageName, this._pid, MEM_FULL_TIMEOUT_MS);
       // 完整采样失败（设备抖动）：继续用上一次底本，但不刷新时间戳，
       // 下一次 tick 会立刻重试，避免把「一次失败」放大成 5 秒空窗。
       if (full && full.totalPss != null) {
@@ -667,7 +728,10 @@ class Collector extends EventEmitter {
       if (mc.battery) jobs.push(['battery', ADB.getBatteryInfo(this.deviceId)]);
       // 采了电池就让 thermal 别再读一次 dumpsys battery（后面的兜底会复用这份结果）
       if (mc.temp)  jobs.push(['thermal', ADB.getThermalInfo(this.deviceId, { noBatteryRead: !!mc.battery })]);
-      if (mc.gpu)   jobs.push(['gpu',     ADB.getGpuUsage(this.deviceId, staleGap)]);
+      // P1：GPU 无节点降频。开头几拍照常探测；连续 null 后每 GPU_IDLE_PROBE_EVERY 拍才探一次。
+      // 跳过拍不发起 adb、也不写 shellMs.gpu；val.gpu 为 undefined → data.gpu=null（读不到写 null，口径不变）。
+      const probeGpu = !!mc.gpu && gpuShouldProbe(this._gpuState, this._tickCount);
+      if (probeGpu) jobs.push(['gpu', ADB.getGpuUsage(this.deviceId, staleGap)]);
       // 1.4 每个采集通道各记一份 shell 耗时：总耗时高时，能直接看出是哪一个
       // adb 命令拖慢了整拍（而不是只知道「这拍慢」）。
       const shellMs = {};
@@ -703,6 +767,9 @@ class Collector extends EventEmitter {
         const r = settled[i];
         val[j[0]] = r.status === 'fulfilled' ? r.value : undefined;
       });
+      // P1：只有本拍实际发起过 GPU 探测才推进状态。降频跳过的拍不写 GPU 值，
+      // 也不改变 nullStreak（否则降频节奏会被"跳过的空拍"误当作又一次无节点）。
+      if (probeGpu) this._gpuState = gpuNextState(this._gpuState, val.gpu);
 
       // getThermalInfo 返回 { temperature, tempSource, gpuTemp, cpuTemp, batteryTemp, skinTemp }
       // temperature = 机身/电池温度；cpuTemp / gpuTemp = 芯片结温，不可混用
@@ -867,3 +934,11 @@ module.exports.__timings = TIMINGS;
 // 1.4 注入慢 shell 的纯函数守卫
 module.exports.assessTickCost = assessTickCost;
 module.exports.MAX_HISTORY = MAX_HISTORY;
+// P1：GPU 无节点降频纯函数（离线回归锁定口径，不影响运行时行为）
+module.exports.gpuShouldProbe = gpuShouldProbe;
+module.exports.gpuNextState = gpuNextState;
+module.exports.GPU_NO_NODE_STREAK = GPU_NO_NODE_STREAK;
+module.exports.GPU_IDLE_PROBE_EVERY = GPU_IDLE_PROBE_EVERY;
+// P2a：mem 重通道熔断预算（离线测试确认已接入 full 读取）
+module.exports.MEM_FULL_TIMEOUT_MS = MEM_FULL_TIMEOUT_MS;
+module.exports.MEM_FULL_REFRESH_MS = MEM_FULL_REFRESH_MS;

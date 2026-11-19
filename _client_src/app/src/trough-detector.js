@@ -29,6 +29,12 @@ const DEFAULTS = {
   cooldownMs: 10000,
   maxShots: 30,
   maxSamples: 14400,
+  // P2b 分段配额（2026-11-19）：真实报告的 30 张低谷截图全集中在前 11 分钟，
+  // 后段的场景切换拐点（16:41 FPS 从 ~38 掉到 ~20）没有一张截图可归因。
+  // segmentSamples>0 时启用：每 segmentSamples 拍最多 perSegment 张，避免前段用光额度。
+  // 默认 0 = 关闭，行为与旧版完全一致（单测/默认构造不受影响）。
+  segmentSamples: 0,
+  perSegment: 10,
   recoveryRatio: 0.85,     // ≥ target*0.85 视为回到正常帧率（重新武装）
   recoveryStreak: 2,       // 连续 2 拍正常才重新武装，防单点抖动
   steadyAfter: 6,          // 连续低帧 ≥ 6 拍 → 稳态，停止截图
@@ -99,6 +105,11 @@ class TroughDetector {
     this.cooldownMs = o.cooldownMs;
     this.maxShots = o.maxShots;
     this.maxSamples = o.maxSamples;
+    this.segmentSamples = Math.max(0, o.segmentSamples | 0);
+    this.perSegment = Math.max(1, o.perSegment | 0);
+    // 每张截图落在第几个「样本段」：floor(sampleIndex / segmentSamples)。
+    // 用记录数组而非计数 Map：段号按累计样本算，天然单调，无需清理旧段。
+    this._shotSegmentCounts = new Map();
     this.recoveryRatio = o.recoveryRatio;
     this.recoveryStreak = Math.max(1, o.recoveryStreak | 0);
     this.steadyAfter = Math.max(this.consecutive + 1, o.steadyAfter | 0);
@@ -125,6 +136,25 @@ class TroughDetector {
     this._jankSeen = null;
     this._lastShotTs = 0;
     this.shots = 0;
+    this._shotSegmentCounts.clear();
+  }
+
+  /**
+   * P2b：当前样本段是否还有配额。
+   * 用「已积压的有效样本数」(_fps.length) 算段号——它是单调累计到 maxSamples 的滑窗长度，
+   * 除以 segmentSamples 得到段号；段内截图数达 perSegment 则本段不再截。
+   * @returns {boolean} true=允许截图
+   */
+  _segmentAllows() {
+    if (!this.segmentSamples) return true;
+    const seg = Math.floor(this._fps.length / this.segmentSamples);
+    return (this._shotSegmentCounts.get(seg) || 0) < this.perSegment;
+  }
+
+  _recordSegmentShot() {
+    if (!this.segmentSamples) return;
+    const seg = Math.floor(this._fps.length / this.segmentSamples);
+    this._shotSegmentCounts.set(seg, (this._shotSegmentCounts.get(seg) || 0) + 1);
   }
 
   /**
@@ -167,10 +197,12 @@ class TroughDetector {
       this._highStreak = 0;
       if (this._armed && overrunSeverity(ctx) >= 2
           && this.shots < this.maxShots
+          && this._segmentAllows()
           && t - this._lastShotTs >= this.cooldownMs) {
         this._armed = false;
         this._lastShotTs = t;
         this.shots += 1;
+        this._recordSegmentShot();
         this._jankSeen = null;
         // 证据值要跟判定用同一个回退口径：旧数据只有 overrunP99 时，
         // 不能把 overrunMax 写成 NaN（JSON 序列化后变 null，证据就丢了）。
@@ -197,6 +229,8 @@ class TroughDetector {
       return null;
     }
     if (this.shots >= this.maxShots) return null;
+    // P2b：本样本段的软配额用尽 → 不截，给后段场景留额度（不惩罚 armed 状态，恢复后可再截）
+    if (!this._segmentAllows()) return null;
     if (t - this._lastShotTs < this.cooldownMs) return null;
 
     // 4) 半帧平台 + 明确零卡顿 = 静置/加载/限帧，不是掉帧；深谷仍放行
@@ -207,6 +241,7 @@ class TroughDetector {
     this._lowStreak = 0;
     this._lastShotTs = t;
     this.shots += 1;
+    this._recordSegmentShot();
     return { fps, target, ts: t, reason: 'fps-drop' };
   }
 }

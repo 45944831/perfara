@@ -94,6 +94,10 @@ run_node "accuracy_fixes"       accuracy_fixes_test.js
 run_node "clock_base"           clock_base_test.js
 run_node "round2_fixes"         round2_fixes_test.js
 run_node "overhead_history"     overhead_history_test.js
+# P1 采集参数优化：GPU 通道无节点降频（连续 null 后 1/20 探测，恢复即全速）
+run_node "gpu_channel_throttle" gpu_channel_throttle_test.js
+# P2a 采集参数优化：mem 重通道超时熔断（1200ms 预算，超时回退缓存 PSS + lite）
+run_node "mem_channel_timeout"  mem_channel_timeout_test.js
 run_node "update_check"         update_check_test.js
 run_node "update_notice_ui"     update_notice_ui_test.js
 run_node "metric_info"          e2e_metric_config/run_metric_info_test.js

@@ -3071,6 +3071,37 @@ body { overflow-x: hidden; }
       return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
     }
 
+    /**
+     * 时段趋势（2026-11-19 报告解读优化）：比较前半段 vs 后半段的有效 FPS 均值，
+     * 识别「整段均值掩盖的后段持续劣化」——如真机报告里 16:41 后 FPS 从 ~38 掉到 ~20，
+     * 全程均值仍显示 29.5，用户看不出后段明显变差。
+     *
+     * 输入是已剔除加载段 / null 的有效帧序列（调用方传 iNums(fpsCol)），按时间顺序分前后两半。
+     * 只有「后段相对前段下降 ≥ dropRatio 且绝对差 ≥ minDropFps」才判定为显著劣化，
+     * 单峰抖动 / 样本太少不报（避免制造结论）。
+     * @returns {{early:number, late:number, dropPct:number, dropAbs:number, significant:boolean}|null}
+     */
+    function iPhaseTrend(nums, dropRatio, minDropFps) {
+      const a = iNums(nums);
+      // 至少 10 点才分半，且每半至少 5 点，样本太少不给趋势结论
+      if (a.length < 10) return null;
+      const half = Math.floor(a.length / 2);
+      if (half < 5) return null;
+      const mean = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+      const early = mean(a.slice(0, half));
+      const late = mean(a.slice(half));
+      if (!(early > 0) || !(late > 0)) return null;
+      const dropAbs = early - late;
+      const dropPct = (dropAbs / early) * 100;
+      const ratio = typeof dropRatio === 'number' ? dropRatio : 0.2;
+      const floor = typeof minDropFps === 'number' ? minDropFps : 5;
+      return {
+        early: early, late: late,
+        dropPct: dropPct, dropAbs: dropAbs,
+        significant: dropPct >= ratio * 100 && dropAbs >= floor,
+      };
+    }
+
     /** 按候选路径取一列数值（同一列内逐点回退，兼容 android/pc/ios 不同字段名） */
     function iCol(pts, paths) {
       return (pts || []).map(p => {
@@ -3243,6 +3274,9 @@ body { overflow-x: hidden; }
       const fpsMean = iMean(fpsCol);
       const fpsP5   = iPct(fpsCol, 0.05);
       const fpsP95  = iPct(fpsCol, 0.95);
+      // 时段趋势（报告解读优化）：有效帧序列按时间分前后半，识别被全程均值掩盖的后段劣化。
+      // fpsCol 中 no-frames 段的 null 已被 iNums 过滤，不把「切后台无帧」误判成掉帧。
+      const phase = iPhaseTrend(iNums(fpsCol));
       const jankMean = iMean(jankCol);
       const bjNums  = iNums(bjCol);
       const bjSum   = bjNums.reduce((a, b) => a + b, 0);
@@ -3411,6 +3445,17 @@ body { overflow-x: hidden; }
           ? (fm.lowCount + ' 个采样点低于 ' + lowLine + ' 帧')
           : ('无低于 ' + lowLine + ' 帧的采样');
         push('稳定性', parts.join(' · '), note, worst.apply(null, tones));
+      }
+
+      // ③a 时段趋势：整段均值会掩盖「后段持续掉帧」。只有显著劣化才出这一条，
+      // 让用户知道要看曲线后段 / 低谷截图，而不是被一个中间值误导为全程稳定。
+      out.phaseTrend = phase;
+      if (phase && phase.significant) {
+        push('时段趋势',
+          '前段 ' + iFmt(phase.early, 1) + ' → 后段 ' + iFmt(phase.late, 1) + ' 帧（-'
+            + iFmt(phase.dropPct, 0) + '%）',
+          '后半段帧率明显低于前半段，全程均值掩盖了这次劣化；建议结合曲线后段与低谷截图定位场景变化',
+          'warn');
       }
 
       // ③b 启动耗时（v1.9）：只有「进程原本不存在」的冷启动才有评价意义。
@@ -3607,6 +3652,16 @@ body { overflow-x: hidden; }
       if (fpsTarget && fpsMean != null && fpsMean / fpsTarget < 0.85) {
         out.risks.push({ tone: 'high', text: '帧率仅达目标 ' + Math.round((fpsMean / fpsTarget) * 100)
           + '%，请结合逐帧指标与卡顿归因定位（渲染耗时、GPU 负载、温控都可能）。' });
+      }
+      // 时段趋势风险：与分项解读同一判据（phase.significant），两处必须同步——
+      // 否则会出现「分项说后段劣化、风险清单却只谈全程均值」的自相矛盾。
+      if (phase && phase.significant) {
+        out.risks.push({
+          tone: 'mid',
+          text: '后段帧率较前段下降 ' + iFmt(phase.dropPct, 0) + '%（' + iFmt(phase.early, 1)
+            + ' → ' + iFmt(phase.late, 1) + ' 帧），全程均值掩盖了这次劣化；'
+            + '建议在曲线上框选后段并结合低谷截图定位：是场景切换、UI 重绘还是限帧策略变化。',
+        });
       }
       if (fm && fm.lowPct >= 20) {
         out.risks.push({

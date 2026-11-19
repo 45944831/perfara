@@ -33,8 +33,11 @@ function _stamp(d) {
 function beginRun(reportsDir, category, appId, startTs) {
   const start = Number.isFinite(startTs) ? startTs : Date.now();
   const rel = ['shots', _sanitize(appId) || 'app', _stamp(new Date(start))].join('/');
+  // P2b 分段配额：真实报告里 30 张截图全挤在前 11 分钟，后段场景拐点无图可归因。
+  // 每 600 拍（约 10 分钟）最多 12 张、全局上限 60：前段不再耗尽额度，
+  // 长采集的后段（如 16:41 的掉帧）也能留下截图证据。
   _runs.set(category, {
-    detector: new TroughDetector(),
+    detector: new TroughDetector({ maxShots: 60, segmentSamples: 600, perSegment: 12 }),
     rel,
     abs: path.join(reportsDir, ...rel.split('/')),
     startTs: start,
