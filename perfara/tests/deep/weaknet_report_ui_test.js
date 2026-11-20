@@ -2,10 +2,10 @@
  * 弱网总结分析（报告页）：用合成 data.weaknet 渲染 perf.html，核对区块位置与数值。
  *
  * 数据安排（1 Hz，240 点）：
- *   0–79   直连 60 fps / 0 卡顿 / 120 KB/s / 进程 CPU 20%
- *   80–159 弱网 42 fps / 每拍 1 次卡顿 / 30 KB/s / 进程 CPU 30%（段 start=ts[80], end=ts[160]）
- *   160–239 直连 60 fps / 0 卡顿 / 120 KB/s / 进程 CPU 20%
- * 期望：弱网 80s / 全程 239s（33%），平均帧率 −30%，卡顿 60 次/10min，达帧率 70%。
+ *   0–79   直连 60 fps / 0 Jank / 120 KB/s / 进程 CPU 20%
+ *   80–159 弱网 42 fps / 每拍 1 帧 Jank / 30 KB/s / 进程 CPU 30%（段 start=ts[80], end=ts[160]）
+ *   160–239 直连 60 fps / 0 Jank / 120 KB/s / 进程 CPU 20%
+ * 期望：弱网 80s / 全程 239s（33%），平均帧率 −30%，Jank 60 次/10min（折合），帧率达成度 70%。
  *
  * 需要 NODE_PATH 指向 workspace/node_modules（run_deep_batch.sh 已设置）。
  */
@@ -166,6 +166,7 @@ async function main() {
         cls: d.className, text: d.textContent,
       })) : [],
       hint: sec ? (sec.querySelector('.wn-hint') || {}).textContent : '',
+      foot: sec ? (sec.querySelector('.wn-foot') || {}).textContent : '',
       // 解读总结本身要照常渲染
       insLead: ins ? (ins.querySelector('.insight-lead') || {}).textContent : null,
     };
@@ -203,26 +204,34 @@ async function main() {
   check('对比表 6 行', st.rows.length === 6, st.rows.map((x) => x[0]));
   const fpsRow = row(st, '平均帧率');
   check('平均帧率 42.0 / 60.0 / -30.0%', fpsRow[1] === '42.0' && fpsRow[2] === '60.0' && fpsRow[3] === '-30.0%', fpsRow);
-  const reachRow = row(st, '达帧率');
-  check('达帧率 70.0 / 100.0 / -30.0%', reachRow[1] === '70.0' && reachRow[2] === '100.0' && reachRow[3] === '-30.0%', reachRow);
+  const reachRow = row(st, '帧率达成度');
+  check('帧率达成度 70.0 / 100.0 / -30.0%', reachRow[1] === '70.0' && reachRow[2] === '100.0' && reachRow[3] === '-30.0%', reachRow);
+  check('达成度行标出目标帧率', /目标 60/.test(reachRow[0] || ''), reachRow[0]);
   const lowRow = row(st, '1% Low');
   check('1% Low 42.0 / 60.0', lowRow[1] === '42.0' && lowRow[2] === '60.0', lowRow);
-  const jankRow = row(st, '卡顿');
-  check('卡顿 60.0 / 0.0 次每 10 分钟', jankRow[1] === '60.0' && jankRow[2] === '0.0', jankRow);
+  // 与主表同名同单位：Jank 是 timestats 帧数折合，不再叫「卡顿」（那是 FrameTimeline 逐帧）
+  const jankRow = row(st, 'Jank');
+  check('Jank 60.0 / 0.0 次每 10 分钟（折合）', jankRow[1] === '60.0' && jankRow[2] === '0.0' && /折合/.test(jankRow[0] || ''), jankRow);
+  check('弱网表不再出现「卡顿」行名', !st.rows.some((x) => /^卡顿/.test(x[0] || '')), st.rows.map((x) => x[0]));
   const rxRow = row(st, '下行流量');
-  check('下行流量 30 / 120', rxRow[1] === '30' && rxRow[2] === '120', rxRow);
+  check('下行流量 30.0 / 120.0（与主表同精度）', rxRow[1] === '30.0' && rxRow[2] === '120.0', rxRow);
   const cpuRow = row(st, '进程 CPU');
   check('进程 CPU 30.0 / 20.0', cpuRow[1] === '30.0' && cpuRow[2] === '20.0', cpuRow);
+  check('表下给样本量与口径', /样本：弱网段 \d+ 拍 \/ 直连段 \d+ 拍/.test(st.foot || '')
+    && /折合到 10 分钟/.test(st.foot || '') && /均值口径/.test(st.foot || ''), st.foot);
 
   const chg = (label) => st.changes.find((x) => x.label.indexOf(label) === 0) || {};
   check('帧率下滑标红', chg('平均帧率').cls === 'wn-bad', chg('平均帧率'));
+  // 达成度与 1% Low 同为「越大越好」，下滑也必须标红（极性写错会显示成绿色）
+  check('帧率达成度下滑标红', chg('帧率达成度').cls === 'wn-bad', chg('帧率达成度'));
+  check('1% Low 下滑标红', chg('1% Low').cls === 'wn-bad', chg('1% Low'));
   check('CPU 升高标红', chg('进程 CPU').cls === 'wn-bad' && chg('进程 CPU').text === '+50.0%', chg('进程 CPU'));
   check('流量变化不判好坏（中性）', chg('下行流量').cls === 'wn-flat', chg('下行流量'));
-  check('直连零卡顿时变化显示 --', chg('卡顿').text === '--', chg('卡顿'));
+  check('直连零 Jank 时变化显示 --', chg('Jank').text === '--', chg('Jank'));
 
   check('风险：帧率衰减', st.risks.some((x) => /风险/.test(x.text) && /30\.0%/.test(x.text)), st.risks.map((x) => x.text));
-  check('注意：卡顿倍数', st.risks.some((x) => /注意/.test(x.text) && /卡顿/.test(x.text)), st.risks.map((x) => x.text));
-  check('注意：达帧率下滑', st.risks.some((x) => /注意/.test(x.text) && /达帧率/.test(x.text)), st.risks.map((x) => x.text));
+  check('注意：Jank 倍数', st.risks.some((x) => /注意/.test(x.text) && /Jank/.test(x.text)), st.risks.map((x) => x.text));
+  check('注意：帧率达成度下滑', st.risks.some((x) => /注意/.test(x.text) && /帧率达成度/.test(x.text)), st.risks.map((x) => x.text));
   check('口径说明提到轮询与端口', /每 2 秒/.test(st.hint) && /127\.0\.0\.1:8899/.test(st.hint), st.hint);
   check('无 JS 报错', r.errors.length === 0, r.errors.slice(0, 3));
 

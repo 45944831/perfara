@@ -173,6 +173,8 @@ async function main() {
     extractFn(mainSrc, 'readReportPayload'),
     // inlineEcharts：echarts 内联实现，被 buildSharedCompareHtml 调用
     extractFn(mainSrc, 'inlineEcharts'),
+    // 分享包脱敏：buildSharedCompareHtml 内联数据前会调它，不抽出来会 ReferenceError
+    extractFn(mainSrc, 'redactSharedPayload'),
     extractFn(mainSrc, 'loadPayloadAny'),
     extractFn(mainSrc, '_inlineJson'),
     extractFn(mainSrc, 'buildCompareMeta'),

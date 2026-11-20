@@ -1,11 +1,11 @@
 /**
  * 报告「参数重复」治理回归：
  *   A. 单份报告（perf.html）统计表
- *      - 同名指标行不得出现两次（达帧率 / 均帧 / 低帧占比 曾被渲染两遍）
+ *      - 同名指标行不得出现两次（帧率达成度 / 均帧 / 低帧占比 曾被渲染两遍）
  *      - Jank/10min 四行合并进 Jank 行作副标注（不再独立成行）
  *      - GPU 温度与「温度」同源同值时只留「温度」一行
  *      - 合并后信息不丢：Jank 行仍能看到「次/10min」数值
- *      - 框选区间时派生行仍可用（不丢失随选区变化的达帧率/均帧/低帧占比）
+ *      - 框选区间时派生行仍可用（不丢失随选区变化的帧率达成度/均帧/低帧占比）
  *   B. 对比报告（library.html）指标表
  *      - 不再出现 Jank/10min 独立行
  *      - Jank 行带「每 10min：…」副标注
@@ -86,8 +86,10 @@ async function main() {
   await page.waitForTimeout(2500);
 
   const t = await page.evaluate(() => {
+    // 分组标题行（tr.stats-group，只有一个 colspan 单元格）计数指标名时会混进来，
+    // 明细折叠行（stats-detail-row）同理，两类都排除，只留真正的指标行。
     const rows = Array.from(document.querySelectorAll('#tbl-global tbody tr'))
-      .filter(tr => !tr.classList.contains('stats-detail-row'));
+      .filter(tr => !tr.classList.contains('stats-detail-row') && !tr.classList.contains('stats-group'));
     return {
       labels: rows.map(tr => (tr.children[0] || {}).textContent || '').map(s => s.replace(/!|\d+(?:\.\d+)?\s*次\/10min/g, '').trim()),
       rawTexts: rows.map(tr => (tr.children[0] || {}).textContent || ''),
@@ -102,9 +104,9 @@ async function main() {
   for (const l of t.labels) dup[l] = (dup[l] || 0) + 1;
   const dups = Object.keys(dup).filter(k => dup[k] > 1);
   check('主表无同名重复行', dups.length === 0, dups);
-  // 指标名带单位后缀（如「达帧率%」），按前缀计数
+  // 指标名带单位后缀（如「帧率达成度%」），按前缀计数
   const countOf = (name) => t.labels.filter(l => l.indexOf(name) === 0).length;
-  check('达帧率只出现一次', countOf('达帧率') === 1, countOf('达帧率'));
+  check('帧率达成度只出现一次', countOf('帧率达成度') === 1, countOf('帧率达成度'));
   check('均帧只出现一次', countOf('均帧') === 1, countOf('均帧'));
   check('低帧占比只出现一次', countOf('低帧占比') === 1, countOf('低帧占比'));
   check('Jank/10min 已并入 Jank 行（不再独立成行）',

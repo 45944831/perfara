@@ -254,6 +254,72 @@ check('产物是 .xlsx 扩展名', out.file.endsWith('.xlsx'), out.file);
     [out.file, again.file, third.file].map(f => fs.statSync(f).size));
 }
 
+// ── Excel 与历史报告同 id 归档到 history/（2026-11-20）──────────────────────
+// 需求：Excel 数据位置跟报告放一起，方便提取。归档模式下 <id>.xlsx 与 <id>.js
+// 同名同目录；无 archive（独立导出/归档失败）时维持原行为写 data.js 根目录。
+{
+  check('resolveXlsxTarget 存在且可调用', typeof R.resolveXlsxTarget === 'function');
+
+  const histDir = path.join(TMP, 'history');
+  const arc = { id: '20261120-101500-DeviceX', dir: histDir, file: 'history/20261120-101500-DeviceX.js' };
+  const tArc = R.resolveXlsxTarget(payload, dataJsPath, arc);
+  check('归档模式：Excel 写到 history 目录', tArc.dir === histDir, tArc.dir);
+  check('归档模式：Excel 与报告同 id 命名', tArc.name === arc.id + '.xlsx', tArc.name);
+
+  const tNo = R.resolveXlsxTarget(payload, dataJsPath, null);
+  check('无归档：回退到 data.js 根目录', tNo.dir === path.dirname(dataJsPath), tNo.dir);
+  check('无归档：沿用 Perfara_<app>_<stamp>.xlsx 命名',
+    /^Perfara_.*\.xlsx$/.test(tNo.name), tNo.name);
+
+  // 归档模式真实落盘：writeRunXlsx 传第三参后文件应出现在 history/<id>.xlsx
+  const archived = R.writeRunXlsx(payload, dataJsPath, arc);
+  check('归档模式：产物落在 history 目录', path.dirname(archived.file) === histDir, archived.file);
+  check('归档模式：产物名为 <id>.xlsx', /^20261120-101500-DeviceX(?:_\d+)?\.xlsx$/.test(path.basename(archived.file)), archived.file);
+  check('归档模式：产物是有效 xlsx', fs.existsSync(archived.file) && fs.statSync(archived.file).size > 2000, archived.bytes);
+
+  // 非法字符清洗：id 里的路径分隔符不能逃出 history 目录
+  const tBad = R.resolveXlsxTarget(payload, dataJsPath, { id: '2026/11\\20:x', dir: histDir });
+  check('归档 id 非法字符被清洗', !/[/\\:*?"<>|]/.test(tBad.name), tBad.name);
+}
+
+// 中文设备名：归档 id 必须落成纯 ASCII，否则 main.js 的 safeReportId 白名单
+// 会把它剥成残缺 id —— 报告库的打开/删除/导出/Excel 入口全部对不上文件名。
+{
+  const rdSrc = fs.readFileSync(path.join(APP, 'src', 'reports-data-js.js'), 'utf8');
+  const sanitizeSrc = (/function _sanitize\(s\)\s*\{[\s\S]*?\n\}/.exec(rdSrc) || [''])[0];
+  const safeSrc = (/function safeReportId\(id\)\s*\{[\s\S]*?\n\}/.exec(MAIN) || [''])[0];
+  const f = new Function(sanitizeSrc + '\n' + safeSrc + '\nreturn { _sanitize: _sanitize, safeReportId: safeReportId };')();
+  const id = '20261120-101500-' + f._sanitize('小米 13 Pro');
+  check('中文设备名归档 id 为纯 ASCII', /^[A-Za-z0-9_\-]+$/.test(id), id);
+  check('归档 id 经 safeReportId 原样保留', f.safeReportId(id) === id, { id: id, safe: f.safeReportId(id) });
+  check('中文设备名仍保留可读后缀', !/小米/.test(id) && /13_Pro/.test(id), id);
+}
+
+// reports-data-js：getLastArchive 存在 + 淘汰旧报告时一并删 .xlsx（源码守卫，该模块依赖 electron 无法裸 node require）
+{
+  const rdSrc = fs.readFileSync(path.join(APP, 'src', 'reports-data-js.js'), 'utf8');
+  check('reports-data-js 暴露 getLastArchive', /function getLastArchive\s*\(/.test(rdSrc)
+    && /^\s*getLastArchive,\s*$/m.test(rdSrc));
+  check('archiveReport 记录本次归档供 Excel 同名落盘', /_lastArchive\s*=\s*\{\s*id:\s*meta\.id/.test(rdSrc));
+  check('归档失败先清空 lastArchive 防串味', /_lastArchive\s*=\s*null;\s*\n\s*try\s*\{/.test(rdSrc));
+  check('淘汰旧报告时一并删 .xlsx', /\['\.js',\s*'\.json',\s*'\.xlsx'\]/.test(rdSrc));
+}
+
+// 手动删除报告：必须连 .xlsx 一起删，且 Excel 被占用不能把报告卡成半删状态
+{
+  const del = (MAIN.match(/ipcMain\.handle\('library-delete-reports'[\s\S]*?\n\}\);/) || [''])[0];
+  check('删除报告同时清理 .xlsx', /for \(const ext of \['\.js', '\.json', '\.xlsx'\]\)/.test(del));
+  check('xlsx 删除失败不阻断报告删除', /if \(ext === '\.xlsx'\) continue;/.test(del));
+  check('.js/.json 删除失败仍算失败', /clean = false;/.test(del));
+}
+
+// main.js 四平台接线：_writeRunXlsxSafe 取 getLastArchive 并传入导出
+{
+  check('四平台 Excel 接线数仍为 4', (MAIN.match(/_writeRunXlsxSafe\(payload, dataJsPath, '/g) || []).length === 4);
+  check('_writeRunXlsxSafe 取本次归档', /getLastArchive\(\)/.test(MAIN)
+    && /writeRunXlsxAsync\(payload, dataJsPath, archive\)/.test(MAIN));
+}
+
 const PY = `
 import sys, json, zipfile, xml.etree.ElementTree as ET
 p = sys.argv[1]

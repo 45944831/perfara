@@ -114,6 +114,43 @@ async function main() {
   check('cpu 曲线两条都有数据', cpuChart && cpuChart.series && cpuChart.series.length === 2 && cpuChart.series.every(s => s.hasVal), JSON.stringify(cpuChart));
   check('无 JS 报错', errors.length === 0, errors.join(';'));
 
+  // ── 卡片「Excel」入口：注入 mock reportLib，仅 repA 有同名 xlsx ──
+  const page2 = await browser.newPage();
+  const errors2 = [];
+  page2.on('pageerror', e => errors2.push(e.message));
+  await page2.addInitScript(() => {
+    window.__xlsxOpened = null;
+    window.reportLib = {
+      deleteReports: () => Promise.resolve({ ok: true, removedIds: [], failed: [] }),
+      openReport: () => Promise.resolve({ ok: true }),
+      openReportLocation: () => Promise.resolve({ ok: true }),
+      exportSharedReport: () => Promise.resolve({ ok: false, canceled: true }),
+      exportCompareReport: () => Promise.resolve({ ok: false, canceled: true }),
+      historyDir: () => Promise.resolve(''),
+      openReportXlsx: (id) => { window.__xlsxOpened = id; return Promise.resolve({ ok: true }); },
+      xlsxIds: () => Promise.resolve({ ok: true, ids: ['repA'] }),
+    };
+  });
+  await page2.goto(`http://127.0.0.1:${port}/library.html`, { waitUntil: 'load' });
+  await page2.waitForTimeout(1800);
+  const x = await page2.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('.card'));
+    return {
+      total: cards.length,
+      withBtn: cards.filter(c => c.querySelector('.open-xlsx')).map(c => c.dataset.id),
+      noLocation: document.body.classList.contains('no-location'),
+    };
+  });
+  check('Excel 入口只出现在有 xlsx 的卡片',
+    x.total === 2 && x.withBtn.length === 1 && x.withBtn[0] === 'repA', JSON.stringify(x));
+  check('有 reportLib 时不隐藏 Excel 入口', x.noLocation === false, x.noLocation);
+  await page2.click('.card[data-id="repA"] .open-xlsx');
+  await page2.waitForTimeout(400);
+  const opened = await page2.evaluate(() => window.__xlsxOpened);
+  check('点击 Excel 调用 openReportXlsx(id)', opened === 'repA', opened);
+  check('Excel 入口页无 JS 报错', errors2.length === 0, errors2.slice(0, 2));
+  await page2.close();
+
   console.log(`RESULT: ${pass} passed, ${fail} failed`);
   await browser.close();
   server.close();

@@ -20,7 +20,7 @@ fs.mkdirSync(path.join(ROOT, 'history'), { recursive: true });
 for (const f of fs.readdirSync(path.join(__dirname, 'fixtures_history'))) {
   fs.copyFileSync(path.join(__dirname, 'fixtures_history', f), path.join(ROOT, 'history', f));
 }
-// 夹具的归档 KPI 只有基础项，这里补齐帧率派生指标，用于验证卡片小字行（达帧率 / 均帧 / 1%Low …）
+// 夹具的归档 KPI 只有基础项，这里补齐帧率派生指标，用于验证卡片小字行（帧率达成度 / 均帧 / 1%Low …）
 {
   const idxPath = path.join(ROOT, 'history', 'index.js');
   const raw = fs.readFileSync(idxPath, 'utf8');
@@ -116,7 +116,7 @@ async function main() {
   check('FPS 卡片带「!」', a.cardFps === true);
   check('CPU 卡片带「!」', a.cardCpu === true);
   check('内存卡片带「!」', a.cardMem === true);
-  check('动态卡片 达帧率 带「!」', a.cardReach === true);
+  check('动态卡片 帧率达成度 带「!」', a.cardReach === true);
   check('FPS 图标题带「!」', a.titleFps === true);
   check('CPU 图标题带「!」（标题被改写后仍在）', a.titleCpu === true);
   check('上下文切换图标题带「!」', a.titleCs === true);

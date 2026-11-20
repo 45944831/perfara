@@ -2,7 +2,7 @@
  * perf.html 无头验证（playwright-core + Edge）：
  *  A) android + metricConfig(fps/cpu 移除) → 图表与卡片按配置隐藏，其余正常
  *  B) android 无 metricConfig（旧报告） → 全部显示，行为不回退
- *  C) 全 0 帧 → 帧率质量给提示行，不输出无意义的达帧率
+ *  C) 全 0 帧 → 帧率质量给提示行，不输出无意义的帧率达成度
  *  D) FIX-16：low-activity / no-frames 两种空值语义在解读里分开说清
  *  E) ADPF 热节流信号真的渲染（字段未归一化会静默消失）
  */
@@ -106,8 +106,8 @@ async function main() {
   check('无 JS 报错', b.errors.length === 0, b.errors.join(';'));
 
   console.log('[C] 全 0 帧（应用在后台/无渲染层）→ 帧率质量给出提示行而非静默消失');
-  // 回归背景：目标帧率由帧率分布 P95 推出，全 0 时无解，达帧率/均帧/低帧/1%Low/Drop
-  // /FPS≥目标/稳帧范围/标准差 会整族消失，用户只看到「参数丢了很多」。
+  // 回归背景：目标帧率由帧率分布 P95 推出，全 0 时无解，帧率达成度/均帧/低帧/1%Low/Drop
+  // /满帧占比/稳帧范围/标准差 会整族消失，用户只看到「参数丢了很多」。
   const zeroPerf = mkAndroid(null);
   zeroPerf.perf = zeroPerf.perf.map(s => ({ ...s, fps: 0 }));
   fs.writeFileSync(path.join(ROOT, 'data.js'), 'var data = ' + JSON.stringify(zeroPerf, null, 2) + ';\n');
@@ -126,9 +126,9 @@ async function main() {
   });
   await zc.close();
   const hasNote = zRows.some(r => r.includes('帧率质量') && r.includes('未取到有效帧'));
-  const hasReach = zRows.some(r => r.startsWith('达帧率'));
+  const hasReach = zRows.some(r => r.startsWith('帧率达成度'));
   check('全 0 帧时出现「帧率质量」提示行', hasNote, '行数=' + zRows.length);
-  check('全 0 帧时不再输出无意义的达帧率数值', hasReach === false);
+  check('全 0 帧时不再输出无意义的帧率达成度数值', hasReach === false);
   check('全 0 帧时无 JS 报错', zErr.length === 0, zErr.join(';'));
 
   console.log('[D] FIX-16：low-activity 与 no-frames 两种空值语义要在解读里说清');

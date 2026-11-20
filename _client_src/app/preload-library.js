@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld('reportLib', {
   openReport: (id) => ipcRenderer.invoke('library-open-report', id),
   /** 在系统文件管理器中打开该报告的存放位置（文件存在则选中该文件） */
   openReportLocation: (id) => ipcRenderer.invoke('library-open-report-location', id),
+  /** 用系统默认程序直接打开该报告对应的 Excel（history/<id>.xlsx） */
+  openReportXlsx: (id) => ipcRenderer.invoke('library-open-report-xlsx', id),
+  /** 当前哪些报告存在同名 Excel；返回 { ok, ids } */
+  xlsxIds: () => ipcRenderer.invoke('library-xlsx-ids'),
   /** 把这份报告打包成一个自包含的单文件 HTML（数据+图表库全内联），可直接分享 */
   exportSharedReport: (id) => ipcRenderer.invoke('library-export-shared-report', id),
   /** 把当前对比（多条报告）整体打包成一个自包含的单文件 HTML，可直接分享 */

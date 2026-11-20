@@ -28,10 +28,14 @@ body {
   overflow: hidden;
 }
 
-/* ═══ Scrollbar ═════════════════════════════════════════════════════════════ */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+/* ═══ Scrollbar ═════════════════════════════════════════════════════════════
+   滑块取 --border 与 --text2 之间的中灰蓝：比旧版 #2a2f3d 明显，
+   但不像 --text2 那样抢正文视线；hover 再提亮一档，便于拖动。
+   ⚠️ 与 reports/perf.html 保持一致（报告页 style.css 内联副本）。 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg2); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: #4a5368; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #67728f; }
 
 /* ═══ Top Bar ═══════════════════════════════════════════════════════════════ */
 .topbar {

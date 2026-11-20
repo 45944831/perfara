@@ -152,11 +152,11 @@ JS_BODY = r"""
       d: 'FPS 相对自身均值的离散程度。',
       h: '对整段 FPS 求标准差。',
       g: '越小越稳；均值相同但标准差大，说明画面节奏忽快忽慢。' },
-    reach: { t: '达帧率', u: '%',
+    reach: { t: '帧率达成度', u: '%',
       d: '平均帧率相对目标帧率的达成比例。',
       h: '平均 FPS ÷ 目标帧率 × 100%。',
       g: '≥95% 达标较充分，80%~95% 有掉帧，低于 80% 需结合逐帧指标与卡顿归因定位'
-        + '（渲染耗时、GPU、温控都可能，达帧率低本身不指向具体原因）。' },
+        + '（渲染耗时、GPU、温控都可能，帧率达成度低本身不指向具体原因）。' },
     frametime: { t: '均帧 Avg(FTime)', u: 'ms',
       d: '平均每帧耗时，即每一帧从开始到呈现在屏幕上的平均时间。',
       h: '对 FPS > 0 的采样点计算 1000 / FPS，再取算术平均。',
@@ -182,10 +182,10 @@ JS_BODY = r"""
       d: '折算到每小时的帧率骤降次数。',
       h: 'PerfDog 口径：相邻采样点 FPS 下降超过 8 帧计一次，再按测试时长折算到每小时。',
       g: '衡量突发掉帧的频繁程度，与卡顿次数互补。' },
-    getarget: { t: 'FPS≥目标', u: '%',
+    getarget: { t: '满帧占比', u: '%',
       d: '达到目标帧率的采样点占比。',
       h: '统计 FPS ≥ 目标帧率的采样点数 ÷ 总采样点数。',
-      g: '与达帧率的区别：这是「样本口径」，分子看的是采样点而非均值。' },
+      g: '与帧率达成度的区别：这是「样本口径」，分子看的是采样点而非均值。' },
     medrange: { t: '稳帧范围 MedRange', u: '%',
       d: '帧率落在中位数 ±20% 区间内的采样点占比，衡量画面节奏的一致性。',
       h: '先取 FPS 中位数，再统计落在 ±20% 范围内的采样点占比。',
@@ -436,9 +436,9 @@ JS_BODY = r"""
     '内存': 'mem', '内存 PSS': 'mem', '内存 PSS 平均': 'mem', '物理内存': 'mem', 'PSS': 'mem', 'RSS': 'mem',
     '内存详情': 'memdetail', '内存明细': 'memdetail',
     'FPS': 'fps', 'fps': 'fps', 'FPS 平均': 'fps', 'FPS 最低': 'fpsMin', '目标': 'fpsTarget', '目标帧率': 'fpsTarget',
-    '达帧率': 'reach', '均帧': 'frametime', '低帧': 'lowpct', '低帧占比': 'lowpct',
+    '帧率达成度': 'reach', '均帧': 'frametime', '低帧': 'lowpct', '低帧占比': 'lowpct',
     '帧率标准差': 'fpsstd', '帧耗时标准差': 'ftimestd', '帧耗时方差': 'ftimevar',
-    '1%Low': 'onelow', 'Drop': 'drop', 'FPS≥目标': 'getarget', '≥目标': 'getarget',
+    '1%Low': 'onelow', 'Drop': 'drop', '满帧占比': 'getarget', '≥目标': 'getarget',
     '稳帧': 'medrange', '稳帧范围': 'medrange', '卡顿时长占比': 'stutter', 'Stutter': 'stutter',
     'Jank': 'jank', '大 Jank': 'bigjank', 'BigJank': 'bigjank', 'Jank 平均': 'jank', 'BigJank 平均': 'bigjank',
     'SmallJank': 'smalljank', 'SmallJank 平均': 'smalljank', 'TinyJank': 'tinyjank', 'TinyJank 平均': 'tinyjank',
@@ -716,13 +716,13 @@ def inject_perf(path, dry=False):
 
     # 7. 动态帧率卡片
     old_defs = """      const defs = [
-        { id: 'card-reach', val: 'val-reach', label: '达帧率', unit: '% · 目标 ' + fm.target },
+        { id: 'card-reach', val: 'val-reach', label: '帧率达成度', unit: '% · 目标 ' + fm.target },
         { id: 'card-ft',    val: 'val-ft',    label: '均帧',   unit: 'ms' },
         { id: 'card-low',   val: 'val-low',   label: '低帧占比', unit: '% · <' + Math.round(fm.target * 0.8) + ' 帧' },
         { id: 'card-1low',  val: 'val-1low',  label: '1%Low',  unit: '帧/s' },
       ];"""
     new_defs = """      const defs = [
-        { id: 'card-reach', val: 'val-reach', label: '达帧率', info: 'reach', unit: '% · 目标 ' + fm.target },
+        { id: 'card-reach', val: 'val-reach', label: '帧率达成度', info: 'reach', unit: '% · 目标 ' + fm.target },
         { id: 'card-ft',    val: 'val-ft',    label: '均帧',   info: 'frametime', unit: 'ms' },
         { id: 'card-low',   val: 'val-low',   label: '低帧占比', info: 'lowpct', unit: '% · <' + Math.round(fm.target * 0.8) + ' 帧' },
         { id: 'card-1low',  val: 'val-1low',  label: '1%Low',  info: 'onelow', unit: '帧/s' },
@@ -882,7 +882,7 @@ def inject_library(path, dry=False):
 
     old = """  let extra = '<div class="kpis-extra">' +
     '<span class="kpx"><i>目标</i><b>' + tgt + ' 帧</b></span>' +
-    cell('达帧率', kpi.fpsReach, '%', tone(kpi.fpsReach, 90, 70)) +
+    cell('帧率达成度', kpi.fpsReach, '%', tone(kpi.fpsReach, 90, 70)) +
     cell('均帧', kpi.fpsFrameTime, 'ms', tone(ftScore, 95, 85)) +
     cell('低帧', kpi.fpsLowPct, '%', tone(kpi.fpsLowPct == null ? null : 100 - kpi.fpsLowPct, 90, 80));
   if (kpi.fps1Low != null)
@@ -893,7 +893,7 @@ def inject_library(path, dry=False):
     extra += cell('稳帧', kpi.fpsMedRange, '%', tone(kpi.fpsMedRange, 80, 60));"""
     new = """  let extra = '<div class="kpis-extra">' +
     '<span class="kpx"><i data-info="fpsTarget">目标</i><b>' + tgt + ' 帧</b></span>' +
-    cell('达帧率', kpi.fpsReach, '%', tone(kpi.fpsReach, 90, 70), 'reach') +
+    cell('帧率达成度', kpi.fpsReach, '%', tone(kpi.fpsReach, 90, 70), 'reach') +
     cell('均帧', kpi.fpsFrameTime, 'ms', tone(ftScore, 95, 85), 'frametime') +
     cell('低帧', kpi.fpsLowPct, '%', tone(kpi.fpsLowPct == null ? null : 100 - kpi.fpsLowPct, 90, 80), 'lowpct');
   if (kpi.fps1Low != null)

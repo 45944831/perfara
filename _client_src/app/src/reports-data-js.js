@@ -415,11 +415,11 @@ function summarizePerf(perf, metricConfig, displayProfile) {
   }
 
   // FPS 派生指标（与报告页 perf.html perfFpsQualityRows 完全同口径）：
-  //   达帧率   = 平均 FPS ÷ 目标帧率 × 100
+  //   帧率达成度 = 平均 FPS ÷ 目标帧率 × 100（均值口径）
   //   均帧     = 各采样点帧间隔（1000/FPS）的平均，ms
   //   低帧占比 = FPS 低于目标 80% 的采样占比
   //   1%Low    = 帧耗时最长 1% 的均值折算帧率
-  //   FPS≥目标 = 达到目标帧率的采样占比
+  //   满帧占比 = 达到目标帧率的采样占比（样本口径，与上面「帧率达成度」不同算法）
   //   稳帧范围 = 偏离中位数 ±20% 内的占比（MedRange）
   //   帧率标准差 / 卡顿时长占比（Stutter）/ Drop（帧/时）
   // 目标帧率由 P95 吸附到常见刷新率（30/45/60/90/120/144/165）。
@@ -453,7 +453,7 @@ function summarizePerf(perf, metricConfig, displayProfile) {
       const worstFt = ftList.slice(0, k).reduce((a, b) => a + b, 0) / k;
       kpi.fps1Low = { avg: _round(1000 / worstFt, 1), min: null, max: null };
     }
-    // FPS≥目标
+    // 满帧占比（样本口径）
     const ge = fpsNums.filter(v => v >= target).length;
     kpi.fpsGeTarget = { avg: _round((ge / fpsNums.length) * 100, 1), min: null, max: null };
     // 稳帧范围 MedRange
@@ -515,7 +515,14 @@ function summarizePerf(perf, metricConfig, displayProfile) {
 }
 
 function _sanitize(s) {
-  return String(s || '').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+  // 只保留 ASCII 字母数字下划线连字符（\w = [A-Za-z0-9_]）。
+  // 设备名可能是中文（iOS「某某的 iPhone」/ 中文主机名），若原样进 id，
+  // main.js 的 safeReportId 白名单会把它剥成残缺 id，导致报告库的
+  // 打开 / 删除 / 导出分享 / Excel 入口全部对不上文件名。
+  return String(s || '')
+    .replace(/[^\w\-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
 }
 
 /** 读取 history/index.json（不存在返回空数组） */
@@ -538,10 +545,22 @@ function writeReportIndex(list) {
 }
 
 /**
+ * 最近一次归档的元信息（报告 id + 所在目录）。
+ * 供 Excel 导出用：让 .xlsx 与本次归档的 <id>.js 同名、同目录，提取时一一对应。
+ * 模块级单槽即可：writeDataJs 归档后立即同步取走，不会跨采集串味。
+ */
+let _lastArchive = null;
+function getLastArchive() {
+  return _lastArchive ? Object.assign({}, _lastArchive) : null;
+}
+
+/**
  * 归档一次采集：写 history/<id>.js|json 并刷新索引。
  * 返回元数据；失败返回 null（归档是附加能力，绝不抛出影响采集主流程）。
  */
 function archiveReport(payload, dataJsPath) {
+  // 先清空：本次归档失败时，Excel 导出应回退到默认命名，而不是误用上一次的 id。
+  _lastArchive = null;
   try {
     const perf = payload && payload.perf;
     if (!Array.isArray(perf) || perf.length === 0) return null;
@@ -598,13 +617,17 @@ function archiveReport(payload, dataJsPath) {
     list.unshift(meta);
     while (list.length > MAX_HISTORY_REPORTS) {
       const old = list.pop();
-      for (const ext of ['.js', '.json']) {
+      // Excel 现在与报告同 id 归档到 history/（<id>.xlsx），淘汰旧报告时一并清掉，
+      // 避免报告被删、Excel 却残留成一堆孤立文件。
+      for (const ext of ['.js', '.json', '.xlsx']) {
         // 删旧报告失败（被占用 / 已经不在了）不阻断索引更新：索引里已经把它 pop 掉，
         // 残留文件下次归档时还会被再删一遍。
         try { fs.unlinkSync(path.join(dir, `${old.id}${ext}`)); } catch (_) {}
       }
     }
     writeReportIndex(list);
+    // 记录本次归档，供紧随其后的 Excel 导出同名落盘（见 getLastArchive）。
+    _lastArchive = { id: meta.id, dir, file: meta.file };
     return meta;
   } catch (_) {
     return null;
@@ -616,6 +639,7 @@ module.exports = {
   getReportsRootDir,
   resolveReportsRootDir,
   getHistoryDir,
+  getLastArchive,
   formatReportAppId,
   writeDataJs,
   preparePayload,

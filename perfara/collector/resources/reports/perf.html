@@ -84,10 +84,13 @@ body {
   min-height: 0;
 }
 
-/* ═══ Scrollbar ═════════════════════════════════════════════════════════════ */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+/* ═══ Scrollbar ═════════════════════════════════════════════════════════════
+   滑块取 --border 与 --text2 之间的中灰蓝：比旧版 #2a2f3d 明显，
+   但不像 --text2 那样抢正文视线；hover 再提亮一档，便于拖动。 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg2); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: #4a5368; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #67728f; }
 
 /* ═══ Top Bar ═══════════════════════════════════════════════════════════════ */
 .topbar {
@@ -220,16 +223,18 @@ select:focus, input:focus { border-color: var(--accent); }
 .device-info-text { flex: 1; min-width: 0; }
 
 /* ═══ Stat Cards ════════════════════════════════════════════════════════════ */
+/* 指标卡：网格按「行数最少、列数不超过 7」动态算列（--card-cols 由 JS 写），
+   14 张正好 7+7 两行填满，不再出现 12+2 那种第二行右侧大片空白。
+   顺序也由 JS 按分组排（帧率组 → 卡顿组 → 资源/温度组），见 layoutMetricCards()。 */
 .cards {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(var(--card-cols, 7), minmax(0, 1fr));
   gap: 6px;
   padding: 6px 16px;
   flex-shrink: 0;
 }
 .card {
-  flex: 1 1 90px;
-  min-width: 90px;
+  min-width: 0;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -241,25 +246,17 @@ select:focus, input:focus { border-color: var(--accent); }
   transition: border-color 0.2s;
 }
 .card-label { font-size: 11px; color: var(--text2); }
+/* 卡片数值默认用正文色；只有 JS 判定了达标程度才上状态色。
+   2026-11-20 取消按指标类别的装饰色（CPU 蓝 / 网络紫 / GPU 橙 …）：
+   那些颜色与「绿橙红=达标程度」的说明混在一起，会让「优秀 89 分」的报告里
+   出现一片红/橙，开发者没法靠颜色判断哪里真有问题。 */
 .card-value {
   font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1;
   color: var(--card-color, var(--text));
 }
 .card-unit  { font-size: 10px; color: var(--text2); }
 
-/* Card color states (android cards ids) */
-#card-cpu     { --card-color: #4f8ef7; }
-#card-proccpu { --card-color: #79d4f7; }
-#card-mem     { --card-color: #3ecf8e; }
-#card-fps     { --card-color: #f5d020; }
-#card-jank    { --card-color: #f5a623; }
-#card-bigjank { --card-color: #f85151; }
-#card-net     { --card-color: #c77dff; }
-#card-gpu     { --card-color: #f5a623; }
-#card-battery { --card-color: #3ecf8e; }
-#card-temp    { --card-color: #f85151; }
-
-/* 阈值着色：JS 在 card 上写 --card-color（内联优先级高于上面的 id 规则） */
+/* 阈值着色：JS 在 card 上写 --card-color（内联优先级最高） */
 .card[data-state="good"] { border-color: rgba(62,207,142,.38); }
 .card[data-state="warn"] { border-color: rgba(245,166,35,.40); }
 .card[data-state="bad"]  { border-color: rgba(248,81,81,.45); }
@@ -357,6 +354,52 @@ select[disabled] { opacity: 0.85; cursor: default; }
   border-radius: var(--radius);
   flex-shrink: 0;
 }
+/* ═══ 一眼速览（报告顶部：扫一眼就掌握全貌）═══════════════════════ */
+.glance {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 13px 11px;
+  margin-bottom: 12px;
+  background: rgba(79,142,247,.05);
+}
+.glance--warn  { border-left-color: var(--orange); background: rgba(245,166,35,.05); }
+.glance--bad   { border-left-color: var(--red);    background: rgba(248,81,81,.05); }
+.glance--great { border-left-color: var(--green);  background: rgba(62,207,142,.05); }
+.glance-top { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.glance-label { font-size: 11px; letter-spacing: .5px; color: var(--text2); }
+.glance-verdict { font-size: 15px; font-weight: 600; color: var(--text); }
+.glance-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.glance-chip {
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+  padding: 3px 9px; border-radius: 6px;
+  background: rgba(127,127,127,.12); color: var(--text2);
+}
+.glance-chip b { color: var(--text); font-weight: 600; margin-left: 4px; }
+.glance-chip--warn b { color: var(--orange); }
+.glance-chip--bad  b { color: var(--red); }
+.glance-chip--good b { color: var(--green); }
+.glance-focus {
+  margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--border);
+  font-size: 12px; line-height: 1.6; color: var(--text2);
+}
+.glance-focus b { color: var(--orange); font-weight: 500; }
+/* 合并后：解读总结的唯一头部。sub 作为卡内小字，insight-lead 保留类名兼容弱网 UI 测试 */
+.glance-sub { font-size: 11px; color: var(--text2); margin-top: 6px; font-variant-numeric: tabular-nums; }
+.glance .insight-lead { font-size: 13px; line-height: 1.65; color: var(--text); margin: 5px 0 0; }
+/* 方法论声明默认折叠（B 档）：首屏只留结论，点开可读权重/可信度全文 */
+.insight-method { margin: 0 0 9px; font-size: 12px; }
+.insight-method summary {
+  cursor: pointer; color: var(--text2); font-size: 11.5px;
+  padding: 2px 0; list-style: revert; user-select: none;
+}
+.insight-method summary:hover { color: var(--text); }
+.insight-method-body {
+  margin-top: 6px; padding: 8px 11px; border-radius: 6px;
+  background: rgba(127,127,127,.08); color: var(--text2);
+  font-size: 12px; line-height: 1.7;
+}
+.insight-method-body b { color: var(--text); font-weight: 600; }
 .insight-head {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-bottom: 8px;
@@ -444,14 +487,16 @@ select[disabled] { opacity: 0.85; cursor: default; }
   margin-left: 5px; font-size: 10px; color: var(--text2); font-weight: 400;
 }
 .stats-toggle td { padding: 4px 8px 6px; border-bottom: none; }
-.stats-toggle button {
+/* 明细展开条：分栏后不再挂在表格里，独立成一条整宽按钮 */
+.stats-detail-bar { padding: 2px 0 6px; }
+.stats-toggle button, .stats-detail-bar button {
   width: 100%; text-align: left;
   background: transparent; border: 1px dashed var(--border); border-radius: 6px;
   color: var(--text2); font-size: 11px; font-family: inherit;
   padding: 4px 9px; cursor: pointer;
   transition: color .15s, border-color .15s;
 }
-.stats-toggle button:hover { color: var(--accent); border-color: var(--accent); }
+.stats-toggle button:hover, .stats-detail-bar button:hover { color: var(--accent); border-color: var(--accent); }
 .stats-detail-row td { color: var(--text2); background: rgba(255,255,255,.012); }
 .stats-detail-row td:first-child { padding-left: 18px; }
 
@@ -526,15 +571,21 @@ select[disabled] { opacity: 0.85; cursor: default; }
 /* ── 指标卡：等宽网格 + 字号层次 + 悬停反馈 ───────────────────────────── */
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(106px, 1fr));
+  grid-template-columns: repeat(var(--card-cols, 7), minmax(0, 1fr));
   gap: 8px;
   padding: 8px 16px 10px;
 }
-.card { padding: 12px 10px; gap: 4px; }
+.card { padding: 12px 10px; gap: 4px; min-width: 0; }
 .card:hover { border-color: #3b4354; }
 .card-label { font-size: 12px; font-weight: 500; }
 .card-value { font-size: 24px; letter-spacing: -.2px; }
 .card-unit  { font-size: 11px; }
+
+/* 窄窗口降到 4 列：7 列时每张不足 100px，「低帧占比」这类标签会挤成两行。
+   必须写在这条 .cards 之后，否则会被上面的 grid-template-columns 覆盖。 */
+@media (max-width: 820px) {
+  .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
 
 /* ── 图表：标题更醒目、图区更舒展 ─────────────────────────────────────── */
 .charts-grid { gap: 12px; padding: 0 16px 12px; }
@@ -542,12 +593,88 @@ select[disabled] { opacity: 0.85; cursor: default; }
 .chart-wrap:hover { border-color: #333a4a; }
 .chart-wrap.stats { height: auto; }          /* 统计表保持自适应高度 */
 .chart-title { padding: 9px 12px 0; font-size: 12.5px; color: var(--text); letter-spacing: .2px; }
+/* 单点/空图提示 */
+.chart-note { margin-left: 8px; font-size: 11px; font-weight: 400; color: var(--text2); opacity: .9; }
+.charts-hidden-note {
+  grid-column: 1 / -1;
+  padding: 7px 11px; border: 1px dashed var(--border); border-radius: 6px;
+  color: var(--text2); font-size: 11px; line-height: 1.6;
+}
 
 /* ── 统计表：表头吸顶 + 斑马纹 + 行悬停 ───────────────────────────────── */
 .stats-head { padding-top: 10px; }
 /* 让统计表跟随主滚动条滚动（stats-body 不再自成滚动容器），表头才能相对图表区吸顶 */
 .chart-wrap.stats .stats-body { padding: 6px 12px 12px; overflow: visible; }
 .stats-table { font-size: 12.5px; }
+/* 分栏容器（2026-11-20）：1900 宽窗口下 720px 单表右侧空 61%，铺满整宽又会让
+   数值离指标名 600px。改为按分组切成 2~3 栏并排，每栏自带表头——指标名到数值的
+   距离保持在 250~300px，同时宽度用满。栏数由 renderTable 按可用宽度决定，
+   单栏时退化成普通表格（.single）。 */
+.stats-tables { display: flex; flex-wrap: wrap; gap: 2px 26px; align-items: flex-start; }
+.stats-tables > .stats-table { flex: 1 1 0; min-width: 0; }
+.stats-tables.single { display: block; }
+/* 明细横跨所有栏独占一行；展开后它自己也按栏数分成多段（.detail-blocks），
+   28 行明细不再缩成左下角一条 720px 的窄长条。 */
+.stats-tables > .stats-detail-wrap { flex: 0 0 100%; margin-top: 2px; }
+.stats-detail { max-width: 720px; }
+/* 单栏时主表本身就是整宽，明细跟着整宽，别缩成一小块 */
+.stats-tables.single .stats-detail { max-width: none; }
+.stats-table { table-layout: fixed; width: 100%; }
+.stats-table th:nth-child(1), .stats-table td:nth-child(1) { width: 44%; }
+/* 数值列左对齐（不再右对齐到底）：精度统一后位数一致，左对齐能让数字紧贴指标名，
+   不必从「帧率达成度」横跨 400px 去找「70.5」。 */
+.stats-table th:nth-child(n+2), .stats-table td:nth-child(n+2) {
+  width: 18.6%;
+  text-align: left;
+  padding-left: 20px;
+}
+/* 采样点 <100 时 P98 列不渲染，列宽比例同步换成 3 列版 */
+.stats-table.no-p98 th:nth-child(1), .stats-table.no-p98 td:nth-child(1) { width: 46%; }
+.stats-table.no-p98 th:nth-child(n+2), .stats-table.no-p98 td:nth-child(n+2) { width: 27%; }
+/* 单值指标的后两列：显式「—」并压暗，避免同一行三列数字完全相同造成误读 */
+.stat-na { color: var(--text2); opacity: .55; }
+/* 指标分组行：CPU / 帧率 / 卡顿 / 内存 / 网络 分开，21 行不再一路平铺 */
+.stats-group td {
+  padding: 13px 8px 4px; border-bottom: none !important;
+  background: transparent !important;
+  font-size: 11px; font-weight: 600; color: var(--text2); letter-spacing: .04em;
+}
+.stats-group:first-child td { padding-top: 4px; }
+/* 表下口径脚注 */
+.stats-foot {
+  margin: 4px 0 2px; padding-top: 9px;
+  border-top: 1px dashed var(--border);
+  color: var(--text2); font-size: 11px; line-height: 1.75;
+}
+.stats-foot b { color: var(--text); font-weight: 500; }
+/* 子场景表（tag 区间）是「多个子场景 × 二十个指标」的长表，列宽按内容分，
+   不参与整体统计的分栏；否则 4 列拉满 1800px，子场景列会占掉 800px */
+#tbl-tags { max-width: 720px; }
+/* 框选后的「选中区域统计」：吸顶跟随，框选曲线时结果始终在视口内。
+   原来它固定在统计表下面（top 2041），用户在图 2500+ 处框选，结果在几百像素之外，
+   提示还写「左侧」——既不在左侧也不在同一屏。 */
+#wrap-stats-selected {
+  /* top 与 z-index 都要让开吸顶的 .topbar（高 43px）：原来 top:0 会被顶栏盖住标题 */
+  position: sticky; top: 43px; z-index: 25;
+  max-height: 44vh; overflow: auto;
+  background: var(--bg2);
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+}
+#wrap-stats-selected .stats-body { padding-bottom: 10px; }
+/* 顶栏目录 */
+.toc { position: relative; }
+.toc-menu {
+  position: absolute; right: 0; top: 30px; z-index: 200;
+  min-width: 136px; padding: 6px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(0,0,0,.45);
+}
+.toc-item {
+  display: block; width: 100%; padding: 6px 9px; text-align: left;
+  background: none; border: 0; border-radius: 5px;
+  color: var(--text); font-size: 12.5px; cursor: pointer; font-family: inherit;
+}
+.toc-item:hover { background: rgba(79,142,247,.16); }
 .stats-table thead th {
   position: sticky; top: 0; z-index: 2;
   background: var(--bg2); font-size: 12px;
@@ -563,7 +690,7 @@ select[disabled] { opacity: 0.85; cursor: default; }
   display: block; margin-top: 2px;
   font-size: 10.5px; color: var(--text2); opacity: .85;
 }
-.stats-toggle button { font-size: 11.5px; padding: 5px 9px; }
+.stats-toggle button, .stats-detail-bar button { font-size: 11.5px; padding: 5px 9px; }
 
 /* ── 解读总结：风险项色条化，便于纵向扫读 ─────────────────────────────── */
 .insight { padding: 14px 16px; margin: 4px 16px 12px; }
@@ -587,7 +714,8 @@ body { overflow-x: hidden; }
 .charts-grid { flex: none; overflow: visible; }
 .topbar { position: sticky; top: 0; z-index: 30; }
 /* 统计表表头改为相对整页吸顶（topbar 高度 ≈ 37px） */
-.stats-table thead th { top: 37px; }
+/* 吸顶点要在吸顶顶栏（43px）之下，原来的 37px 会被顶栏压掉 6px */
+.stats-table thead th { top: 44px; }
 /* ═══ 整页滚动 __SCROLL_V1__ end ════════════════════════════════════════ */
 </style>
 </head>
@@ -618,11 +746,11 @@ body { overflow-x: hidden; }
       d: 'FPS 相对自身均值的离散程度。',
       h: '对整段 FPS 求标准差。',
       g: '越小越稳；均值相同但标准差大，说明画面节奏忽快忽慢。' },
-    reach: { t: '达帧率', u: '%',
+    reach: { t: '帧率达成度', u: '%',
       d: '平均帧率相对目标帧率的达成比例。',
       h: '平均 FPS ÷ 目标帧率 × 100%。',
       g: '≥95% 达标较充分，80%~95% 有掉帧，低于 80% 需结合逐帧指标与卡顿归因定位'
-        + '（渲染耗时、GPU、温控都可能，达帧率低本身不指向具体原因）。' },
+        + '（渲染耗时、GPU、温控都可能，帧率达成度低本身不指向具体原因）。' },
     frametime: { t: '均帧 Avg(FTime)', u: 'ms',
       d: '平均每帧耗时，即每一帧从开始到呈现在屏幕上的平均时间。',
       h: '对 FPS > 0 的采样点计算 1000 / FPS，再取算术平均。',
@@ -648,10 +776,10 @@ body { overflow-x: hidden; }
       d: '折算到每小时的帧率骤降次数。',
       h: 'PerfDog 口径：相邻采样点 FPS 下降超过 8 帧计一次，再按测试时长折算到每小时。',
       g: '衡量突发掉帧的频繁程度，与卡顿次数互补。' },
-    getarget: { t: 'FPS≥目标', u: '%',
+    getarget: { t: '满帧占比', u: '%',
       d: '达到目标帧率的采样点占比。',
       h: '统计 FPS ≥ 目标帧率的采样点数 ÷ 总采样点数。',
-      g: '与达帧率的区别：这是「样本口径」，分子看的是采样点而非均值。' },
+      g: '与帧率达成度的区别：这是「样本口径」，分子看的是采样点而非均值。' },
     medrange: { t: '稳帧范围 MedRange', u: '%',
       d: '帧率落在中位数 ±20% 区间内的采样点占比，衡量画面节奏的一致性。',
       h: '先取 FPS 中位数，再统计落在 ±20% 范围内的采样点占比。',
@@ -902,9 +1030,9 @@ body { overflow-x: hidden; }
     '内存': 'mem', '内存 PSS': 'mem', '内存 PSS 平均': 'mem', '物理内存': 'mem', 'PSS': 'mem', 'RSS': 'mem',
     '内存详情': 'memdetail', '内存明细': 'memdetail',
     'FPS': 'fps', 'fps': 'fps', 'FPS 平均': 'fps', 'FPS 最低': 'fpsMin', '目标': 'fpsTarget', '目标帧率': 'fpsTarget',
-    '达帧率': 'reach', '均帧': 'frametime', '低帧': 'lowpct', '低帧占比': 'lowpct',
+    '帧率达成度': 'reach', '均帧': 'frametime', '低帧': 'lowpct', '低帧占比': 'lowpct',
     '帧率标准差': 'fpsstd', '帧耗时标准差': 'ftimestd', '帧耗时方差': 'ftimevar',
-    '1%Low': 'onelow', 'Drop': 'drop', 'FPS≥目标': 'getarget', '≥目标': 'getarget',
+    '1%Low': 'onelow', 'Drop': 'drop', '满帧占比': 'getarget', '≥目标': 'getarget',
     '稳帧': 'medrange', '稳帧范围': 'medrange', '卡顿时长占比': 'stutter', 'Stutter': 'stutter',
     'Jank': 'jank', '大 Jank': 'bigjank', 'BigJank': 'bigjank', 'Jank 平均': 'jank', 'BigJank 平均': 'bigjank',
     'SmallJank': 'smalljank', 'SmallJank 平均': 'smalljank', 'TinyJank': 'tinyjank', 'TinyJank 平均': 'tinyjank',
@@ -958,6 +1086,8 @@ body { overflow-x: hidden; }
       if (el.getAttribute('data-info') === '') continue;
       if (el.querySelector('.info-dot')) continue;
       if (el.tagName === 'TBODY' || el.tagName === 'TABLE') continue;
+      // 图表标题保留「!」：它是「FPS 全程 vs 有效」「1%Low 采样点口径」等
+      // 说明的唯一入口，去掉后读者只能靠猜。
       var key = keyOf(el.getAttribute('data-info'));
       if (!key || !INFO[key]) continue;
       var dot = document.createElement('span');
@@ -1117,10 +1247,7 @@ body { overflow-x: hidden; }
       </div>
     </div>
     <div class="stats-body">
-      <table class="stats-table" id="tbl-global">
-        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="stats-tables" id="tbl-global"></div>
     </div>
   </div>
   <div class="chart-wrap stats" id="wrap-stats-selected">
@@ -1132,10 +1259,7 @@ body { overflow-x: hidden; }
     </div>
     <div class="stats-body">
       <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="sel-hint">拖动鼠标左键框选 X 轴区域（全图同步缩放），然后释放。</div>
-      <table class="stats-table" id="tbl-selected">
-        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="stats-tables" id="tbl-selected"></div>
     </div>
   </div>
   <div class="chart-wrap stats" id="wrap-stats-tags">
@@ -1234,10 +1358,7 @@ body { overflow-x: hidden; }
       </div>
     </div>
     <div class="stats-body">
-      <table class="stats-table" id="tbl-global">
-        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="stats-tables" id="tbl-global"></div>
     </div>
   </div>
   <div class="chart-wrap stats" id="wrap-stats-selected">
@@ -1249,10 +1370,7 @@ body { overflow-x: hidden; }
     </div>
     <div class="stats-body">
       <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="sel-hint">拖动鼠标左键框选 X 轴区域（全图同步缩放），然后释放。</div>
-      <table class="stats-table" id="tbl-selected">
-        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="stats-tables" id="tbl-selected"></div>
     </div>
   </div>
   <div class="chart-wrap stats" id="wrap-stats-tags">
@@ -1334,10 +1452,7 @@ body { overflow-x: hidden; }
       </div>
     </div>
     <div class="stats-body">
-      <table class="stats-table" id="tbl-global">
-        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="stats-tables" id="tbl-global"></div>
     </div>
   </div>
   <div class="chart-wrap stats" id="wrap-stats-selected">
@@ -1349,10 +1464,7 @@ body { overflow-x: hidden; }
     </div>
     <div class="stats-body">
       <div style="color:var(--text2);font-size:11px;margin-bottom:6px" id="sel-hint">拖动鼠标左键框选 X 轴区域（全图同步缩放），然后释放。</div>
-      <table class="stats-table" id="tbl-selected">
-        <thead><tr><th>指标</th><th>均值</th><th>峰值</th><th>P98</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="stats-tables" id="tbl-selected"></div>
     </div>
   </div>
   <div class="chart-wrap stats" id="wrap-stats-tags">
@@ -1713,8 +1825,8 @@ body { overflow-x: hidden; }
         animation: false,
         tooltip: { trigger: 'axis' },
         legend: { top: 0, textStyle: { color: '#bcd3ff' } },
-        grid: { left: 44, right: 16, top: 32, bottom: 28 },
-        xAxis: [{ type: 'category', data: [], axisLabel: { color: '#96a8c8' } }],
+        grid: { left: 44, right: 28, top: 32, bottom: 28 },
+        xAxis: [{ type: 'category', data: [], axisLabel: { color: '#96a8c8', hideOverlap: true } }],
         yAxis: [{ type: 'value', max: null, axisLabel: { color: '#96a8c8' } }],
         dataZoom: [
           { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
@@ -1725,13 +1837,19 @@ body { overflow-x: hidden; }
     }
     _buildMixedOption(name, cfg) {
       const colors = COLORS[name] || COLORS.fps;
+      // legendOff：默认不画的系列（仍保留在图例里，点一下就能开）。
+      // FPS 图上 TinyJank 单系列 11.5/拍，是 Jank 的 37 倍，共用右轴时
+      // 会把 Jank / BigJank / SmallJank 全压成贴地的一条线——最该看的严重卡顿反而看不见。
+      const sel = {};
+      if (Array.isArray(cfg.legendOff)) for (const n of cfg.legendOff) sel[n] = false;
       return {
         color: colors,
         animation: false,
         tooltip: { trigger: 'axis' },
-        legend: { top: 0, textStyle: { color: '#bcd3ff' } },
-        grid: { left: 44, right: 16, top: 32, bottom: 28 },
-        xAxis: [{ type: 'category', data: [], axisLabel: { color: '#96a8c8' } }],
+        legend: { top: 0, textStyle: { color: '#bcd3ff' }, selected: sel },
+        // right 由 16 加到 28：x 轴最后一个时间标签原来会被容器边缘裁掉（18:18:2）
+        grid: { left: 44, right: 28, top: 32, bottom: 28 },
+        xAxis: [{ type: 'category', data: [], axisLabel: { color: '#96a8c8', hideOverlap: true } }],
         yAxis: [
           { type: 'value', max: null, axisLabel: { color: '#96a8c8' } },
           { type: 'value', max: null, axisLabel: { color: '#96a8c8' } },
@@ -1942,12 +2060,14 @@ body { overflow-x: hidden; }
           { name:'系统用户CPU', key: d => d.cpuTotalUser ?? null },
         ], type:'line', yMax:100, fmt:v=>v+'%' },
         fps: { el:'chart-fps', series:[
-          { name:'FPS', key:d=>d.fps ?? null, type:'line', yAxisIndex:0 },
-          { name:'Jank', key:d=>d.jank ?? null, type:'bar', yAxisIndex:1 },
-          { name:'BigJank', key:d=>d.bigjank ?? null, type:'bar', yAxisIndex:1 },
-          { name:'SmallJank', key:d=>d.smallJank ?? null, type:'bar', yAxisIndex:1 },
-          { name:'TinyJank', key:d=>d.tinyJank ?? null, type:'bar', yAxisIndex:1 },
-        ], yMax:120, fmt:v=>v, mixed:true },
+          { name:'FPS', key:d=>d.fps ?? null, type:'line', yAxisIndex:0, unit:'帧/s' },
+          // 卡顿计数是「每拍（采样轮）内的帧数」，不是帧率也不是次数：
+          // 表格里必须写成「帧/拍」，否则 0.31 会被读成 0.31 次或 0.31 帧每秒。
+          { name:'Jank', key:d=>d.jank ?? null, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'BigJank', key:d=>d.bigjank ?? null, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'SmallJank', key:d=>d.smallJank ?? null, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'TinyJank', key:d=>d.tinyJank ?? null, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+        ], yMax:120, fmt:v=>v, mixed:true, legendOff:['TinyJank'] },
         mem: { el:'chart-mem', series:[
           { name:'物理内存', key:d=>d.physFootprint ?? null },
           { name:'RSS', key:d=>d.memResidentSize ?? null },
@@ -2019,12 +2139,12 @@ body { overflow-x: hidden; }
           { name:'System', key:d=>d.mem.system },
         ], type:'line', yMax:null, fmt:v=>v+' MB' },
         fps: { el:'chart-fps', series:[
-          { name:'FPS', key:d=>d.fps, type:'line', yAxisIndex:0 },
-          { name:'Jank', key:d=>d.jank, type:'bar', yAxisIndex:1 },
-          { name:'BigJank', key:d=>d.bigJank, type:'bar', yAxisIndex:1 },
-          { name:'SmallJank', key:d=>d.smallJank, type:'bar', yAxisIndex:1 },
-          { name:'TinyJank', key:d=>d.tinyJank, type:'bar', yAxisIndex:1 },
-        ], yMax:120, fmt:v=>v, mixed:true },
+          { name:'FPS', key:d=>d.fps, type:'line', yAxisIndex:0, unit:'帧/s' },
+          { name:'Jank', key:d=>d.jank, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'BigJank', key:d=>d.bigJank, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'SmallJank', key:d=>d.smallJank, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'TinyJank', key:d=>d.tinyJank, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+        ], yMax:120, fmt:v=>v, mixed:true, legendOff:['TinyJank'] },
         net: { el:'chart-net', series:[{name:'下行',key:d=>d.net.rxKBps},{name:'上行',key:d=>d.net.txKBps}], type:'line', yMax:null, fmt:v=>v+' KB/s' },
         gpu: gpuChartCfg(),
         // 机身温度与 CPU 结温并列成两条序列，明确区分口径；老报告无 cpuTemp 时该线断开
@@ -2055,12 +2175,12 @@ body { overflow-x: hidden; }
           { name:'System', key:d=>d.mem.system },
         ], type:'line', yMax:null, fmt:v=>v+' MB' },
         fps: { el:'chart-fps', series:[
-          { name:'FPS', key:d=>d.fps, type:'line', yAxisIndex:0 },
-          { name:'Jank', key:d=>d.jank, type:'bar', yAxisIndex:1 },
-          { name:'BigJank', key:d=>d.bigJank, type:'bar', yAxisIndex:1 },
-          { name:'SmallJank', key:d=>d.smallJank, type:'bar', yAxisIndex:1 },
-          { name:'TinyJank', key:d=>d.tinyJank, type:'bar', yAxisIndex:1 },
-        ], yMax:120, fmt:v=>v, mixed:true },
+          { name:'FPS', key:d=>d.fps, type:'line', yAxisIndex:0, unit:'帧/s' },
+          { name:'Jank', key:d=>d.jank, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'BigJank', key:d=>d.bigJank, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'SmallJank', key:d=>d.smallJank, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+          { name:'TinyJank', key:d=>d.tinyJank, type:'bar', yAxisIndex:1, unit:'帧/拍' },
+        ], yMax:120, fmt:v=>v, mixed:true, legendOff:['TinyJank'] },
         net: { el:'chart-net', series:[{name:'下行',key:d=>d.net.rxKBps},{name:'上行',key:d=>d.net.txKBps}], type:'line', yMax:null, fmt:v=>v+' KB/s' },
         gpu: gpuChartCfg(),
         // 机身温度与 CPU 结温并列成两条序列，明确区分口径；老报告无 cpuTemp 时该线断开
@@ -2553,7 +2673,7 @@ body { overflow-x: hidden; }
 
     /**
      * PerfDog 口径的帧率质量派生指标（整段统计，不随框选区变化）。
-     * 返回一组可直接塞进统计表的行：1%Low / Drop / FPS≥目标 / 稳帧范围 / 标准差 / 卡顿时长占比
+     * 返回一组可直接塞进统计表的行：1%Low / Drop / 满帧占比 / 稳帧范围 / 标准差 / 卡顿时长占比
      * 以及 Jank / BigJank / SmallJank / TinyJank 的「每 10 分钟」次数与帧耗时标准差/方差。
      * 这些口径与 src/reports-data-js.js 的 summarizePerf 完全一致。
      */
@@ -2570,7 +2690,9 @@ body { overflow-x: hidden; }
         bjArr = maskToNull(bjArr, mask);
         sjArr = maskToNull(sjArr, mask);
         tjArr = maskToNull(tjArr, mask);
-        if (durSec) durSec = durSec * (1 - info.excludedRatio);
+        // 与 buildInsight 完全同一处理（Math.round 到整数秒）：原来这里保留 33.17s、
+        // 解读侧 round 成 33s，同一份报告同一 Drop 指标会算出 651.2 与 654.5 两个值。
+        if (durSec) durSec = Math.max(1, Math.round(durSec * (1 - info.excludedRatio)));
       }
       const nums = (fpsArr || []).filter(v => typeof v === 'number' && !isNaN(v) && v >= 0);
       if (!nums.length || !target) return rows;
@@ -2585,8 +2707,8 @@ body { overflow-x: hidden; }
         const rawAvg = rawNums.reduce((a, b) => a + b, 0) / rawNums.length;
         push('FPS(全程)', '帧/s', +rawAvg.toFixed(1));
       }
-      // 达帧率（均值口径）
-      push('达帧率', '%', +(avg / target * 100).toFixed(1));
+      // 帧率达成度（均值口径）
+      push('帧率达成度', '%', +(avg / target * 100).toFixed(1));
       // 均帧 Avg(FTime)
       if (moving.length) {
         const ft = moving.reduce((a, v) => a + 1000 / v, 0) / moving.length;
@@ -2614,9 +2736,9 @@ body { overflow-x: hidden; }
       for (let i = 1; i < nums.length; i++) if (nums[i - 1] - nums[i] > 8) drop++;
       push('Drop', '帧/时', durHour ? +(drop / durHour).toFixed(1) : drop);
 
-      // FPS≥目标：样本口径（达到目标帧率的采样占比）
+      // 满帧占比：样本口径（达到目标帧率的采样占比）
       const ge = nums.filter(v => v >= target).length;
-      push('FPS≥目标', '%', +((ge / nums.length) * 100).toFixed(1));
+      push('满帧占比', '%', +((ge / nums.length) * 100).toFixed(1));
 
       // 稳帧范围 MedRange：偏离中位数 ±20% 内的占比
       const sorted = nums.slice().sort((a, b) => a - b);
@@ -2717,12 +2839,17 @@ body { overflow-x: hidden; }
       for (const v of moving) { const t = 1000 / v; total += t; if (t > targetFt * 2) slow += t; }
       const stutter = total > 0 ? (slow / total) * 100 : null;
 
+      // 1%Low 先按「显示精度」取整再返回：判定与展示必须用同一个数。
+      // 原来判定拿未舍入值（50.98）、展示用 toFixed(1)（51.0），
+      // 60Hz 设备上 51.0 会被判成「红色 + 掉帧明显」，而同一句里卡顿时长是 0.0%。
+      if (oneLow != null) oneLow = Math.round(oneLow * 10) / 10;
+
       return { oneLow, drop: dropRate, medRange, stutter };
     }
 
     /**
      * FPS 派生指标（与卡片、解读总结同一口径）：
-     *  - 达帧率   = 平均 FPS ÷ 目标帧率 × 100
+     *  - 帧率达成度   = 平均 FPS ÷ 目标帧率 × 100
      *  - 均帧     = 各采样点帧间隔（1000 / FPS）的平均，ms
      *  - 低帧占比 = FPS 低于目标 80% 的采样点占比
      */
@@ -2743,6 +2870,8 @@ body { overflow-x: hidden; }
         const k = Math.max(1, Math.round(ftList.length * 0.01));
         const worstFt = ftList.slice(0, k).reduce((a, b) => a + b, 0) / k;
         oneLow = 1000 / worstFt;
+        // 与 perfFpsQualityInsight 同一处理：判定 = 显示，避免 50.98 显示成 51.0 却判红
+        oneLow = Math.round(oneLow * 10) / 10;
       }
       return {
         target, avg,
@@ -2754,7 +2883,7 @@ body { overflow-x: hidden; }
       };
     }
 
-    /** 达帧率 / 均帧 / 低帧 三张补充卡片（插在原有指标卡后面） */
+    /** 帧率达成度 / 均帧 / 低帧 三张补充卡片（插在原有指标卡后面） */
     function renderFpsKpiCards(fm) {
       const cards = document.querySelector('section.cards');
       if (!cards) return;
@@ -2764,7 +2893,7 @@ body { overflow-x: hidden; }
         return;
       }
       const defs = [
-        { id: 'card-reach', val: 'val-reach', label: '达帧率', info: 'reach', unit: '% · 目标 ' + fm.target },
+        { id: 'card-reach', val: 'val-reach', label: '帧率达成度', info: 'reach', unit: '% · 目标 ' + fm.target },
         { id: 'card-ft',    val: 'val-ft',    label: '均帧',   info: 'frametime', unit: 'ms' },
         { id: 'card-low',   val: 'val-low',   label: '低帧占比', info: 'lowpct', unit: '% · <' + Math.round(fm.target * 0.8) + ' 帧' },
         { id: 'card-1low',  val: 'val-1low',  label: '1%Low',  info: 'onelow', unit: '帧/s' },
@@ -2775,8 +2904,14 @@ body { overflow-x: hidden; }
           card = document.createElement('div');
           card.id = d.id;
           card.className = 'card';
+          // 标成 fps 组：applyMetricOrder 会按 data-metric 给它排进帧率组。
+          // 插在 Jank 卡之前（而不是 append 到最后）：同组内的 order 是按 DOM 顺序
+          // 递增分配的，append 会把「帧率达成度/均帧/低帧/1%Low」排到 Jank 后面。
+          card.setAttribute('data-metric', 'fps');
           card.innerHTML = '<div class="card-label"></div><div class="card-value" id="' + d.val + '"></div><div class="card-unit"></div>';
-          cards.appendChild(card);
+          const anchor = cards.querySelector('#card-jank');
+          if (anchor && anchor.parentNode === cards) cards.insertBefore(card, anchor);
+          else cards.appendChild(card);
         }
         card.hidden = false;
         const _lb = card.querySelector('.card-label');
@@ -2795,7 +2930,65 @@ body { overflow-x: hidden; }
       paintCard('card-low', fm.lowPct <= 2 ? 'good' : (fm.lowPct <= 10 ? 'warn' : 'bad'));
       paintCard('card-1low', fm.oneLow == null ? null
         : (fm.oneLow >= fm.target * 0.95 ? 'good' : (fm.oneLow >= fm.target * 0.85 ? 'warn' : 'bad')));
+      // 派生卡插完后重排一次：让它们回到帧率组，并重算列数
+      layoutMetricCards();
     }
+
+    /**
+     * 指标卡排版：① 列数（按可用宽度与卡片数评分，14 张正好 7+7）
+     * ② 旧报告兜底排序（帧率组 → 卡顿组 → 资源/温控组）
+     *
+     * 有 metricOrder 的报告，顺序交给 applyMetricOrder（尊重采集界面里的排序）；
+     * 这里只在没有该字段时报底，否则两套 order 会互相覆盖。
+     * 帧率达成度 / 均帧 / 低帧 / 1%Low 带 data-metric="fps"，会被 applyMetricOrder
+     * 归进 fps 组，所以不会像原来那样被甩到第二行末尾。
+     */
+    const CARD_ORDER = [
+      'card-fps', 'card-reach', 'card-ft', 'card-low', 'card-1low',
+      'card-jank', 'card-bigjank', 'card-big-jank', 'card-stutter',
+      'card-gpu', 'card-cpu', 'card-proccpu', 'card-syscpu', 'card-mem',
+      'card-net', 'card-temp', 'card-battery', 'card-thread', 'card-disk',
+    ];
+    function layoutMetricCards() {
+      const cards = document.querySelector('section.cards');
+      if (!cards) return;
+      const list = Array.prototype.slice.call(cards.children)
+        .filter(el => el.classList && el.classList.contains('card'));
+      if (!list.length) return;
+
+      const hasOrder = !!(data && (
+        (Array.isArray(data.metricOrder) && data.metricOrder.length) ||
+        (data.metricConfig && Array.isArray(data.metricConfig.__order) && data.metricConfig.__order.length)
+      ));
+      if (!hasOrder) {
+        list.forEach((c) => {
+          const i = CARD_ORDER.indexOf(c.id);
+          if (i >= 0) c.style.order = String(i + 1);
+        });
+      }
+
+      const n = list.filter(c => !c.hidden).length;
+      if (!n) return;
+      const GAP = 8, PAD = 32, MIN_W = 120, MAX_W = 210;
+      const avail = Math.max(1, cards.clientWidth - PAD);
+      let best = null;
+      for (let c = 1; c <= Math.min(12, n); c++) {
+        const w = (avail - (c - 1) * GAP) / c;
+        if (w < MIN_W) break;
+        const rows = Math.ceil(n / c);
+        const waste = c - (n - (rows - 1) * c);       // 最后一行空几格
+        const wide = Math.max(0, w - MAX_W) / 10;      // 过宽惩罚（每 10px 记 1 分）
+        const score = waste * 2 + wide + (rows - 1) * 0.1;
+        if (!best || score < best.score) best = { c, score };
+      }
+      cards.style.setProperty('--card-cols', String(best ? best.c : Math.min(n, 7)));
+    }
+    // 窗口宽度变化后重算列数（拖动窗口 / 分屏时保持两行填满）
+    let _cardRaf = 0;
+    window.addEventListener('resize', () => {
+      if (_cardRaf) return;
+      _cardRaf = requestAnimationFrame(() => { _cardRaf = 0; layoutMetricCards(); });
+    });
 
     /** 给卡片打状态色（good / warn / bad），一眼看出好坏 */
     function paintCard(cardId, state) {
@@ -2821,7 +3014,7 @@ body { overflow-x: hidden; }
         const l = document.createElement('div');
         l.id = 'lbl-cards';
         l.className = 'section-label';
-        l.innerHTML = '关键指标 <span class="hint">数值为本次采集均值；绿 / 橙 / 红表示达标程度</span>';
+        l.innerHTML = '关键指标 <span class="hint">数值为本次采集均值；绿 / 橙 / 红仅表示达标程度，无色即该项无判定阈值</span>';
         cards.parentNode.insertBefore(l, cards);
       }
       const grid = document.querySelector('.charts-grid');
@@ -2847,7 +3040,11 @@ body { overflow-x: hidden; }
         if (!title.dataset.base) {
           const _dot = title.querySelector('.info-dot');
           if (_dot) _dot.remove();
-          title.dataset.base = title.textContent.trim();
+          // 标题里的「(单位)」和后面均值/峰值自带的单位重复
+          //（"CPU 使用率 (%) · 系统CPU 均值 54.8%"）→ 去掉括号单位。
+          // FPS 例外：它的 fmt 只输出数字，单位必须留在标题里。
+          title.dataset.base = title.textContent.trim()
+            .replace(/\s*[（(](?:%|MB|KB\/s|GB\/s|°C|mA|mW|MHz|次\/s)[）)]/g, '');
         }
 
         const st = chartMgr._data[name];
@@ -2863,9 +3060,18 @@ body { overflow-x: hidden; }
         const avg = s0.reduce((a, b) => a + b, 0) / s0.length;
         const mx = Math.max.apply(null, s0);
         const f = (v) => { try { return String(cfg.fmt(Math.round(v * 10) / 10)); } catch (_) { return String(v); } };
-        const who = (defs.length > 1 && defs[idx] && defs[idx].name) ? defs[idx].name + ' ' : '';
+        // 系列名与标题重复时不再前缀一次：
+        //   "FPS (帧/s)"   已含 FPS      → 不再写 "FPS 均值"
+        //   "温度 · 机身 / CPU 结温" 已列出各系列 → 不再写 "机身温度 均值"
+        const baseTxt = title.dataset.base || '';
+        const sName = (defs[idx] && defs[idx].name) || '';
+        const listed = sName && baseTxt.indexOf(sName) >= 0;
+        const who = (defs.length > 1 && sName && !listed && baseTxt.indexOf(' / ') < 0) ? sName + ' ' : '';
+        // FPS 图标题用全程序列算均值（含加载段），与卡片/解读的「有效均值」不同。
+        // 就地标「全程」，避免同页 85/84.6/71.6 三个数字被读成数据矛盾。
+        const scope = (name === 'fps' && defs[idx] && defs[idx].name === 'FPS') ? '全程' : '';
         title.innerHTML = escapeHtml(title.dataset.base) +
-          ' <span style="color:var(--text);font-weight:600">' + escapeHtml(who + '均值 ' + f(avg)) + '</span>' +
+          ' <span style="color:var(--text);font-weight:600">' + escapeHtml(who + '均值 ' + f(avg) + (scope ? '（' + scope + '）' : '')) + '</span>' +
           ' <span style="color:var(--text2);font-weight:400">峰值 ' + escapeHtml(f(mx)) + '</span>';
       }
         // 标题被改写后，参数说明「!」标记需要重新补回（__METRIC_INFO_V1__）
@@ -2995,13 +3201,22 @@ body { overflow-x: hidden; }
           setValue('val-temp', '--');
         }
       }
-      const bj = pts.map(p => p.bigJank).filter(v => typeof v === 'number' && !isNaN(v));
+      // BigJank 与解读同源：都用 fpsStatPts（排除加载段），否则卡片数与解读里的
+      // 「N 帧」会对不上（加载段里的严重卡顿只进其中一边）。
+      const bj = fpsStatPts(pts).map(p => p.bigJank).filter(v => typeof v === 'number' && !isNaN(v));
       if (bj.length && bj.every(v => v === 0)) {
         const lab = document.querySelector('#card-bigjank .card-label');
         if (lab) {
           lab.textContent = 'BigJank · 无>125ms帧';
           if (window.MetricInfo) MetricInfo.decorate(lab);
         }
+      }
+
+      /* FPS 口径就地标注（2026-11-20）：卡片值走 fpsStatPts（排除加载段），
+         与图表标题的全程均值不同。有排除段时在单位后标「有效」，避免同页数字看似矛盾。 */
+      {
+        const _li = ensureLoadingInfo((pts || []).map(p => p.fps));
+        if (_li && _li.excludedSamples) setUnit('card-fps', '帧/s · 有效');
       }
 
       /* ---- 阈值着色：把「好 / 一般 / 差」直接画到卡片上 ---- */
@@ -3027,7 +3242,25 @@ body { overflow-x: hidden; }
       }
       if (bj.length) {
         const sum = bj.reduce((a, b) => a + b, 0);
-        paintCard('card-bigjank', sum === 0 ? 'good' : (sum <= 2 ? 'warn' : 'bad'));
+        // 卡片值改成绝对帧数（原来显示的是「每拍均值 0.06 帧」，配 >125ms 的单位没法读）。
+        setValue('val-bigjank', String(sum));
+        // 有效时长与 buildInsight 同一算法（按排除样本比例折算）：
+        // 两处都用全程时长会让「次/分」差几个百分点，在 6 次/分边界上给出相反结论。
+        const _bjInfo = ensureLoadingInfo();
+        const _durAll = reportDurationSec();
+        const _kept = (_bjInfo && _bjInfo.totalSamples)
+          ? (_bjInfo.totalSamples - _bjInfo.excludedSamples) / _bjInfo.totalSamples : 1;
+        const durSec = (_durAll != null && _kept < 1)
+          ? Math.max(1, Math.round(_durAll * _kept)) : _durAll;
+        const perMin = (durSec && durSec > 0) ? sum / (durSec / 60) : null;
+        paintCard('card-bigjank', sum === 0 ? 'good'
+          : (perMin == null ? (sum <= 2 ? 'warn' : 'bad')
+            : (perMin >= 6 ? 'bad' : (perMin >= 1 ? 'warn' : 'good'))));
+        // 卡片值保留绝对帧数（量级最直观），速率补在单位里，
+        // 避免只看到一个外推率、误以为问题很严重
+        if (sum > 0 && perMin != null) {
+          setUnit('card-bigjank', '帧 · ' + (perMin >= 10 ? Math.round(perMin) : perMin.toFixed(1)) + '/分');
+        }
       }
       const temps = pts.map(p => p.temperature).filter(v => typeof v === 'number' && v > 0);
       if (temps.length) {
@@ -3096,10 +3329,35 @@ body { overflow-x: hidden; }
       const ratio = typeof dropRatio === 'number' ? dropRatio : 0.2;
       const floor = typeof minDropFps === 'number' ? minDropFps : 5;
       return {
-        early: early, late: late,
+        early: early, late: late, n: a.length,
         dropPct: dropPct, dropAbs: dropAbs,
         significant: dropPct >= ratio * 100 && dropAbs >= floor,
       };
+    }
+
+    /**
+     * 瓶颈方向洞察（2026-11-20）：应用进程 CPU 很低、无热节流、无 GPU 利用率，
+     * 却有明显卡顿——这组反差本身就说明瓶颈不在「本机算力」，而在渲染/合成管线。
+     * 整段报告原本只列「渲染耗时、GPU 负载、温控都可能」的清单式猜测，这里把最有
+     * 诊断价值的反差提炼成一句结论。输入全是已算好的聚合值，保持纯函数以便测试。
+     * @returns {string|null} 条件不满足时返回 null（不制造结论）
+     */
+    function iBottleneckHint(cpuProcMean, stutterPct, thermalThrottling, hasGpuUtil, sfDominant) {
+      if (typeof cpuProcMean !== 'number' || typeof stutterPct !== 'number') return null;
+      if (cpuProcMean >= 15 || stutterPct < 20) return null;
+      if (thermalThrottling || hasGpuUtil) return null;
+      // 就近释义：关键术语第一次出现就用一句话解释，不让读者跳去找 info 点。
+      const side = sfDominant
+        ? 'SurfaceFlinger / 合成侧（系统负责把各窗口画面合成上屏的服务）'
+        : '渲染 / 合成或应用主线程绘制（画面产出与提交环节）';
+      return '进程 CPU 均值仅 ' + cpuProcMean.toFixed(1) + '%、无系统热节流，但卡顿时长占比达 '
+        + stutterPct.toFixed(1) + '%——瓶颈更像在' + side + '，而非本机算力；'
+        + '建议结合卡顿归因与逐帧耗时定位。';
+    }
+
+    /** 短采集（有效时长 < 1 分钟）下，按时间外推的「次/时、次/分」要标注仅供参考 */
+    function iShortRunExtrap(durSec) {
+      return (typeof durSec === 'number' && durSec < 60) ? '（短采集外推，仅供参考）' : '';
     }
 
     /** 按候选路径取一列数值（同一列内逐点回退，兼容 android/pc/ios 不同字段名） */
@@ -3428,16 +3686,18 @@ body { overflow-x: hidden; }
         push('流畅度', parts.join(' · '), note, tone);
       }
 
-      // ③ 稳定性：达帧率 + 稳帧范围 + 降帧
+      // ③ 稳定性：帧率达成度 + 稳帧范围 + 降帧
       if (fm) {
-        const parts = ['达帧率 ' + iFmt(fm.reach, 1) + '%'];
+        const parts = ['帧率达成度 ' + iFmt(fm.reach, 1) + '%'];
         const tones = [fm.reach >= 95 ? 'good' : (fm.reach >= 80 ? 'warn' : 'bad')];
         if (q && q.medRange != null) {
           parts.push('稳帧 ' + iFmt(q.medRange, 1) + '%');
           tones.push(q.medRange >= 80 ? 'good' : (q.medRange >= 60 ? 'warn' : 'bad'));
         }
         if (q && q.drop != null) {
-          parts.push('降帧 ' + iFmt(q.drop, 1) + ' 次/时');
+          // 短采集外推（<1 分钟）把几十秒的计数×60，误差被放大，必须标注仅供参考。
+          // 但 0 次不需要标：0×60 还是 0，标了反而让人以为「这数不可信」。
+          parts.push('降帧 ' + iFmt(q.drop, 1) + ' 次/时' + (q.drop > 0 ? iShortRunExtrap(durSec) : ''));
           tones.push(q.drop >= 30 ? 'bad' : (q.drop >= 10 ? 'warn' : 'good'));
         }
         const lowLine = Math.round(fm.target * 0.8);
@@ -3451,11 +3711,17 @@ body { overflow-x: hidden; }
       // 让用户知道要看曲线后段 / 低谷截图，而不是被一个中间值误导为全程稳定。
       out.phaseTrend = phase;
       if (phase && phase.significant) {
+        // 样本偏少（<60 有效帧）时，前后各半只有几十秒，单次场景切换就能造成大落差；
+        // 措辞从「确认劣化」降级为「偏低、建议复核」，避免短采集下断言过强。
+        const phWeak = typeof phase.n === 'number' && phase.n < 60;
+        const phNote = phWeak
+          ? '后段低于前段，但有效样本仅 ' + phase.n + ' 个（<60），建议复核；可结合曲线后段与低谷截图定位场景变化'
+          : '后半段帧率明显低于前半段，全程均值掩盖了这次劣化；建议结合曲线后段与低谷截图定位场景变化';
         push('时段趋势',
           '前段 ' + iFmt(phase.early, 1) + ' → 后段 ' + iFmt(phase.late, 1) + ' 帧（-'
             + iFmt(phase.dropPct, 0) + '%）',
-          '后半段帧率明显低于前半段，全程均值掩盖了这次劣化；建议结合曲线后段与低谷截图定位场景变化',
-          'warn');
+          phNote,
+          phWeak ? 'info' : 'warn');
       }
 
       // ③b 启动耗时（v1.9）：只有「进程原本不存在」的冷启动才有评价意义。
@@ -3484,18 +3750,23 @@ body { overflow-x: hidden; }
         const parts = [];
         const tones = [];
         if (jankMean != null) {
-          parts.push('Jank ' + iFmt(jankMean, 2) + ' 帧/拍');
+          // 标数据源：下面「卡顿归因」的 316 帧来自 FrameTimeline 逐帧超时，
+          // 与本条 timestats 的 jank 标记不是同一套统计，两个数字不可直接比较。
+          parts.push('Jank ' + iFmt(jankMean, 2) + ' 帧/拍（timestats）');
           tones.push(jankMean <= 1 ? 'good' : (jankMean <= 3 ? 'warn' : 'bad'));
         }
         if (bjNums.length) {
           parts.push('BigJank ' + iFmt(bjSum, 0) + ' 帧'
-            + (bjPerMin != null && bjPerMin > 0 ? '（' + iFmt(bjPerMin, 1) + ' 次/分）' : ''));
+            + (bjPerMin != null && bjPerMin > 0
+              ? '（' + iFmt(bjPerMin, 1) + ' 次/分' + (durSec != null && durSec < 60 ? '，短采集外推' : '') + '）' : ''));
           tones.push(bjPerMin != null
             ? (bjPerMin >= 6 ? 'bad' : (bjPerMin >= 1 ? 'warn' : 'good'))
             : 'good');
         }
         let note;
-        if (bjSum > 0) note = '>125ms 严重卡顿：成因请结合下方 FrameTimeline 归因确认';
+        // 成因指向只写在下方风险区（那里有完整一句），分项这里只陈述事实，
+        // 否则同一句「结合 FrameTimeline 归因确认」会在同一屏出现两次。
+        if (bjSum > 0) note = '单帧超过 125ms，用户可感知为明显卡顿';
         else if (jankMean != null && jankMean <= 0.5) note = '几乎没有可感知的卡顿';
         else note = '偶发掉帧，未出现 >125ms 严重卡顿';
         push('卡顿', parts.join(' · '), note, worst.apply(null, tones));
@@ -3538,7 +3809,8 @@ body { overflow-x: hidden; }
             noteParts.push('成因可重叠（合计 ' + coreTotal + ' 次 > 卡顿 ' + jankyFrames + ' 帧），勿按占比相加');
           }
           if (stuffing) noteParts.push('另缓冲堆积 ' + stuffing + ' 次（独立计数，不与卡顿相加）');
-          push('卡顿归因', jankyFrames > 0 ? '卡顿 ' + jankyFrames + ' 帧' : '未记录到卡顿帧',
+          if (jankMean != null) noteParts.push('与上条 timestats 的 Jank 不同源，勿直接比较');
+          push('卡顿归因', jankyFrames > 0 ? '卡顿 ' + jankyFrames + ' 帧（FrameTimeline 逐帧）' : '未记录到卡顿帧',
             noteParts.join('；'), (!top.length && jankyFrames > 0) ? 'warn' : 'info');
         }
       }
@@ -3594,9 +3866,10 @@ body { overflow-x: hidden; }
         let note;
         if (thermalNums.length) {
           tone = thermalThrottling ? 'warn' : 'info';
+          // A 档去重：降频结论统一由下方「热节流」条给出，温度条不再复述，只留交叉指引。
           note = thermalThrottling
-            ? '系统已报告热节流，温度偏高与限频一致'
-            : '系统热节流全程 0 级，未观察到降频；绝对温度仅供参考';
+            ? '温度偏高与系统热节流一致（详见「热节流」条）'
+            : '绝对温度仅供参考，未降频见「热节流」条';
         } else if (tempMax != null && tempMax >= 50) {
           tone = 'warn';
           note = '绝对温度较高，但本机未暴露热节流信号，是否已降频无法确认';
@@ -3644,29 +3917,46 @@ body { overflow-x: hidden; }
         push('GPU', '--', '该机型未开放 GPU 数据读取', 'info');
       }
 
+      // 分项按主题重排后再输出：解读是两列网格（行优先填充），
+      // push 顺序一旦把「卡顿」「卡顿归因」拆到两行、或让温度与热节流隔开，
+      // 同一主题的条目就会在视觉上分家。
+      // 顺序按「帧 → 卡顿 → 资源 → 温控」排，并让同主题条目落在相邻的偶数位：
+      // 温度/热节流必须成对，否则会一个在行末、一个在下一行行首。
+      const ITEM_ORDER = ['帧率', '流畅度', '稳定性', '时段趋势', '卡顿', '卡顿归因',
+        'CPU', '内存', '温度', '热节流', 'GPU', '上下文切换', '启动'];
+      const rankOf = (k) => { const i = ITEM_ORDER.indexOf(k); return i < 0 ? 99 : i; };
+      items.sort((a, b) => rankOf(a.k) - rankOf(b.k));   // Array#sort 稳定，同 rank 保持原序
+
       out.items = items;
 
       /* ================= 风险提示 ================= */
       // 措辞跟随统计口径：剔除了加载段就不能再说「全程」
       const scopeWord = hasExclusion ? '排除加载段后' : '全程';
       if (fpsTarget && fpsMean != null && fpsMean / fpsTarget < 0.85) {
+        // 2026-11-20：删掉「渲染耗时、GPU 负载、温控都可能」的清单式猜测——
+        // 顶部速览的「先看这里」已给出定位（瓶颈在合成侧 / 时段趋势等），
+        // 这里再列模糊清单会与结论口径打架、削弱速览权威性。只保留风险事实与去向。
         out.risks.push({ tone: 'high', text: '帧率仅达目标 ' + Math.round((fpsMean / fpsTarget) * 100)
-          + '%，请结合逐帧指标与卡顿归因定位（渲染耗时、GPU 负载、温控都可能）。' });
+          + '%：定位方向见顶部「先看这里」，请结合逐帧指标与卡顿归因定位。' });
       }
       // 时段趋势风险：与分项解读同一判据（phase.significant），两处必须同步——
       // 否则会出现「分项说后段劣化、风险清单却只谈全程均值」的自相矛盾。
       if (phase && phase.significant) {
+        const phWeak = typeof phase.n === 'number' && phase.n < 60;
         out.risks.push({
-          tone: 'mid',
-          text: '后段帧率较前段下降 ' + iFmt(phase.dropPct, 0) + '%（' + iFmt(phase.early, 1)
-            + ' → ' + iFmt(phase.late, 1) + ' 帧），全程均值掩盖了这次劣化；'
-            + '建议在曲线上框选后段并结合低谷截图定位：是场景切换、UI 重绘还是限帧策略变化。',
+          tone: phWeak ? 'info' : 'mid',
+          text: phWeak
+            ? '后段较前段低（有效样本仅 ' + phase.n + ' 个，建议复核）：可框选曲线后段并结合低谷截图定位场景变化。'
+            : '后段帧率较前段下降 ' + iFmt(phase.dropPct, 0) + '%（' + iFmt(phase.early, 1)
+              + ' → ' + iFmt(phase.late, 1) + ' 帧），全程均值掩盖了这次劣化；'
+              + '建议框选曲线后段并结合低谷截图定位场景变化。',
         });
       }
       if (fm && fm.lowPct >= 20) {
+        // A 档去重：低帧采样点数在「稳定性」分项已写，风险区只留定位指引，不复述数字。
         out.risks.push({
           tone: 'mid',
-          text: '低帧占比 ' + iFmt(fm.lowPct, 1) + '%（' + fm.lowCount + ' 个采样点 FPS < ' + Math.round(fm.target * 0.8) + '），可在曲线图上框选这些时段定位原因。',
+          text: '存在一段低帧时段，可在曲线图上框选这些时段定位原因（详见上方「稳定性」分项）。',
         });
       }
       // 均帧超目标不再单独提示：帧率不足（high）与低帧占比（mid）已经覆盖同一件事，
@@ -3677,8 +3967,9 @@ body { overflow-x: hidden; }
       if (bjNums.length && bjSum > 0 && durSec) {
         const perMin = bjSum / (durSec / 60);
         if (perMin >= 1) {
-          out.risks.push({ tone: 'mid', text: '出现 ' + iFmt(bjSum, 0) + ' 次 >125ms 卡顿帧（约 ' + iFmt(perMin, 1)
-            + ' 次/分钟）。125ms 只是严重卡顿的判定阈值，并不指向具体成因；请结合下方 FrameTimeline 归因确认。' });
+          // A 档去重：次数与「次/分」已在数字条与「卡顿」分项写明（且标注短采集外推），
+          // 风险区只留判定语义与去向，不再复述同一组数字。
+          out.risks.push({ tone: 'mid', text: '出现 >125ms 严重卡顿帧。125ms 只是判定阈值，并不指向具体成因；请结合下方 FrameTimeline 归因确认。' });
         }
       }
       // v1.9：本轮 ANR / 崩溃必须进风险清单。否则独立区块显示「ANR 1」，
@@ -3718,10 +4009,10 @@ body { overflow-x: hidden; }
           text: 'CPU 可调度最大频率被限制在硬件上限的 ' + iFmt(limitMin, 0) + '%（疑似温控降频），高负载场景帧率会受影响。',
         });
       }
+      // A 档去重：GPU「利用率需 root / 已改用温度」在分项解读里已写明，风险区不再重复。
+      // 仅在 GPU 数据完全不可读（连温度都没有）时保留一条，说明空白属正常现象。
       if (!hasGpuUtil && !hasGpuTemp) {
         out.risks.push({ tone: 'info', text: 'GPU 数据不可读：该机型节点未开放（需 root），本报告 GPU 部分为空属正常现象。' });
-      } else if (!hasGpuUtil && hasGpuTemp) {
-        out.risks.push({ tone: 'info', text: 'GPU 利用率需 root 才能读取，已改用 GPU 温度反映负载趋势。' });
       }
       if (!out.risks.length) {
         out.risks.push({ tone: 'info', text: '本次采集的指标未触发预警阈值；这不等于应用没有性能问题，'
@@ -3761,39 +4052,134 @@ body { overflow-x: hidden; }
       out.levelText = lv.text;
       out.score = score;
 
+      // 一眼速览 / 瓶颈洞察所需的结构化字段（2026-11-20）。
+      // 都在上面已算好的聚合值里取，不改变任何统计口径，只把结论喂给顶部速览。
+      out.fpsMean = fpsMean;
+      out.fpsTarget = fpsTarget;
+      out.reach = fm ? fm.reach : null;
+      out.oneLow = q ? q.oneLow : null;
+      out.jankMean = jankMean;
+      out.bjPerMin = bjPerMin;
+      out.memMean = memMean;
+      out.tempMean = tempMean;
+      // CPU 低 + 卡顿高 + 无热节流 + 无 GPU 利用率 → 瓶颈指向渲染/合成侧。
+      // sfDominant：卡顿主因里 SF 超时类是否占主导（归因块已聚合出 attrSum）。
+      {
+        const sfKeys = ['SurfaceFlingerCpuDeadlineMissed', 'SurfaceFlingerGpuDeadlineMissed', 'SurfaceFlingerScheduling'];
+        let sfHits = 0, otherHits = 0;
+        pts.forEach((p) => {
+          const a = p && p.jankAttr;
+          if (!a || typeof a !== 'object') return;
+          sfKeys.forEach((k) => { if (typeof a[k] === 'number' && a[k] > 0) sfHits += a[k]; });
+          Object.keys(a).forEach((k) => {
+            if (k.charAt(0) === '_' || typeof a[k] !== 'number' || a[k] <= 0) return;
+            if (sfKeys.indexOf(k) < 0 && k !== 'BufferStuffing') otherHits += a[k];
+          });
+        });
+        out.bottleneckHint = iBottleneckHint(cpuProcMean, q ? q.stutter : null,
+          thermalThrottling, hasGpuUtil, sfHits > 0 && sfHits >= otherHits);
+      }
+
       const bits = [];
       // 「整体流畅度」这个命名与权威结论冲突：PerfDog 明确「平均 FPS 与卡顿无直接关系」，
       // 而本指数 50% 权重来自平均 FPS。改名为「综合性能指数（参考）」，并在末尾公开公式。
       bits.push('综合性能指数（参考）<b>' + lv.text + '</b>（' + score + ' 分）');
       if (fpsMean != null) bits.push('FPS 均值 <b>' + iFmt(fpsMean, 1) + '</b>' + (fpsTarget ? '（目标 ' + fpsTarget + '）' : ''));
-      if (fm) bits.push('达帧率 <b>' + iFmt(fm.reach, 1) + '%</b>');
-      if (hasExclusion) bits.push('已排除 ' + out.excludedSegs + ' 段加载期（' + out.excludedSec + 's）');
-      // 收尾用最高级别的真实风险，而不是固定的「表现稳定」
+      if (fm) bits.push('帧率达成度 <b>' + iFmt(fm.reach, 1) + '%</b>');
+      // 双 FPS 均值口径（2026-11-20）：上方均值已排除加载段，统计表另有「FPS(全程)」行。
+      // 同一页两个数字若不点明差异，开发者会以为数据自相矛盾。
+      if (hasExclusion) bits.push('已排除 ' + out.excludedSegs + ' 段加载期（' + out.excludedSec
+        + 's）；此处 FPS 为排除后的有效均值，含加载期的全程均值见统计表「FPS(全程)」行');
+      // 收尾（A 档去重 2026-11-20）：不再逐字复述最高风险——下方「风险提示」区已完整列出，
+      // 顶部「一眼速览·先看这里」也已给出去向。lead 保留一条定性收尾即可，避免同一句说两遍。
       const topRisk = out.risks.find(r => r.tone === 'high') || out.risks.find(r => r.tone === 'mid');
-      const tail = topRisk ? ('最需关注：' + topRisk.text)
+      const tail = topRisk ? ''
         : (scopeWord + '各项采集到的指标未触发预警阈值（不等同于所有场景都没有问题）。');
-      // 评分必须可追溯：公开权重、惩罚上限与分档，并说明它不等于用户感知流畅度。
-      // 复合指标若无依据且不表达不确定性，参考价值很有限（见核查记录）。
-      let formula = '<br><span class="sub-cut">指数口径：帧率 50% + 卡顿 28% + 稳定 22% − BigJank 罚分（上限 25）；'
+      out.lead = bits.join('，') + '。' + tail;
+
+      // 评分方法论（B 档折叠 2026-11-20）：权重、可信度、MOS 声明是「一次性口径说明」，
+      // 不是本次采集结论。收进默认折叠的 details，首屏只留结论；内容原样保留、可点开。
+      // 文案字符串不删改——静态守卫（session_metrics_test.js）按源码文本校验。
+      let formula = '指数口径：帧率 50% + 卡顿 28% + 稳定 22% − BigJank 罚分（上限 25）；'
         + '优秀≥88 / 良好≥72 / 一般≥55。权重与分档为内部经验值，非行业统一标准；'
-        + '平均 FPS 反映吞吐而非主观流畅度，判断卡顿请优先看下方逐帧指标与卡顿归因。</span>';
-      // 可信度分层：分数照旧给出（保历史可比），但把「这次能信到什么程度」写明。
-      // 权重无 MOS 标定这条属于指数本身的天花板，不能靠文案消除——如实写在末尾。
+        + '平均 FPS 反映吞吐而非主观流畅度，判断卡顿请优先看下方逐帧指标与卡顿归因。';
       if (out.scoreConfidence) {
         const c = out.scoreConfidence;
-        formula += '<br><span class="sub-cut">本次指数可信度 <b>' + c.text + '</b>'
+        formula += ' 本次指数可信度 <b>' + c.text + '</b>'
           + (c.reasons.length ? '（' + c.reasons.join('；') + '）' : '')
           + '。指数未经主观体验打分（MOS）标定，不能跨机型 / 跨版本当作验收阈值；'
-          + '分数接近时请以下方逐项指标与风险提示为准。</span>';
+          + '分数接近时请以下方逐项指标与风险提示为准。';
       }
-      out.lead = bits.join('，') + '。' + tail + formula;
+      out.methodNote = formula;
 
       return out;
     }
 
+    /**
+     * 一眼速览（2026-11-20）：把 buildInsight 的结论压成「三行看完」的头部——
+     *   ① 一句话定性  ② 关键数字条  ③ 最该做的下一步
+     * 目的是让开发者扫一眼就知道这次采集「好不好、差在哪、先查什么」，
+     * 详细解读仍在下方 lead / items / risks 里，速览不替代它们。
+     * 只读 r 的字段，纯函数，便于测试。
+     * @returns {{verdict:string, level:string, sentence:string, stats:Array, next:string}|null}
+     */
+    function buildGlance(r) {
+      if (!r || !r.n) return null;
+      const g = { verdict: r.levelText || '', level: r.level || 'info', sentence: '', stats: [], next: '' };
+      const f1 = (v) => iFmt(v, 1);
+
+      // ① 定性句：指数 + 帧率达标 + 最显著的一条异常。措辞避免制造结论。
+      const parts = [];
+      if (typeof r.score === 'number') {
+        parts.push('综合指数 <b>' + r.score + ' 分</b>（' + g.verdict + '）');
+      } else {
+        parts.push(g.verdict);
+      }
+      if (r.fpsMean != null) {
+        parts.push('有效 FPS <b>' + f1(r.fpsMean) + '</b>' + (r.fpsTarget ? ' / 目标 ' + r.fpsTarget : ''));
+      }
+      if (r.reach != null) parts.push('帧率达成度 <b>' + f1(r.reach) + '%</b>');
+      g.sentence = parts.join('，') + '。';
+
+      // ② 关键数字条：最多 6 个（帧率/1%Low/Jank/严重卡顿/内存/温度），
+      //    按开发者关注度排序；容器 flex-wrap，窗口窄时自动换行，不做截断。
+      if (r.fpsMean != null) {
+        const ratio = r.fpsTarget ? r.fpsMean / r.fpsTarget : null;
+        const tone = ratio == null ? '' : (ratio >= 0.9 ? 'good' : (ratio >= 0.7 ? 'warn' : 'bad'));
+        g.stats.push({ k: '帧率', v: f1(r.fpsMean) + (r.fpsTarget ? '/' + r.fpsTarget : ''), tone: tone });
+      }
+      if (r.oneLow != null) {
+        const tone = r.fpsTarget ? (r.oneLow >= r.fpsTarget * 0.85 ? 'good' : (r.oneLow >= r.fpsTarget * 0.7 ? 'warn' : 'bad')) : '';
+        g.stats.push({ k: '1%Low', v: f1(r.oneLow), tone: tone });
+      }
+      if (r.jankMean != null) {
+        g.stats.push({ k: 'Jank', v: f1(r.jankMean) + '/拍', tone: r.jankMean <= 1 ? 'good' : (r.jankMean <= 3 ? 'warn' : 'bad') });
+      }
+      if (r.bjPerMin != null && r.bjPerMin > 0) {
+        g.stats.push({ k: '严重卡顿', v: f1(r.bjPerMin) + '/分', tone: r.bjPerMin >= 6 ? 'bad' : 'warn' });
+      }
+      if (r.memMean != null) g.stats.push({ k: '内存', v: Math.round(r.memMean) + 'MB', tone: '' });
+      if (r.tempMean != null) g.stats.push({ k: '温度', v: f1(r.tempMean) + '°C', tone: '' });
+
+      // ③ 下一步：优先级 瓶颈洞察 > 时段趋势 > 最高风险提示。
+      //    三者都是「可采取行动」的结论，避免速览停在复述数字。
+      if (r.bottleneckHint) {
+        g.next = r.bottleneckHint;
+      } else if (r.phaseTrend && r.phaseTrend.significant) {
+        g.next = '后段帧率较前段下降 ' + Math.round(r.phaseTrend.dropPct) + '%（'
+          + f1(r.phaseTrend.early) + '→' + f1(r.phaseTrend.late)
+          + '）：优先框选曲线后段并结合低谷截图定位场景变化。';
+      } else if (r.risks && r.risks.length) {
+        g.next = r.risks[0].text;
+      } else {
+        g.next = '本次采集未触发预警阈值；短时/特定场景问题需用对应场景复测。';
+      }
+      return g;
+    }
+
     /** 把解读渲染成区块，插到指标卡片下方（各平台模板通用） */
     function renderInsight(pts, category) {
-      // 达帧率 / 均帧 / 低帧 三张补充卡片（无 FPS 数据的平台自动隐藏）
+      // 帧率达成度 / 均帧 / 低帧 三张补充卡片（无 FPS 数据的平台自动隐藏）
       renderFpsKpiCards(fpsDerivedMetrics(fpsSeriesOf(pts), fpsTargetOf(pts)));
 
       const cards = document.querySelector('section.cards');
@@ -3818,6 +4204,21 @@ body { overflow-x: hidden; }
       // FIX-05：等距 category 轴的提示——采样间隔不恒定（采集耗时波动），
       // 精确定位请看各指标的原始采样页（Excel「原始采样」表含 tickStartTs/timestamp）。
       if (!subParts.__intervalNoted) subParts.push('采样间隔不恒定（含采集耗时）');
+      // 采集自身耗时占比：设备条里已有 P50/P95，但那是灰色小字；它直接决定
+      // 「短采集的秒级指标波动有多大」，≥8% 时必须在结论旁边说一句。
+      {
+        const _prov = (typeof data !== 'undefined' && data && data.provenance) ? data.provenance : null;
+        const _ov = _prov && _prov.overhead;
+        const _diag = (typeof data !== 'undefined' && data && data.diagnostics) ? data.diagnostics : null;
+        if (_ov && typeof _ov.p50Ms === 'number') {
+          const _itv = (_diag && _diag.intervalMs) || 1000;
+          const _pct = Math.round(_ov.p50Ms / _itv * 100);
+          if (_pct >= 8) {
+            subParts.push('<span class="sub-cut">采集开销 ' + _pct + '%（P50 ' + _ov.p50Ms
+              + 'ms / 每 ' + _itv + 'ms），指标波动会偏大</span>');
+          }
+        }
+      }
       // FIX-16：两种「帧分布为空」的语义要在报告里说清，别让用户把 -- 读成「没测」：
       //   low-activity = 产出了帧但太少（帧数不足，分布无统计意义；fps 仍是实测值）
       //   none / no-frames / timestats-init = 本周期没有可见渲染帧
@@ -3859,13 +4260,54 @@ body { overflow-x: hidden; }
       }
       const esc = (s) => String(s);
 
-      let html = ''
-        + '<div class="insight-head">'
-        +   '<span class="insight-title">解读总结</span>'
-        +   '<span class="insight-badge insight-badge--' + r.level + '">' + esc(r.levelText) + '</span>'
-        +   '<span class="insight-sub">' + subHtml + '</span>'
-        + '</div>'
-        + '<div class="insight-lead">' + r.lead + '</div>';
+      // 方案 A（2026-11-20）：一眼速览与解读总结合并为唯一头部。
+      // 旧结构是「一眼速览卡 + insight-head(title/badge) + insight-lead」——
+      // 指数/FPS/帧率达成度在三者里各出现一遍，一屏重复 3~4 次。现在只保留一张卡：
+      // label 改为「解读总结」，verdict 兼作原 badge，定性句用 .insight-lead 承载
+      // （保留该类名以兼容弱网 UI 测试对 #insight-box .insight-lead 的读取），
+      // 采样点 sub 缩为卡内小字；分项/风险/折叠口径原样在下方。
+      let html = '';
+      const g = buildGlance(r);
+      if (g) {
+        const glanceTone = g.level === 'bad' || g.level === 'great' ? g.level
+          : (g.level === 'warn' ? 'warn' : '');
+        // 双 FPS 口径说明并入定性句：原 lead 里唯一比 glance 多一条的信息，不能丢。
+        let leadText = g.sentence;
+        if (r.excludedSec > 0) {
+          leadText += ' 此处 FPS 为排除 ' + r.excludedSegs + ' 段加载后的有效均值，'
+            + '含加载期的全程均值见统计表「FPS(全程)」行。';
+        }
+        html += '<div class="glance' + (glanceTone ? ' glance--' + glanceTone : '') + '">'
+          + '<div class="glance-top"><span class="glance-label">解读总结</span>'
+          + '<span class="glance-verdict">' + esc(g.verdict) + '</span></div>'
+          + '<div class="insight-lead">' + leadText + '</div>';
+        if (g.stats.length) {
+          html += '<div class="glance-chips">';
+          for (const st of g.stats) {
+            const stTone = st.tone ? ' glance-chip--' + st.tone : '';
+            html += '<span class="glance-chip' + stTone + '">' + esc(st.k) + '<b>' + esc(st.v) + '</b></span>';
+          }
+          html += '</div>';
+        }
+        html += '<div class="glance-focus"><b>先看这里：</b>' + g.next + '</div>';
+        if (subHtml) html += '<div class="glance-sub">采样信息 · ' + subHtml + '</div>';
+        html += '</div>';
+      } else {
+        // 无采样点时不生成 glance（buildGlance 返回 null）：仍需保留 insight-lead
+        // 元素，否则弱网 UI 测试读不到。用精简 head 兜底。
+        html += '<div class="insight-head">'
+          + '<span class="insight-title">解读总结</span>'
+          + '<span class="insight-badge insight-badge--' + r.level + '">' + esc(r.levelText) + '</span>'
+          + '<span class="insight-sub">' + subHtml + '</span>'
+          + '</div>'
+          + '<div class="insight-lead">' + r.lead + '</div>';
+      }
+
+      // B 档：方法论声明默认折叠，标题写明内容；点开可读全文（口径不变）。
+      if (r.methodNote) {
+        html += '<details class="insight-method"><summary>指数口径与可信度说明</summary>'
+          + '<div class="insight-method-body">' + r.methodNote + '</div></details>';
+      }
 
       if (r.items.length) {
         html += '<ul class="insight-list">';
@@ -3978,9 +4420,30 @@ body { overflow-x: hidden; }
       return { mean: sum / nums.length, max: mx, p98: sorted[idx] };
     }
 
-    function fmtStat(v) {
+    /**
+     * 统计表数值精度：按指标语义固定小数位，不再统一保留 3 位。
+     *
+     * 原来一律 `Math.round(v*1000)/1000`，同一张表里出现 54.75 / 84.621 / 70.5 /
+     * 271.975 四种精度，还与卡片（85）、图表标题（71.6）对不上。开发者读表时
+     * 会被多余小数干扰，也误以为 84.621 比 84.6 更「准」。
+     * 现在：百分比/帧率/时间类 1 位，计数与内存整数量级 0 位，Jank 保留 2 位
+     * （0.31 的差异要能看出来），Excel 仍保留 2~3 位供二次分析。
+     */
+    function statDigits(r) {
+      const k = (r && (r.raw || r.metric)) || '';
+      if (k === 'Jank' || k === 'BigJank' || k === 'SmallJank' || k === 'TinyJank') return 2;
+      const u = (r && r.unit) || '';
+      if (u === 'MB' || u === 'ms²' || u === 'GB') return 0;
+      if (u === '%' || u === '帧/s' || u === 'ms' || u === '次/s' || u === 'KB/s'
+        || u === 'mW' || u === 'mA' || u === '帧/拍' || u === '次') return 1;
+      return 1;
+    }
+
+    function fmtStat(v, digits) {
       if (v == null || typeof v !== 'number' || isNaN(v)) return '--';
-      return String(Math.round(v * 1000) / 1000);
+      const d = (typeof digits === 'number') ? digits : 1;
+      const p = Math.pow(10, d);
+      return String(Math.round(v * p) / p);
     }
 
     /** 图表短名：动态系列（各核心）在统计表里需要带上归属，否则会出现多个同名「Core 0」 */
@@ -3997,8 +4460,8 @@ body { overflow-x: hidden; }
       '系统CPU', '进程CPU', 'FPS', 'PSS', '物理内存', 'RSS',
       'Jank', 'BigJank', 'SmallJank', 'TinyJank', '上下文切换', 'GPU', 'GPU 温度', '温度',
       '下行', '上行', '读 KB/s', '写 KB/s',
-      '达帧率', '均帧', '帧耗时标准差', '帧耗时方差', '低帧占比', '1%Low', 'Drop',
-      'FPS≥目标', '稳帧范围', '帧率标准差', '卡顿时长占比', 'FPS(全程)',
+      '帧率达成度', '均帧', '帧耗时标准差', '帧耗时方差', '低帧占比', '1%Low', 'Drop',
+      '满帧占比', '稳帧范围', '帧率标准差', '卡顿时长占比', 'FPS(全程)',
       'Jank/10min', 'BigJank/10min', 'SmallJank/10min', 'TinyJank/10min',
       // v3：PC 帧延迟分解（PresentMon v1 列，PC 报告统计表主表展示）
       '上屏间隔', 'Present→上屏延迟', 'Present 调用耗时', '渲染完成延迟', '帧起点间距',
@@ -4030,6 +4493,9 @@ body { overflow-x: hidden; }
         const unit = metricUnitOf(cfg);
         for (let i = 0; i < seriesDefs.length; i++) {
           const rawName = seriesDefs[i].name || `${chartName}.${i}`;
+          // 混合图里每个系列的量纲不同（FPS 是帧/s，Jank 是帧/拍），
+          // 系列自带 unit 时优先用它，否则回退整图单位。
+          const seriesUnit = seriesDefs[i].unit || unit;
           // 各核心 CPU / 频率两图都叫 Core N，加前缀区分
           const name = cfg.dynamic ? `${CHART_LABELS[chartName] || chartName} · ${rawName}` : rawName;
           const full = state.series[i] || [];
@@ -4045,11 +4511,11 @@ body { overflow-x: hidden; }
             }
           }
           const st = calcStats(slice);
-          rows.push({ metric: name, raw: rawName, unit, mean: st.mean, max: st.max, p98: st.p98, dynamic: !!cfg.dynamic });
+          rows.push({ metric: name, raw: rawName, unit: seriesUnit, mean: st.mean, max: st.max, p98: st.p98, dynamic: !!cfg.dynamic });
         }
       }
 
-      // FPS 派生指标：达帧率 / 均帧 / 低帧占比。
+      // FPS 派生指标：帧率达成度 / 均帧 / 低帧占比。
       // 下面 perfFpsQualityRows 已经给整段统计算过同名的三行（PerfDog 口径），
       // 所以整段模式下这里不再追加，否则表格里会出现两条同名行；
       // 只有用户框选了区间（整段行不参与统计）时才用这里的随选区版本顶上。
@@ -4062,7 +4528,7 @@ body { overflow-x: hidden; }
         // 目标帧率按整段算，不随选区变化
         const fm = fpsDerivedMetrics(slice, fpsTargetOfSeries(full));
         if (fm) {
-          rows.push({ metric: '达帧率', raw: '达帧率', unit: '%', mean: fm.reach, max: fm.reach, p98: fm.reach });
+          rows.push({ metric: '帧率达成度', raw: '帧率达成度', unit: '%', mean: fm.reach, max: fm.reach, p98: fm.reach });
           rows.push({ metric: '均帧', raw: '均帧', unit: 'ms', mean: fm.frameTime, max: fm.frameTime, p98: fm.frameTime });
           rows.push({ metric: '低帧占比', raw: '低帧占比', unit: '%', mean: fm.lowPct, max: fm.lowPct, p98: fm.lowPct });
         }
@@ -4089,7 +4555,7 @@ body { overflow-x: hidden; }
           qRows.push({
             metric: '帧率质量', raw: '帧率质量', unit: '',
             mean: null, max: null, p98: null,
-            sub: '本次采集未取到有效帧（应用不在前台或无渲染层），达帧率/均帧/低帧等指标不可用',
+            sub: '本次采集未取到有效帧（应用不在前台或无渲染层），帧率达成度/均帧/低帧等指标不可用',
           });
         }
       for (const r of qRows) rows.push(r);
@@ -4145,9 +4611,11 @@ body { overflow-x: hidden; }
           if (hostKey) {                                  // 派生行并入宿主
             const host = first.get(hostKey);
             if (host && host !== r) {
-              // 10min 计数本身没有独立单位，副标注要写清口径
+              // 10min 计数本身没有独立单位，副标注要写清口径。
+              // 「折合」二字是关键：162.8 次/10min 是从逐拍帧数折算来的速率，
+              // 不是另一个实测计数，读者不该把它与主值（帧/拍）当两个指标比较。
               const is10 = /\/\s*10min/.test(k);
-              const sub = fmtStat(r.mean) + (is10 ? ' 次/10min' : (r.unit ? ' ' + r.unit : ''));
+              const sub = '折合 ' + fmtStat(r.mean) + (is10 ? ' 次/10min' : (r.unit ? ' ' + r.unit : ''));
               host.sub = host.sub ? host.sub + ' · ' + sub : sub;
               continue;
             }
@@ -4165,63 +4633,236 @@ body { overflow-x: hidden; }
       return MAIN_METRICS.has(r.raw || r.metric);
     }
 
-    function renderTable(tableId, rows) {
-      const tb = document.querySelector(`#${tableId} tbody`);
-      if (!tb) return;
+    /** 主表分组：21 行平铺时 CPU / 帧率 / 卡顿 / 内存 / 网络 混在一起，扫读要逐行找 */
+    const STAT_GROUP = {
+      '系统CPU': '资源 · CPU', '进程CPU': '资源 · CPU',
+      'FPS': '帧率', 'FPS(全程)': '帧率', '帧率达成度': '帧率', '均帧': '帧率',
+      '低帧占比': '帧率', '1%Low': '帧率', 'Drop': '帧率', '满帧占比': '帧率',
+      '稳帧范围': '帧率', '帧率标准差': '帧率', '帧耗时标准差': '帧率', '帧耗时方差': '帧率',
+      '卡顿时长占比': '卡顿', 'Jank': '卡顿', 'BigJank': '卡顿',
+      'SmallJank': '卡顿', 'TinyJank': '卡顿',
+      'PSS': '内存', '物理内存': '内存', 'RSS': '内存',
+      '下行': '网络', '上行': '网络',
+      'GPU': 'GPU / 温度', 'GPU 温度': 'GPU / 温度', '温度': 'GPU / 温度',
+      '上下文切换': '其他', '读 KB/s': '其他', '写 KB/s': '其他',
+      '上屏间隔': 'PC 帧延迟', 'Present→上屏延迟': 'PC 帧延迟',
+      'Present 调用耗时': 'PC 帧延迟', '渲染完成延迟': 'PC 帧延迟', '帧起点间距': 'PC 帧延迟',
+    };
+
+    /**
+     * 统计表分几栏：由可用宽度与总行数共同决定。
+     *
+     * 单表限宽 720 时，1900 宽窗口里右侧空 61%（实测），看着像没渲染完；
+     * 直接铺满则「帧率达成度」与 70.5 之间隔 600px，读一行要横跳。
+     * 分栏后每栏 500~620px，既用满宽度又保持名→值的距离。
+     */
+    function statsColumnCount(host, totalRows) {
+      const body = host && host.closest ? host.closest('.stats-body') : null;
+      const measured = Math.max(
+        (host && host.clientWidth) || 0,
+        body ? (body.clientWidth || 0) - 24 : 0
+      );
+      // 折叠状态下 clientWidth 为 0，退回窗口宽度估算（卡片与统计表同宽）
+      const w = measured > 240 ? measured : ((window.innerWidth || 1200) - 72);
+      let n = w >= 1340 ? 3 : (w >= 820 ? 2 : 1);
+      // 行数太少就别切：6 行切成 3 栏反而更难扫
+      n = Math.min(n, Math.max(1, Math.floor(totalRows / 6)));
+      return n;
+    }
+
+    /**
+     * 按分组顺序把 rows 切成 k 栏，让最高一栏尽量矮。
+     *
+     * 只允许在「组与组之间」切会切不动：1080 两栏时最好的位置也只有 12 行 / 20 行，
+     * 右栏比左栏长 150px，底部一片空白。所以允许在组内断开——断点后的那一栏
+     * 重复一次组标题（代价 +1 行高）。代价极小的 DP，先最小化最高栏，再比平方和。
+     * 行高不是等价的：Jank 行带「折合 xxx 次/10min」副标注，实际占两行。
+     */
+    function splitStatSections(sections, k) {
+      if (k <= 1 || !sections.length) return [sections];
+      const units = [];
+      for (const s of sections) {
+        for (const r of s.rows) units.push({ grp: s.grp, row: r });
+      }
+      const m = units.length;
+      if (m <= 1) return [sections];
+      k = Math.min(k, m);
+      const w = units.map(u => 1 + (u.row.sub ? 1 : 0));
+      // 每栏都自带一个表头行（组被截断时是重复的组标题）
+      const segCost = (i, j) => {
+        let h = 1;
+        for (let t = i; t < j; t++) h += w[t];
+        return h;
+      };
+      const INF = 1e9;
+      const dp = Array.from({ length: k + 1 }, () => new Array(m + 1).fill(INF));
+      const sq = Array.from({ length: k + 1 }, () => new Array(m + 1).fill(INF));
+      const cut = Array.from({ length: k + 1 }, () => new Array(m + 1).fill(-1));
+      dp[0][0] = 0; sq[0][0] = 0;
+      for (let c = 1; c <= k; c++) {
+        for (let j = c; j <= m; j++) {
+          for (let i = c - 1; i < j; i++) {
+            const h = segCost(i, j);
+            const mx = Math.max(dp[c - 1][i], h);
+            const ss = sq[c - 1][i] + h * h;
+            // 先让最高一栏尽量矮；高度打平时再比平方和，避免「13/6/11」这种次级不均
+            if (mx < dp[c][j] || (mx === dp[c][j] && ss < sq[c][j])) {
+              dp[c][j] = mx; sq[c][j] = ss; cut[c][j] = i;
+            }
+          }
+        }
+      }
+      const bounds = [m];
+      let jj = m;
+      for (let c = k; c > 0; c--) { jj = cut[c][jj]; if (jj < 0) { jj = 0; break; } bounds.unshift(jj); }
+      const out = [];
+      for (let c = 0; c < k; c++) {
+        const secs = [];
+        for (let t = bounds[c]; t < bounds[c + 1]; t++) {
+          const u = units[t];
+          if (!secs.length || secs[secs.length - 1].grp !== u.grp) {
+            // 组被切断时下一栏重复组标题，标「（续）」免得读成两组同名指标
+            const cont = t > 0 && units[t - 1].grp === u.grp;
+            secs.push({ grp: u.grp, rows: [], cont });
+          }
+          secs[secs.length - 1].rows.push(u.row);
+        }
+        out.push(secs);
+      }
+      return out;
+    }
+
+    function renderTable(tableId, rows, opts) {
+      const host = document.getElementById(tableId);
+      if (!host) return;
+      const o = opts || {};
+
+      // 采样点 <100 时 P98 恒等于最大值（ceil(n×0.98)-1 正好落到最后一格），
+      // 这一列没有任何信息量。整列不渲染，同时把列宽比例换成 3 列版。
+      const useP98 = !(typeof o.sampleN === 'number' && o.sampleN > 0 && o.sampleN < 100);
+      const cols = useP98 ? 4 : 3;
 
       const _miAttr = (r) => (window.MetricInfo ? MetricInfo.attr(r.raw || r.metric) : '');
-      const cell = (r) =>
-        `<tr><td${_miAttr(r)}>${r.metric}${r.unit ? `<span class="metric-unit">${r.unit}</span>` : ''}` +
-        `${r.sub ? `<span class="metric-sub">${r.sub}</span>` : ''}</td>` +
-        `<td>${fmtStat(r.mean)}</td><td>${fmtStat(r.max)}</td><td>${fmtStat(r.p98)}</td></tr>`;
+      const cell = (r) => {
+        const d = statDigits(r);
+        // 单值指标（均值 = 峰值 = P98）：后两列只写「—」，不再重复同一个数字。
+        // 原来 21 行里 11 行三列完全相同，读起来像表格出错，也让人误以为有峰值可看。
+        const single = r.mean != null && r.mean === r.max && r.max === r.p98;
+        let tds = `<td>${fmtStat(r.mean, d)}</td>`;
+        tds += single
+          ? `<td class="stat-na">—</td>` + (useP98 ? `<td class="stat-na">—</td>` : '')
+          : `<td>${fmtStat(r.max, d)}</td>` + (useP98 ? `<td>${fmtStat(r.p98, d)}</td>` : '');
+        return `<tr><td${_miAttr(r)}>${r.metric}${r.unit ? `<span class="metric-unit">${r.unit}</span>` : ''}` +
+          `${r.sub ? `<span class="metric-sub">${r.sub}</span>` : ''}</td>` + tds + `</tr>`;
+      };
 
-      const main = rows.filter(isMainMetric);
-      const detail = rows.filter(r => !isMainMetric(r));
+      // 统计表分层（2026-11-20）：纯统计学派生量（方差/标准差）对扫读价值低、
+      // 却与 FPS/卡顿核心指标平铺在同一张主表里。把它们并入可折叠明细，
+      // 主表首屏只留可行动的核心指标。帧率达成度/均帧/低帧/Jank 等核心项保持可见
+      // （dedupe_metrics_test 与全 0 帧回归依赖它们在主表）。不改任何数值与口径。
+      const SECONDARY = new Set(['帧耗时方差', '帧耗时标准差', '帧率标准差']);
+      const main = rows.filter(r => isMainMetric(r) && !SECONDARY.has(r.raw || r.metric));
+      const detail = rows.filter(r => !isMainMetric(r) || SECONDARY.has(r.raw || r.metric));
 
-      // 主表按 MAIN_METRICS 的语义顺序排：CPU → 内存 → 帧率 → 网络 → GPU/温度 → 功耗
-      const ORDER = ['系统CPU', '进程CPU', 'FPS', 'FPS(全程)', '达帧率', '均帧', '帧耗时标准差', '帧耗时方差', '低帧占比', '1%Low', 'Drop',
-        'FPS≥目标', '稳帧范围', '帧率标准差', '卡顿时长占比',
-        'Jank', 'BigJank', 'SmallJank', 'TinyJank', 'Jank/10min', 'BigJank/10min', 'SmallJank/10min', 'TinyJank/10min',
-        'PSS', '物理内存', 'RSS', '上下文切换',
-        '下行', '上行', 'GPU', 'GPU 温度', '温度', '读 KB/s', '写 KB/s'];
+      // 主表按语义顺序排：CPU → 帧率 → 卡顿 → 内存 → 网络 → GPU/温度 → 其他
+      const ORDER = [
+        '系统CPU', '进程CPU',
+        'FPS', 'FPS(全程)', '帧率达成度', '均帧', '低帧占比', '1%Low', 'Drop',
+        '满帧占比', '稳帧范围', '帧耗时标准差', '帧耗时方差', '帧率标准差',
+        '卡顿时长占比',
+        'Jank', 'BigJank', 'SmallJank', 'TinyJank',
+        'Jank/10min', 'BigJank/10min', 'SmallJank/10min', 'TinyJank/10min',
+        'PSS', '物理内存', 'RSS',
+        '下行', '上行',
+        'GPU', 'GPU 温度', '温度',
+        '上下文切换', '读 KB/s', '写 KB/s',
+        '上屏间隔', 'Present→上屏延迟', 'Present 调用耗时', '渲染完成延迟', '帧起点间距',
+      ];
       main.sort((a, b) => {
         const ia = ORDER.indexOf(a.raw || a.metric), ib = ORDER.indexOf(b.raw || b.metric);
         return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
       });
 
-      let html = main.map(cell).join('');
-      if (detail.length) {
-        html += `<tr class="stats-toggle"><td colspan="4">` +
-          `<button type="button" data-detail-toggle="${tableId}">▾ 展开明细 ${detail.length} 项（内存分项 / 各核心）</button>` +
-          `</td></tr>`;
-        html += detail.map(r => cell(r).replace('<tr>', '<tr class="stats-detail-row" hidden>')).join('');
+      // 先按分组切段，再按段分栏（分组行不能落在栏与栏之间）
+      const sections = [];
+      for (const r of main) {
+        const k = r.raw || r.metric;
+        const grp = STAT_GROUP[k] || '其他';
+        if (!sections.length || sections[sections.length - 1].grp !== grp) {
+          sections.push({ grp, rows: [] });
+        }
+        sections[sections.length - 1].rows.push(r);
       }
-      tb.innerHTML = html;
-      if (window.MetricInfo) MetricInfo.decorate(tb);
+
+      const nCols = Math.min(statsColumnCount(host, main.length), sections.length || 1);
+      const blocks = sections.length ? splitStatSections(sections, nCols) : [];
+
+      const tableHtml = (blockSections) => {
+        let body = '';
+        for (const sec of blockSections) {
+          body += `<tr class="stats-group"><td colspan="${cols}">${sec.grp}${sec.cont ? '（续）' : ''}</td></tr>`;
+          body += sec.rows.map(cell).join('');
+        }
+        return `<table class="stats-table${useP98 ? '' : ' no-p98'}">` +
+          '<thead><tr><th>指标</th><th>均值</th><th>峰值</th>' +
+          (useP98 ? '<th>P98</th>' : '') + '</tr></thead>' +
+          `<tbody>${body}</tbody></table>`;
+      };
+
+      let html = blocks.map(tableHtml).join('');
+      if (detail.length) {
+        // 明细同样分栏：28 行明细挤在一条 720px 的长条里，在 1800px 宽的三栏布局下
+        // 像半张没渲染完的表（左下一小块、右侧全空）。按主表栏数均分，每段一张表、
+        // 共用上面的列宽规则；外面套 100% 的 div 让它独占一行。
+        const parts = Math.max(1, blocks.length);
+        const chunk = Math.ceil(detail.length / parts);
+        const detailBlocks = [];
+        for (let i = 0; i < detail.length; i += chunk) {
+          detailBlocks.push(detail.slice(i, i + chunk)
+            .map(r => cell(r).replace('<tr>', '<tr class="stats-detail-row" hidden>')).join(''));
+        }
+        html += `<div class="stats-detail-wrap">` +
+          `<div class="stats-detail-bar"><button type="button" data-detail-toggle="${tableId}">` +
+          `▾ 展开明细 ${detail.length} 项（内存分项 / 各核心 / 帧时分布）</button></div>` +
+          `<div class="stats-tables detail-blocks">` +
+          detailBlocks.map(b => `<table class="stats-table stats-detail${useP98 ? '' : ' no-p98'}">` +
+            `<tbody>${b}</tbody></table>`).join('') +
+          `</div></div>`;
+      }
+
+      host.classList.toggle('single', blocks.length <= 1);
+      host.dataset.cols = String(blocks.length);
+      host.innerHTML = html;
+      if (window.MetricInfo) MetricInfo.decorate(host);
     }
 
     // 明细折叠：事件委托，一次绑定
     document.addEventListener('click', (e) => {
       const btn = e.target.closest && e.target.closest('[data-detail-toggle]');
       if (!btn) return;
-      const tb = document.querySelector(`#${btn.getAttribute('data-detail-toggle')} tbody`);
-      if (!tb) return;
-      const rows = tb.querySelectorAll('.stats-detail-row');
-      const willShow = rows.length && rows[0].hidden;
+      // 分栏后 host 里有多张表，明细行也按栏拆进了多张 .stats-detail，统一按 class 取
+      const host = document.getElementById(btn.getAttribute('data-detail-toggle'));
+      const rows = host ? host.querySelectorAll('.stats-detail-row') : [];
+      if (!rows.length) return;
+      const willShow = rows[0].hidden;
       rows.forEach(tr => { tr.hidden = !willShow; });
       btn.textContent = willShow
         ? `▴ 收起明细（${rows.length} 项）`
-        : `▾ 展开明细 ${rows.length} 项（内存分项 / 各核心）`;
+        : `▾ 展开明细 ${rows.length} 项（内存分项 / 各核心 / 帧时分布）`;
     });
 
     function tableText(tableId) {
       const rows = [];
-      const t = document.getElementById(tableId);
-      if (!t) return '';
-      const tr = t.querySelectorAll('tr');
-      tr.forEach(row => {
-        const cols = Array.from(row.querySelectorAll('th,td')).map(c => (c.textContent || '').trim());
-        rows.push(cols.join('\t'));
+      const host = document.getElementById(tableId);
+      if (!host) return '';
+      // 分栏后 host 里有多张表：表头只复制第一份，避免「指标 均值 峰值」重复三遍
+      const tables = host.tagName === 'TABLE' ? [host] : Array.from(host.querySelectorAll('table'));
+      tables.forEach((t, ti) => {
+        t.querySelectorAll('tr').forEach(row => {
+          if (ti > 0 && row.closest('thead')) return;
+          const cols = Array.from(row.querySelectorAll('th,td')).map(c => (c.textContent || '').trim());
+          rows.push(cols.join('\t'));
+        });
       });
       return rows.join('\n');
     }
@@ -4286,9 +4927,172 @@ body { overflow-x: hidden; }
       });
     }
 
+    /**
+     * 表下口径脚注：把「哪几个数是单值」「Jank 与卡顿归因不同源」「P98 何时等于峰值」
+     * 写在表格下方。这些信息原来只藏在每行的 ! 弹层里，要点开全屏模态才看得到。
+     */
+    function renderStatsFootnote(sampleN) {
+      const wrap = document.getElementById('wrap-stats-global');
+      if (!wrap || wrap.querySelector('.stats-foot')) return;
+      const bits = [];
+      let hasExcl = false;
+      try { const li = ensureLoadingInfo(); hasExcl = !!(li && li.excludedSamples); } catch (_) {}
+      if (hasExcl) bits.push('<b>已排除加载段</b>：FPS / 帧率达成度 / 均帧 / 1%Low / 卡顿时长按有效时长统计');
+      const hasAttr = (typeof data !== 'undefined' && data && Array.isArray(data.perf))
+        && data.perf.some(r => r && r.jankAttr && typeof r.jankAttr._frames === 'number' && r.jankAttr._frames > 0);
+      bits.push('<b>Jank 单位是「帧/拍」</b>（每个采样轮的帧数），折合速率见指标名下方小字');
+      if (hasAttr) bits.push('<b>卡顿归因</b>来自 FrameTimeline 逐帧超时，与 timestats 的 Jank 不同源');
+      bits.push('<b>—</b> 表示单值指标（无均值/峰值之分）');
+      if (typeof sampleN === 'number' && sampleN > 0 && sampleN < 100) {
+        bits.push('本次 <b>' + sampleN + ' 个采样点</b>，P98 即最大值，已隐藏该列');
+      }
+      const div = document.createElement('div');
+      div.className = 'stats-foot';
+      div.innerHTML = bits.join('　·　');
+      const body = wrap.querySelector('.stats-body');
+      if (body) body.insertAdjacentElement('afterend', div);
+    }
+
+    /**
+     * 折叠「没有信息量」的图表：全程为 0（如未采集到的网络）或整图只有 1 个有效点。
+     *
+     * 12 张图平铺 4000px 时，一张 0/0 的网络图照样占 250px，一条单点温度线
+     * 还会显示「均值 = 峰值」，看起来像数据很稳，其实只有一个采样点。
+     * 这里只隐藏图面，统计表对应行与 CSV/Excel 数据都不动。
+     */
+    function collapseEmptyCharts() {
+      if (typeof chartMgr === 'undefined' || !chartMgr._data) return false;
+      const grid = document.querySelector('.charts-grid');
+      if (!grid) return false;
+      const hiddenNames = [];
+      let ready = 0;
+      for (const [name, cfg] of Object.entries(CHART_CONFIGS)) {
+        const state = chartMgr._data[name];
+        const el = document.getElementById(cfg.el);
+        if (!state || !el) continue;
+        const wrap = el.closest('.chart-wrap');
+        if (!wrap || wrap.classList.contains('stats')) continue;
+        const cols = (state.series || []).filter(Array.isArray);
+        if (!cols.length) continue;
+        const vals = [];
+        for (const c of cols) for (const v of c) if (typeof v === 'number' && !isNaN(v)) vals.push(v);
+        if (!vals.length) continue;           // 整图无数据：可能还没渲染完，不判
+        ready += 1;
+        // 全程为 0：曲线贴着 X 轴，看不出任何变化
+        if (!vals.some(v => v !== 0)) {
+          wrap.hidden = true;
+          const t = wrap.querySelector('.chart-title');
+          hiddenNames.push((t ? t.textContent : name).replace(/均值.*$/, '').trim());
+          continue;
+        }
+        // 单点：所有系列最多各 1 个有效值，折线退化成点
+        const maxPts = Math.max.apply(null, cols.map(c => c.filter(v => typeof v === 'number' && !isNaN(v)).length));
+        if (maxPts <= 1) {
+          const t = wrap.querySelector('.chart-title');
+          if (t && !t.dataset.single) {
+            t.dataset.single = '1';
+            t.insertAdjacentHTML('beforeend', '<span class="chart-note">仅 1 个有效采样点，仅供参考</span>');
+          }
+        }
+      }
+      if (!ready) return false;             // 还没渲染出数据，稍后重试
+      if (hiddenNames.length && !document.getElementById('charts-hidden-note')) {
+        const note = document.createElement('div');
+        note.id = 'charts-hidden-note';
+        note.className = 'charts-hidden-note';
+        note.textContent = '已隐藏 ' + hiddenNames.length + ' 张无数据图表：' + hiddenNames.join('、')
+          + '（全程为 0 或未采集到；统计表仍保留对应行）';
+        grid.insertBefore(note, grid.firstChild);
+      }
+      return true;
+    }
+
+    /**
+     * 统计表默认折叠：21 项 + 分组行让表格长到 1100px，正好夹在解读与曲线之间，
+     * 读完结论想定位卡顿要先滚过一整屏表格。折叠后只留一行标题与「展开 N 项」。
+     */
+    function setupStatsCollapse() {
+      const wrap = document.getElementById('wrap-stats-global');
+      if (!wrap || wrap.dataset.collapseReady) return;
+      const body = wrap.querySelector('.stats-body');
+      const head = wrap.querySelector('.stats-head');
+      if (!body || !head) return;
+      const rows = wrap.querySelectorAll('tbody tr:not(.stats-group):not(.stats-toggle):not(.stats-detail-row)');
+      if (!rows.length) return;                 // 表格还没渲染，等下一次
+      wrap.dataset.collapseReady = '1';
+      const foot = wrap.querySelector('.stats-foot');
+      body.hidden = true;
+      // 脚注不跟着折叠：它说明「哪些指标是单值、Jank 与卡顿归因不同源」，
+      // 折起来就等于把口径说明又藏回弹层里了。
+      const n = rows.length;
+
+      const actions = head.querySelector('.stats-actions') || head;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-sm';
+      btn.id = 'btn-stats-toggle';
+      btn.textContent = '▾ 展开 ' + n + ' 项';
+      actions.insertBefore(btn, actions.firstChild);
+      btn.onclick = () => {
+        const show = body.hidden;
+        body.hidden = !show;
+        btn.textContent = show ? '▴ 收起统计' : '▾ 展开 ' + n + ' 项';
+      };
+      const title = head.querySelector('.chart-title');
+      if (title) {
+        title.style.cursor = 'pointer';
+        title.title = '点击展开 / 收起统计表';
+        title.onclick = () => btn.click();
+      }
+    }
+
+    /** 顶栏目录：5543px 长页没有跳转入口，只能滚。 */
+    function setupToc() {
+      if (document.getElementById('btn-toc')) return;
+      const right = document.querySelector('.topbar-right');
+      if (!right) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'toc';
+      wrap.innerHTML = '<button type="button" class="btn btn-sm" id="btn-toc">目录 ▾</button>'
+        + '<div class="toc-menu" id="toc-menu" hidden></div>';
+      right.insertBefore(wrap, right.firstChild);
+      const menu = wrap.querySelector('#toc-menu');
+      const items = [
+        ['解读总结', () => document.getElementById('insight-box')],
+        ['关键指标', () => document.querySelector('section.cards')],
+        ['整体统计', () => document.getElementById('wrap-stats-global')],
+        ['性能曲线', () => document.querySelector('.charts-grid')],
+        ['低谷截图', () => document.getElementById('trough-gallery')],
+      ];
+      for (const [label, get] of items) {
+        const a = document.createElement('button');
+        a.type = 'button';
+        a.className = 'toc-item';
+        a.textContent = label;
+        a.onclick = () => {
+          menu.hidden = true;
+          const el = get();
+          if (!el) return;
+          const y = el.getBoundingClientRect().top + window.scrollY - 64;
+          window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+        };
+        menu.appendChild(a);
+      }
+      const btn = wrap.querySelector('#btn-toc');
+      btn.onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
+      document.addEventListener('click', (e) => {
+        if (!wrap.contains(e.target)) menu.hidden = true;
+      });
+    }
+
     function renderStats() {
+      const nAll = (() => {
+        const st = chartMgr._data[Object.keys(CHART_CONFIGS)[0]];
+        return st && st.times ? st.times.length : 0;
+      })();
       // global
-      renderTable('tbl-global', buildTableRows(null));
+      renderTable('tbl-global', buildTableRows(null), { sampleN: nAll });
+      renderStatsFootnote(nAll);
       // selected
       if (selection) {
         const firstName = Object.keys(CHART_CONFIGS)[0];
@@ -4296,18 +5100,38 @@ body { overflow-x: hidden; }
         const times = state?.times || [];
         const fromIdx = Math.max(0, Math.min(selection.fromIdx, selection.toIdx));
         const toIdx = Math.max(0, Math.max(selection.fromIdx, selection.toIdx));
-        renderTable('tbl-selected', buildTableRows({ fromIdx, toIdx }));
+        renderTable('tbl-selected', buildTableRows({ fromIdx, toIdx }), { sampleN: toIdx - fromIdx + 1 });
         const tbl = document.getElementById('tbl-selected');
         if (tbl) tbl.hidden = false;
+        // 框选时整个面板显形：未选中时连标题都不占位（原来留 77px 空表头）
+        const selWrap = document.getElementById('wrap-stats-selected');
+        if (selWrap) selWrap.hidden = false;
         const hint = document.getElementById('sel-hint');
         if (hint) hint.textContent = `选中：${times[fromIdx] ?? fromIdx} ~ ${times[toIdx] ?? toIdx}`;
       } else {
-        renderTable('tbl-selected', []);
+        renderTable('tbl-selected', [], { sampleN: 0 });
         // 没框选时不显示空表头，避免一大块空白
         const tbl = document.getElementById('tbl-selected');
         if (tbl) tbl.hidden = true;
+        const selWrap = document.getElementById('wrap-stats-selected');
+        if (selWrap) selWrap.hidden = true;
       }
     }
+
+    // 窗口宽度变化后重算统计表分栏数（拖动窗口 / 分屏时保持用满宽度）
+    let _statsColsTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(_statsColsTimer);
+      _statsColsTimer = setTimeout(() => {
+        const host = document.getElementById('tbl-global');
+        if (!host) return;
+        const rows = host.querySelectorAll(
+          'tbody tr:not(.stats-group):not(.stats-toggle):not(.stats-detail-row)'
+        ).length;
+        if (!rows) return;
+        if (String(statsColumnCount(host, rows)) !== host.dataset.cols) renderStats();
+      }, 220);
+    });
 
     function toIndexFromValue(v, times) {
       const t = times || [];
@@ -4520,6 +5344,7 @@ const pts = perf.map((it) => {
         const charts = Object.values(chartMgr._charts || {});
         charts.forEach(ch => ch.group = 'sync');
         if (charts.length) echarts.connect('sync');
+        setTimeout(() => { collapseEmptyCharts(); setupStatsCollapse(); setupToc(); }, 150);
         const any = charts[0];
         if (any) {
           const getTimes = () => chartMgr._data[Object.keys(CHART_CONFIGS)[0]]?.times;
@@ -4610,6 +5435,7 @@ const pts = perf.map((it) => {
         const charts = Object.values(chartMgr._charts || {});
         charts.forEach(ch => ch.group = 'sync');
         if (charts.length) echarts.connect('sync');
+        setTimeout(() => { collapseEmptyCharts(); setupStatsCollapse(); setupToc(); }, 150);
         const any = charts[0];
         if (any) {
           const getTimes = () => chartMgr._data[Object.keys(CHART_CONFIGS)[0]]?.times;
@@ -4708,6 +5534,7 @@ const pts = perf.map((it) => {
         const charts = Object.values(chartMgr._charts || {});
         charts.forEach(ch => ch.group = 'sync');
         if (charts.length) echarts.connect('sync');
+        setTimeout(() => { collapseEmptyCharts(); setupStatsCollapse(); setupToc(); }, 150);
         const any = charts[0];
         if (any) {
           const getTimes = () => chartMgr._data[Object.keys(CHART_CONFIGS)[0]]?.times;
@@ -4748,6 +5575,7 @@ const pts = perf.map((it) => {
         const charts = Object.values(chartMgr._charts || {});
         charts.forEach(ch => ch.group = 'sync');
         if (charts.length) echarts.connect('sync');
+        setTimeout(() => { collapseEmptyCharts(); setupStatsCollapse(); setupToc(); }, 150);
         const any = charts[0];
         if (any) {
           const getTimes = () => chartMgr._data[Object.keys(CHART_CONFIGS)[0]]?.times;
@@ -4810,7 +5638,10 @@ const pts = perf.map((it) => {
     img.alt = s.time || '';
     img.src = s.url || s.file || '';
     var cap = document.createElement('div');
-    cap.textContent = (s.time || '') + '  FPS ' + s.fps + ' / 目标 ' + s.target;
+    var dropPct = (s.target && s.fps != null) ? Math.round((s.fps - s.target) / s.target * 100) : null;
+    cap.textContent = (s.time || '') + '  FPS ' + s.fps
+      + (s.target ? ' / 目标 ' + s.target : '')
+      + (dropPct != null ? '（' + (dropPct >= 0 ? '+' : '') + dropPct + '%）' : '');
     overlay.appendChild(img);
     overlay.appendChild(cap);
     overlay.addEventListener('click', closeOverlay);
@@ -4819,8 +5650,7 @@ const pts = perf.map((it) => {
 
   // ─── 把缩略图钉到 FPS 曲线上 ───────────────────────────────────────────────
   // 长报告会抽稀（>2000 点），原始时间可能已不在类目里，因此投影到最近保留点。
-  var CURVE_MARK_SIZE = [36, 80];
-  var CURVE_MARK_OFFSET = [0, -46];
+  // 标记用小圆点而不是缩略图：36×80 的图钉在曲线上会盖住整段数据（三段低谷就遮三块）。
   var CURVE_MARK_MAX_DRIFT_SEC = 20;
 
   function hmsToSec(s) {
@@ -4860,10 +5690,11 @@ const pts = perf.map((it) => {
         shotIdx: i,
         coord: [times[best], s.fps],
         value: s.fps,
-        symbol: 'image://' + (s.thumbUrl || s.thumb || s.url || s.file),
-        symbolSize: CURVE_MARK_SIZE,
-        symbolOffset: CURVE_MARK_OFFSET,
-        itemStyle: { shadowBlur: 10, shadowColor: 'rgba(77,163,255,.85)' },
+        symbol: 'circle',
+        symbolSize: 16,
+        symbolOffset: [0, -12],
+        itemStyle: { color: '#f5a623', borderColor: '#0b0f16', borderWidth: 2 },
+        label: { show: true, position: 'inside', formatter: String(i + 1), color: '#12161f', fontSize: 9, fontWeight: 'bold' },
       });
     });
     if (!marks.length) return true;
@@ -4871,7 +5702,7 @@ const pts = perf.map((it) => {
     chart.setOption({
       series: [{
         name: 'FPS',
-        markPoint: { silent: false, animation: false, label: { show: false }, data: marks },
+        markPoint: { silent: false, animation: false, label: { show: true, position: 'inside', color: '#12161f', fontSize: 9, fontWeight: 'bold' }, data: marks },
       }],
     });
     if (!chart.__troughClickBound) {
@@ -4945,7 +5776,11 @@ const pts = perf.map((it) => {
         if (!left) { sec.parentNode && sec.parentNode.removeChild(sec); }
       };
       var cap = document.createElement('span');
-      cap.textContent = (s.time || '') + ' · ' + s.fps + ' fps';
+      // 只写绝对帧率时，93 fps 被标成「低谷」很反直觉。补上目标与偏离幅度，
+      // 让读者一眼看出它是「比 120 低 22%」而不是「93 本身很低」。
+      var dropPct = (s.target && s.fps != null) ? Math.round((s.fps - s.target) / s.target * 100) : null;
+      cap.textContent = (s.time || '') + ' · ' + s.fps + ' fps'
+        + (dropPct != null ? '（目标 ' + s.target + '，' + (dropPct >= 0 ? '+' : '') + dropPct + '%）' : '');
       card.appendChild(img);
       card.appendChild(cap);
       card.addEventListener('click', function () { openShot(s); });
@@ -4976,7 +5811,8 @@ const pts = perf.map((it) => {
     // 解读总结的 meta 是短句、可以多列铺开；弱网的场景/时段/范围是长文本，铺成多列会被挤成
     // 三四行，所以这一块固定单列
     + '#weaknet-box .insight-list{grid-template-columns:1fr}'
-    + '.wn-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}'
+    + '.wn-table{width:100%;max-width:720px;table-layout:fixed;border-collapse:collapse;font-size:12px;margin-top:10px}'
+    + '.wn-table th:nth-child(1){width:40%}'
     + '.wn-table th,.wn-table td{border-bottom:1px solid var(--border);padding:5px 8px;text-align:left}'
     + '.wn-table th{color:var(--text2);font-weight:600}'
     + '.wn-table td:first-child{white-space:nowrap}'
@@ -4984,7 +5820,8 @@ const pts = perf.map((it) => {
     + '.wn-table td.wn-dim{color:var(--text2)}'
     + '.wn-table .wn-dim{font-weight:400}'
     + '.wn-good{color:var(--green)}.wn-bad{color:var(--red)}.wn-flat{color:var(--text2)}'
-    + '.wn-hint{color:var(--text2);font-size:11px;line-height:1.7;margin-top:9px}';
+    + '.wn-hint{color:var(--text2);font-size:11px;line-height:1.7;margin-top:9px}'
+    + '.wn-foot{color:var(--text2);font-size:11px;line-height:1.7;margin-top:6px;max-width:720px}';
 
   var SOURCE_LABEL = { pc: 'Windows WeakNet', android: '手机（USB 接管）' };
 
@@ -5095,7 +5932,7 @@ const pts = perf.map((it) => {
   }
 
   function newBucket() {
-    return { n: 0, durMs: 0, fps: [], jank: 0, jankSeen: false, rx: [], cpu: [] };
+    return { n: 0, masked: 0, durMs: 0, fps: [], jank: 0, jankSeen: false, rx: [], cpu: [] };
   }
 
   /**
@@ -5185,10 +6022,14 @@ const pts = perf.map((it) => {
       var inWeak = si < segs.length && segs[si].a <= tk;
       var bucket = inWeak ? weak : clean;
       bucket.n += 1;
+      var cut = !!(mask && mask[k]);
+      if (cut) bucket.masked += 1;
       var f = fps[k];
-      if (f != null && !(mask && mask[k])) bucket.fps.push(f);
+      if (f != null && !cut) bucket.fps.push(f);
       var row = rows[k] || {};
-      var jk = numOf(row.jank);
+      // Jank 与上方统计表同口径：加载段内的卡顿也不计入。
+      // 只剔帧率不剔 Jank，会让「已剔除加载段」这句话只对一半指标成立。
+      var jk = cut ? null : numOf(row.jank);
       if (jk != null) { bucket.jank += jk; bucket.jankSeen = true; }
       var rx = numOf(row.net && row.net.rxKBps);
       if (rx != null) bucket.rx.push(rx);
@@ -5198,13 +6039,20 @@ const pts = perf.map((it) => {
 
     function agg(b) {
       var fpsMean = mean(b.fps);
+      // 与统计表同一折算：按剔除比例缩时长，再拿有效时长当 Jank 的分母。
+      // 原来分母用原始时长（含加载段），加载段越长 Jank 折算值越低。
+      var keptRatio = b.n > 0 ? (b.n - b.masked) / b.n : 1;
+      var effDurMs = b.durMs * keptRatio;
       return {
         n: b.n,
+        nKept: b.n - b.masked,
+        masked: b.masked,
         durMs: b.durMs,
+        effDurMs: effDurMs,
         fpsMean: fpsMean,
         reach: (fpsMean != null && target > 0) ? (fpsMean / target * 100) : null,
         fps1Low: oneLow(b.fps),
-        jank10: (b.jankSeen && b.durMs > 0) ? (b.jank / (b.durMs / 60000)) : null,
+        jank10: (b.jankSeen && effDurMs > 0) ? (b.jank / (effDurMs / 60000)) : null,
         rx: mean(b.rx),
         cpu: mean(b.cpu)
       };
@@ -5233,10 +6081,15 @@ const pts = perf.map((it) => {
     var w = m.weak, c = m.clean;
     var defs = [
       { label: '平均帧率', unit: 'fps', w: w.fpsMean, c: c.fpsMean, d: 1, p: 1 },
-      { label: '达帧率', unit: '%', w: w.reach, c: c.reach, d: 1, p: 1 },
+      // 达成度是均值口径，目标写进单位里，读者不用回头找卡片上的「目标 60」
+      { label: '帧率达成度', unit: '%' + (m.target > 0 ? '（目标 ' + m.target + '）' : ''),
+        w: w.reach, c: c.reach, d: 1, p: 1 },
       { label: '1% Low', unit: 'fps', w: w.fps1Low, c: c.fps1Low, d: 1, p: 1 },
-      { label: '卡顿', unit: '次/10min', w: w.jank10, c: c.jank10, d: 1, p: -1 },
-      { label: '下行流量', unit: 'KB/s', w: w.rx, c: c.rx, d: 0, p: 0 },
+      // 原名「卡顿」，与上方卡顿归因（FrameTimeline 逐帧）不是同一个东西：
+      // 这里的数是 timestats 的 Jank 帧数按时长折合，单位必须写明「折合」。
+      { label: 'Jank', unit: '次/10min（折合）', w: w.jank10, c: c.jank10, d: 1, p: -1 },
+      // 流量与主表同精度（KB/s 保留 1 位），否则同一页两处流量小数位不同
+      { label: '下行流量', unit: 'KB/s', w: w.rx, c: c.rx, d: 1, p: 0 },
       { label: '进程 CPU', unit: '%', w: w.cpu, c: c.cpu, d: 1, p: -1 }
     ];
     var out = [];
@@ -5282,12 +6135,12 @@ const pts = perf.map((it) => {
       });
     }
 
-    // 直连段零卡顿时没有倍数可比，此时只要弱网段每分钟多出 1 次以上就算异常
+    // 直连段零 Jank 时没有倍数可比，此时只要弱网段每分钟多出 1 次以上就算异常
     if (w.jank10 != null && c.jank10 != null && w.jank10 - c.jank10 >= 1 &&
         (c.jank10 <= 0 || w.jank10 / c.jank10 >= 2)) {
       risks.push({
         tone: 'mid',
-        text: '弱网段卡顿 ' + fmt(w.jank10, 1) + ' 次/10min，' +
+        text: '弱网段 Jank ' + fmt(w.jank10, 1) + ' 次/10min（折合），' +
           (c.jank10 > 0
             ? ('约为直连段（' + fmt(c.jank10, 1) + '）的 ' + (w.jank10 / c.jank10).toFixed(1) + ' 倍')
             : ('直连段为 ' + fmt(c.jank10, 1))) +
@@ -5298,7 +6151,7 @@ const pts = perf.map((it) => {
     if (w.reach != null && w.reach < 80 && c.reach != null && c.reach >= 90) {
       risks.push({
         tone: 'mid',
-        text: '弱网段达帧率只有 ' + fmt(w.reach, 1) + '%，直连段为 ' + fmt(c.reach, 1) +
+        text: '弱网段帧率达成度只有 ' + fmt(w.reach, 1) + '%，直连段为 ' + fmt(c.reach, 1) +
           '%，帧率稳定性在弱网下明显变差。'
       });
     }
@@ -5438,6 +6291,15 @@ const pts = perf.map((it) => {
           + '</tr>';
       }
       html += '</tbody></table>';
+      // 小样本与口径：读者最容易把「折合 次/10min」当成主表的「帧/拍」，
+      // 也容易忽略两段拍数差一个量级时的可信度差异。
+      var nW = m.weak.nKept, nC = m.clean.nKept;
+      var cutAll = (m.weak.masked || 0) + (m.clean.masked || 0);
+      html += '<div class="wn-foot">样本：弱网段 ' + nW + ' 拍' +
+        (hasCompare ? ' / 直连段 ' + nC + ' 拍' : '') +
+        (cutAll > 0 ? '（已剔除加载段 ' + cutAll + ' 拍）' : '') +
+        '；Jank 为 timestats 帧数按有效时长折合到 10 分钟（1 帧计 1 次），' +
+        '与上方「卡顿归因」不同源，勿直接比较；帧率达成度 = 该段平均 FPS ÷ 目标（均值口径）。</div>';
     }
 
     if (risks.length) {
@@ -5455,7 +6317,7 @@ const pts = perf.map((it) => {
       (pollSec ? '每 ' + pollSec + ' 秒' : '') + '轮询 WeakNet 控制接口' +
       (m.ctrlPort ? '（127.0.0.1:' + m.ctrlPort + '）' : '') +
       '记录；USB 接管的手机走同一引擎，按「手机」归类。弱网段与直连段的统计口径' +
-      '与上方解读总结一致（已剔除加载段影响）。</div>';
+      '与上方解读总结一致（帧率均值与 Jank 均已剔除加载段）。</div>';
 
     sec.innerHTML = html;
 
@@ -5743,6 +6605,51 @@ const pts = perf.map((it) => {
     anchor3.parentNode.insertBefore(box2, anchor3);
     if (window.MetricInfo) MetricInfo.decorate(box2);
   } catch (_) {}
+})();
+</script>
+<!-- 分享单文件报告：导出时若内联了 Excel（window.__PERFARA_XLSX__），在顶栏提供下载入口。
+     分享包是纯浏览器环境，网页无法静默启动本地程序，因此这里只能下载；
+     下载后双击即用系统 Excel 打开（文件名与归档报告 id 一致，便于对应）。 -->
+<script>
+(function () {
+  var pack = window.__PERFARA_XLSX__;
+  if (!pack || !pack.b64) return;
+
+  function b64ToBlob(b64) {
+    var bin = atob(b64);
+    var len = bin.length;
+    var buf = new Uint8Array(len);
+    for (var i = 0; i < len; i++) buf[i] = bin.charCodeAt(i);
+    return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  function downloadXlsx() {
+    var url = URL.createObjectURL(b64ToBlob(pack.b64));
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = pack.name || 'perfara.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  function mountXlsxButton() {
+    var hosts = document.querySelectorAll('.topbar-right');
+    for (var i = 0; i < hosts.length; i++) {
+      if (hosts[i].querySelector('.btn-xlsx')) continue;
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-export btn-xlsx';
+      btn.textContent = '↓ Excel';
+      btn.title = '下载本次采集的 Excel 数据表' + (pack.name ? '（' + pack.name + '）' : '');
+      btn.addEventListener('click', downloadXlsx);
+      hosts[i].insertBefore(btn, hosts[i].firstChild);
+    }
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountXlsxButton);
+  else mountXlsxButton();
 })();
 </script>
 </body>

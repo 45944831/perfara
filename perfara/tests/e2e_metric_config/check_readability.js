@@ -145,24 +145,32 @@ async function main() {
   check('perf 页无 JS 报错', errs.length === 0, errs);
 
   // 整页滚动过表头自然位置后：顶栏吸顶，统计表表头应吸在顶栏下方（top:37px）
+  // 统计表自 2026-11-20 起默认折叠（避免 1100px 长表挡在解读与曲线之间），
+  // 表头吸顶只在展开状态下存在，所以先点开再量。
+  await p.evaluate(async () => {
+    const body = document.querySelector('#wrap-stats-global .stats-body');
+    const btn = document.getElementById('btn-stats-toggle');
+    if (body && body.hidden && btn) btn.click();
+    await new Promise(r => setTimeout(r, 150));
+  });
   const stick = await p.evaluate(async () => {
     const th = document.querySelector('#tbl-global thead th');
     const topbar = document.querySelector('.topbar');
     // 计算表头距文档顶部的绝对偏移
     let off = 0, el = th;
     while (el) { off += el.offsetTop; el = el.offsetParent; }
-    window.scrollTo(0, off - 37 + 10); // 滚过吸顶点 10px
+    window.scrollTo(0, off - 44 + 10); // 滚过吸顶点 10px
     await new Promise(r => setTimeout(r, 250));
     const res = {
       thTop: Math.round(th.getBoundingClientRect().top),
       topbarTop: Math.round(topbar.getBoundingClientRect().top),
-      scrolledTo: off - 37 + 10,
+      scrolledTo: off - 44 + 10,
     };
     window.scrollTo(0, 0);
     return res;
   });
   check('顶栏吸顶（滚动后 top=0）', stick.topbarTop === 0, stick);
-  check('滚动后统计表表头吸在顶栏下方(top≈37)', Math.abs(stick.thTop - 37) <= 2, stick);
+  check('滚动后统计表表头吸在顶栏下方(top≈44)', Math.abs(stick.thTop - 44) <= 2, stick);
   // 不同分辨率下不溢出、卡片不过窄
   for (const w of [1280, 1440, 1920]) {
     const vp = await browser.newPage({ viewport: { width: w, height: 900 } });

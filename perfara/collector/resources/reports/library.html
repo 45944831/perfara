@@ -50,6 +50,15 @@ body {
   min-height: 100vh;
 }
 
+/* ═══ Scrollbar ═════════════════════════════════════════════════════════════
+   报告库是客户端内的独立窗口，整页滚动。样式与采集主界面（renderer/style.css）
+   及报告页（perf.html）保持一致，避免同一个应用里三种滚动条外观。
+   ⚠️ 三处改一处就要同步另两处。 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg2); }
+::-webkit-scrollbar-thumb { background: #4a5368; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #67728f; }
+
 /* ─── 顶栏 ─────────────────────────────────────────────── */
 .topbar {
   position: sticky; top: 0; z-index: 20;
@@ -238,22 +247,27 @@ body.no-delete .card-del { display: none; }
   background: rgba(79,142,247,.10);
 }
 .card-foot .open { margin-left: 0; }
-/* 「导出分享」：与「打开位置」同组 */
-.card-foot .export-share {
+/* 「导出分享」/「Excel」：与「打开位置」同组 */
+.card-foot .export-share,
+.card-foot .open-xlsx {
   font: inherit; font-size: 11.5px; line-height: 1;
   color: var(--text2); background: transparent;
   border: 1px solid var(--border); border-radius: 6px;
   padding: 4px 8px; cursor: pointer;
   transition: color .15s, border-color .15s, background .15s;
 }
-.card-foot .export-share:hover {
+.card-foot .export-share:hover,
+.card-foot .open-xlsx:hover {
   color: var(--accent); border-color: var(--accent);
   background: rgba(79,142,247,.10);
 }
 .card-foot .export-share.is-busy { opacity: .55; cursor: progress; }
+.card-foot .open-xlsx { color: var(--green); border-color: rgba(62,207,142,.35); }
+.card-foot .open-xlsx:hover { color: var(--green); border-color: var(--green); background: rgba(62,207,142,.10); }
 /* 浏览器直接打开（无 preload）时无法调用文件管理器，隐藏这两个入口 */
 .no-location .card-foot .open-loc,
 .no-location .card-foot .export-share,
+.no-location .card-foot .open-xlsx,
 .no-location #btn-export-compare { display: none; }
 
 /* ─── 空状态 ────────────────────────────────────────────── */
@@ -555,11 +569,11 @@ td.worst::after { content: ' ▼'; font-size: 9px; opacity: .8; }
       d: 'FPS 相对自身均值的离散程度。',
       h: '对整段 FPS 求标准差。',
       g: '越小越稳；均值相同但标准差大，说明画面节奏忽快忽慢。' },
-    reach: { t: '达帧率', u: '%',
+    reach: { t: '帧率达成度', u: '%',
       d: '平均帧率相对目标帧率的达成比例。',
       h: '平均 FPS ÷ 目标帧率 × 100%。',
       g: '≥95% 达标较充分，80%~95% 有掉帧，低于 80% 需结合逐帧指标与卡顿归因定位'
-        + '（渲染耗时、GPU、温控都可能，达帧率低本身不指向具体原因）。' },
+        + '（渲染耗时、GPU、温控都可能，帧率达成度低本身不指向具体原因）。' },
     frametime: { t: '均帧 Avg(FTime)', u: 'ms',
       d: '平均每帧耗时，即每一帧从开始到呈现在屏幕上的平均时间。',
       h: '对 FPS > 0 的采样点计算 1000 / FPS，再取算术平均。',
@@ -585,10 +599,10 @@ td.worst::after { content: ' ▼'; font-size: 9px; opacity: .8; }
       d: '折算到每小时的帧率骤降次数。',
       h: 'PerfDog 口径：相邻采样点 FPS 下降超过 8 帧计一次，再按测试时长折算到每小时。',
       g: '衡量突发掉帧的频繁程度，与卡顿次数互补。' },
-    getarget: { t: 'FPS≥目标', u: '%',
+    getarget: { t: '满帧占比', u: '%',
       d: '达到目标帧率的采样点占比。',
       h: '统计 FPS ≥ 目标帧率的采样点数 ÷ 总采样点数。',
-      g: '与达帧率的区别：这是「样本口径」，分子看的是采样点而非均值。' },
+      g: '与帧率达成度的区别：这是「样本口径」，分子看的是采样点而非均值。' },
     medrange: { t: '稳帧范围 MedRange', u: '%',
       d: '帧率落在中位数 ±20% 区间内的采样点占比，衡量画面节奏的一致性。',
       h: '先取 FPS 中位数，再统计落在 ±20% 范围内的采样点占比。',
@@ -839,9 +853,9 @@ td.worst::after { content: ' ▼'; font-size: 9px; opacity: .8; }
     '内存': 'mem', '内存 PSS': 'mem', '内存 PSS 平均': 'mem', '物理内存': 'mem', 'PSS': 'mem', 'RSS': 'mem',
     '内存详情': 'memdetail', '内存明细': 'memdetail',
     'FPS': 'fps', 'fps': 'fps', 'FPS 平均': 'fps', 'FPS 最低': 'fpsMin', '目标': 'fpsTarget', '目标帧率': 'fpsTarget',
-    '达帧率': 'reach', '均帧': 'frametime', '低帧': 'lowpct', '低帧占比': 'lowpct',
+    '帧率达成度': 'reach', '均帧': 'frametime', '低帧': 'lowpct', '低帧占比': 'lowpct',
     '帧率标准差': 'fpsstd', '帧耗时标准差': 'ftimestd', '帧耗时方差': 'ftimevar',
-    '1%Low': 'onelow', 'Drop': 'drop', 'FPS≥目标': 'getarget', '≥目标': 'getarget',
+    '1%Low': 'onelow', 'Drop': 'drop', '满帧占比': 'getarget', '≥目标': 'getarget',
     '稳帧': 'medrange', '稳帧范围': 'medrange', '卡顿时长占比': 'stutter', 'Stutter': 'stutter',
     'Jank': 'jank', '大 Jank': 'bigjank', 'BigJank': 'bigjank', 'Jank 平均': 'jank', 'BigJank 平均': 'bigjank',
     'SmallJank': 'smalljank', 'SmallJank 平均': 'smalljank', 'TinyJank': 'tinyjank', 'TinyJank 平均': 'tinyjank',
@@ -989,11 +1003,11 @@ const METRICS = [
   { key: 'fps',     label: 'FPS 平均',      unit: '帧/s', better: 'high' },
   { key: 'fpsMin',  label: 'FPS 最低',      unit: '帧/s', better: 'high' },
   { key: 'fpsTarget',     label: '目标帧率', unit: '帧/s', better: null   },
-  { key: 'fpsReach',      label: '达帧率',   unit: '%',    better: 'high' },
+  { key: 'fpsReach',      label: '帧率达成度',   unit: '%',    better: 'high' },
   { key: 'fpsFrameTime',  label: '均帧',     unit: 'ms',   better: 'low'  },
   { key: 'fpsLowPct',     label: '低帧占比', unit: '%',    better: 'low'  },
   { key: 'fps1Low',       label: '1%Low',   unit: '帧/s', better: 'high' },
-  { key: 'fpsGeTarget',   label: 'FPS≥目标', unit: '%',    better: 'high' },
+  { key: 'fpsGeTarget',   label: '满帧占比', unit: '%',    better: 'high' },
   { key: 'fpsMedRange',   label: '稳帧范围', unit: '%',    better: 'high' },
   { key: 'fpsStd',        label: '帧率标准差', unit: '帧/s', better: 'low' },
   { key: 'fpsStutter',    label: '卡顿时长占比', unit: '%', better: 'low' },
@@ -1034,6 +1048,7 @@ const state = {
   selected: new Set(),  // 选中的 id
   cache: new Map(),     // id → 完整 payload
   charts: [],           // echarts 实例，切换时销毁
+  xlsxIds: new Set(),   // 存在同名 history/<id>.xlsx 的报告（旧报告没有，不显示入口）
 };
 
 // ─── 采集参数适配 ────────────────────────────────────────────────────────────
@@ -1406,6 +1421,9 @@ function renderGrid() {
       '<div class="card-foot">',
       '  <span>' + (rep.samples || 0) + ' 个采样' + (rep.durationSec != null ? ' · ' + fmt(rep.durationSec, 0) + 's' : '') + '</span>',
       '  <button type="button" class="open-loc" title="在系统文件管理器中打开该报告的存放位置">📁 打开位置</button>',
+      state.xlsxIds.has(rep.id)
+        ? '  <button type="button" class="open-xlsx" title="用系统默认程序（Excel）打开本次采集的数据表">📊 Excel</button>'
+        : '',
       '  <button type="button" class="export-share" title="打包成一份可分享的单文件报告（数据与图表库全内置，离线可看）">⤓ 导出分享</button>',
       '  <span class="open">打开详细报告 →</span>',
       '</div>',
@@ -1415,6 +1433,7 @@ function renderGrid() {
       if (e.target.classList.contains('card-check')) return;   // 勾选框自己处理
       if (e.target.closest('.card-del')) { deleteReports([rep.id]); return; }
       if (e.target.closest('.open-loc')) { openReportLocation(rep.id); return; }
+      if (e.target.closest('.open-xlsx')) { openReportXlsx(rep.id); return; }
       if (e.target.closest('.export-share')) { exportSharedReport(rep.id, e.target.closest('.export-share')); return; }
       if (e.target.classList.contains('open')) { openDetail(rep.id); return; }
       toggleSelect(rep.id);
@@ -1431,7 +1450,7 @@ function renderGrid() {
 }
 
 /**
- * 卡片上的帧率质量小字行（达帧率 / 均帧 / 低帧占比）。
+ * 卡片上的帧率质量小字行（帧率达成度 / 均帧 / 低帧占比）。
  * 归档侧没写这三个 KPI 的旧报告不显示。
  */
 function fpsExtraLine(kpi) {
@@ -1447,7 +1466,7 @@ function fpsExtraLine(kpi) {
   const tgtNum = kpi.fpsTarget == null ? null : kpi.fpsTarget;
   let extra = '<div class="kpis-extra">' +
     '<span class="kpx"><i data-info="fpsTarget">目标</i><b>' + tgt + ' 帧</b></span>' +
-    cell('达帧率', kpi.fpsReach, '%', tone(kpi.fpsReach, 90, 70), 'reach') +
+    cell('帧率达成度', kpi.fpsReach, '%', tone(kpi.fpsReach, 90, 70), 'reach') +
     cell('均帧', kpi.fpsFrameTime, 'ms', tone(ftScore, 95, 85), 'frametime') +
     cell('低帧', kpi.fpsLowPct, '%', tone(kpi.fpsLowPct == null ? null : 100 - kpi.fpsLowPct, 90, 80), 'lowpct');
   if (kpi.fps1Low != null)
@@ -1570,6 +1589,18 @@ function openReportLocation(id) {
   fallback();
 }
 
+/** 用系统默认程序（Excel）直接打开该报告对应的 history/<id>.xlsx */
+function openReportXlsx(id) {
+  const fn = window.reportLib && window.reportLib.openReportXlsx;
+  if (typeof fn !== 'function') {
+    alert('当前是浏览器直接打开的报告库，无法打开本地 Excel。\n请从客户端顶栏的「报告库」按钮打开本页。');
+    return;
+  }
+  fn(id).then((r) => {
+    if (r && r.ok === false) alert('打开 Excel 失败：' + (r.reason || '未知原因'));
+  }).catch((e) => alert('打开 Excel 失败：' + (e && e.message ? e.message : e)));
+}
+
 /** 把这份报告打包成一个自包含的单文件 HTML（无外部依赖，可直接转发） */
 function exportSharedReport(id, btn) {
   const noApi = () => alert(
@@ -1587,7 +1618,12 @@ function exportSharedReport(id, btn) {
       return;
     }
     const kb = r.bytes ? '（' + Math.round(r.bytes / 1024) + ' KB）' : '';
-    alert('已导出可分享的单文件报告：\n' + r.path + kb +
+    // 带 Excel 时明确告知：分享包顶栏会有「↓ Excel」，接收方双击即可下载数据表
+    const xlsxNote = r.xlsxBytes
+      ? '\n已内置本次采集的 Excel 数据表（' + Math.round(r.xlsxBytes / 1024) + ' KB），'
+        + '打开后点顶栏「↓ Excel」即可下载。'
+      : '\n该报告未内置 Excel 数据表（未生成、超过 12 MB 或读取失败），分享包仅含报告与图表。';
+    alert('已导出可分享的单文件报告：\n' + r.path + kb + xlsxNote +
       '\n\n该文件已内置图表库与本次数据，双击即可查看，无需安装客户端。');
   }).catch((e) => { done(); alert('导出失败：' + (e && e.message ? e.message : String(e))); });
 }
@@ -1893,7 +1929,7 @@ function renderCompareInsight(reps, payloads) {
   };
 
   pushBest('FPS 最高', 'fps', 'high', ' 帧/s', 1);
-  if (stats.some(s => s.reach != null)) pushBest('达帧率 最高', 'reach', 'high', '%', 1);
+  if (stats.some(s => s.reach != null)) pushBest('帧率达成度 最高', 'reach', 'high', '%', 1);
   if (stats.some(s => s.frameTime != null)) pushBest('均帧 最低', 'frameTime', 'low', ' ms', 1);
   if (stats.some(s => s.lowPct != null)) pushBest('低帧占比 最低', 'lowPct', 'low', '%', 1);
   pushBest('进程 CPU 最低', 'cpu', 'low', '%', 1);
@@ -1903,7 +1939,7 @@ function renderCompareInsight(reps, payloads) {
   pushBest('BigJank 最低', 'bigJank', 'low', ' 次/s', 2);
   if (stats.some(s => s.smallJank != null)) pushBest('SmallJank 最低', 'smallJank', 'low', ' 次/s', 2);
   if (stats.some(s => s.fps1Low != null)) pushBest('1%Low 最高', 'fps1Low', 'high', ' 帧/s', 1);
-  if (stats.some(s => s.fpsGeTarget != null)) pushBest('FPS≥目标 最高', 'fpsGeTarget', 'high', '%', 1);
+  if (stats.some(s => s.fpsGeTarget != null)) pushBest('满帧占比 最高', 'fpsGeTarget', 'high', '%', 1);
   if (stats.some(s => s.fpsMedRange != null)) pushBest('稳帧范围 最高', 'fpsMedRange', 'high', '%', 1);
   if (stats.some(s => s.fpsStd != null)) pushBest('帧率标准差 最低', 'fpsStd', 'low', ' 帧/s', 2);
   if (stats.some(s => s.fpsStutter != null)) pushBest('卡顿时长占比 最低', 'fpsStutter', 'low', '%', 1);
@@ -2436,6 +2472,17 @@ window.addEventListener('resize', () => {
   renderFilterOptions();
   renderGrid();
   updateToolbar();
+
+  // 哪些报告带同名 Excel：拿到后再补一次渲染，只给有数据的卡片显示「Excel」入口。
+  // 旧报告（改造前采集）没有 xlsx，入口不出现，不会点了才报错。
+  if (window.reportLib && typeof window.reportLib.xlsxIds === 'function') {
+    window.reportLib.xlsxIds().then((r) => {
+      const ids = (r && Array.isArray(r.ids)) ? r.ids : [];
+      if (!ids.length) return;
+      state.xlsxIds = new Set(ids);
+      renderGrid();
+    }).catch(() => { /* 拿不到就不显示入口，不影响报告库主流程 */ });
+  }
 })();
 </script>
 </body>

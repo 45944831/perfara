@@ -284,7 +284,10 @@ function _pushTroughShot(category, data, capture, logChannel) {
  */
 async function _writeRunXlsxSafe(payload, dataJsPath, logChannel) {
   try {
-    const r = await RunXlsx.writeRunXlsxAsync(payload, dataJsPath);
+    // 紧随 writeDataJs 取本次归档元信息：Excel 与历史报告 <id>.js 同名同目录落盘，
+    // 提取某次采集时两者一一对应；归档失败则 getLastArchive() 为 null，回退根目录。
+    const archive = reportsDataJs.getLastArchive();
+    const r = await RunXlsx.writeRunXlsxAsync(payload, dataJsPath, archive);
     if (logChannel) {
       sendToRenderer(logChannel, `已生成 Excel：${r.file}（${r.sheets.length} 个标签页）`);
     }
@@ -2056,7 +2059,7 @@ ipcMain.handle('library-open', async () => openLibraryWindow());
 
 ipcMain.handle('library-history-dir', async () => getHistoryDir());
 
-/** 删除指定报告：<id>.js / <id>.json + 索引条目 */
+/** 删除指定报告：<id>.js / <id>.json / <id>.xlsx + 索引条目 */
 ipcMain.handle('library-delete-reports', async (_e, ids) => {
   const dir = getHistoryDir();
   const list = (Array.isArray(ids) ? ids : [ids]).map(safeReportId).filter(Boolean);
@@ -2069,11 +2072,16 @@ ipcMain.handle('library-delete-reports', async (_e, ids) => {
 
   for (const id of list) {
     let clean = true;
-    for (const ext of ['.js', '.json']) {
+    // .xlsx 与报告同 id 同名（2026-11-20 起）：删报告必须连数据表一起删，
+    // 否则 history/ 会残留只有 Excel 没有报告的孤立文件。
+    for (const ext of ['.js', '.json', '.xlsx']) {
       const f = path.join(dir, id + ext);
       try {
         if (fs.existsSync(f)) fs.unlinkSync(f);
       } catch (err) {
+        // 数据表常被 Excel 占用（Windows 下 EBUSY）：它是可再生的附属文件，
+        // 失败不能把报告卡在「.js 已删、索引还在」的半死状态，只跳过、不阻断。
+        if (ext === '.xlsx') continue;
         clean = false;
         failed.push(path.basename(f) + '：' + (err && err.message ? err.message : String(err)));
       }
@@ -2124,6 +2132,41 @@ ipcMain.handle('library-open-report-location', async (_e, id) => {
     return { ok: true, path: dir };
   } catch (e) {
     return { ok: false, reason: e.message || String(e) };
+  }
+});
+
+/**
+ * 报告库里「Excel」入口：用系统默认程序直接打开 history/<id>.xlsx。
+ * 旧报告（改造前采集）没有同名 xlsx，返回 ok:false 由页面给出提示。
+ */
+ipcMain.handle('library-open-report-xlsx', async (_e, id) => {
+  const safe = safeReportId(id);
+  if (!safe) return { ok: false, reason: '报告 id 无效' };
+  const file = path.join(getHistoryDir(), safe + '.xlsx');
+  if (!fs.existsSync(file)) {
+    return { ok: false, reason: '这份报告没有对应的 Excel（旧版本采集或导出失败）' };
+  }
+  try {
+    const err = await shell.openPath(file);   // 返回空串表示成功
+    if (err) return { ok: false, reason: err };
+    return { ok: true, path: file };
+  } catch (e) {
+    return { ok: false, reason: e.message || String(e) };
+  }
+});
+
+/** 报告库里哪些报告存在同名 Excel：页面据此决定是否显示「Excel」按钮 */
+ipcMain.handle('library-xlsx-ids', async () => {
+  try {
+    const dir = getHistoryDir();
+    if (!fs.existsSync(dir)) return { ok: true, ids: [] };
+    const ids = fs.readdirSync(dir)
+      .filter(f => /\.xlsx$/i.test(f))
+      .map(f => f.replace(/\.xlsx$/i, ''))
+      .filter(id => !!safeReportId(id));
+    return { ok: true, ids };
+  } catch (e) {
+    return { ok: false, ids: [], reason: e.message || String(e) };
   }
 });
 
@@ -2189,6 +2232,23 @@ function inlineEcharts(html, ecPath) {
   return { html, inlined: false };
 }
 
+/**
+ * 分享包脱敏：单文件 HTML 会被转发给同事或外部，设备唯一标识不能跟着走。
+ * 只脱 deviceId / udid，不动机型与应用——否则报告失去「什么机器上测的」这个关键上下文。
+ * 浅拷贝：perf 数组可能上万点，深拷贝既慢又没必要（只替换 device 这一层）。
+ */
+function redactSharedPayload(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const out = Object.assign({}, payload);
+  if (payload.device && typeof payload.device === 'object') {
+    const d = Object.assign({}, payload.device);
+    if (d.deviceId) d.deviceId = '已脱敏';
+    if (d.udid) d.udid = '已脱敏';
+    out.device = d;
+  }
+  return out;
+}
+
 function buildSharedReportHtml(id) {
   const payload = readReportPayload(id);
   if (!payload) return { ok: false, reason: '未找到该报告的数据文件' };
@@ -2210,16 +2270,44 @@ function buildSharedReportHtml(id) {
     const tagStart = html.indexOf('<script>', mi);
     const tagEnd = tagStart >= 0 ? html.indexOf('</script>', tagStart) : -1;
     if (tagStart >= 0 && tagEnd > tagStart) {
-      // 转义 </ 避免提前闭合 script
-      const json = JSON.stringify(payload).replace(/<\//g, '<\\/');
+      // 转义 </ 避免提前闭合 script；序列化前先脱敏设备唯一标识
+      const json = JSON.stringify(redactSharedPayload(payload)).replace(/<\//g, '<\\/');
       html = html.slice(0, tagStart)
         + '<script>\nvar data = ' + json + ';\n</' + 'script>\n'
         + html.slice(tagEnd + '</script>'.length);
     }
   }
 
+  // 3) 内联 Excel（若与该报告同 id 归档到 history/<id>.xlsx）
+  //    分享出去的单文件是纯浏览器环境，不能静默启动本地程序，因此这里只带数据，
+  //    由报告页的「↓ Excel」按钮触发下载（文件名沿用归档 id，便于与 .js 对应）。
+  //    超长采集的数据表可能几十 MB，base64 再涨 1/3：超过上限就不内联，
+  //    宁可少一个下载入口，也不生成一个打不开的巨型 HTML。
+  const XLSX_INLINE_MAX = 12 * 1024 * 1024;
+  let xlsxBytes = 0;
+  try {
+    const xlsxPath = path.join(getHistoryDir(), id + '.xlsx');
+    if (fs.existsSync(xlsxPath)) {
+      const buf = fs.readFileSync(xlsxPath);
+      if (buf.length > XLSX_INLINE_MAX) {
+        console.warn('[reports/shared] Excel 过大，跳过内联：' + buf.length + ' 字节（上限 '
+          + XLSX_INLINE_MAX + '）');
+      } else {
+        xlsxBytes = buf.length;
+        const inject = '<script>\nwindow.__PERFARA_XLSX__ = '
+          + JSON.stringify({ name: 'Perfara数据_' + id + '.xlsx', b64: buf.toString('base64') })
+          + ';\n</' + 'script>\n';
+        const headEnd = html.indexOf('</head>');
+        if (headEnd >= 0) html = html.slice(0, headEnd) + inject + html.slice(headEnd);
+      }
+    }
+  } catch (e) {
+    // Excel 读失败不能阻断分享包生成：报告本体仍然可看，只是少一个下载入口
+    console.warn('[reports/shared] 内联 Excel 失败：', e && e.message ? e.message : e);
+  }
+
   html = html.replace('<head>', () => '<head>\n  <!-- Perfara 单文件分享报告：echarts 与报告数据均已内联，离线双击即可查看 -->');
-  return { ok: true, html, payload };
+  return { ok: true, html, payload, xlsxBytes };
 }
 
 function suggestSharedName(payload, id) {
@@ -2246,7 +2334,11 @@ ipcMain.handle('library-export-shared-report', async (_e, id) => {
   try {
     fs.writeFileSync(res.filePath, built.html, 'utf8');
     shell.showItemInFolder(res.filePath);   // 导出后直接定位到文件，便于转发
-    return { ok: true, path: res.filePath, bytes: Buffer.byteLength(built.html, 'utf8') };
+    return {
+      ok: true, path: res.filePath, bytes: Buffer.byteLength(built.html, 'utf8'),
+      // 分享包里是否带了 Excel（0 = 该报告没有同名 xlsx），页面据此提示用户
+      xlsxBytes: built.xlsxBytes || 0,
+    };
   } catch (e) {
     return { ok: false, reason: e.message || String(e) };
   }
@@ -2361,7 +2453,8 @@ function buildSharedCompareHtml(ids) {
   for (const r of reps) {
     const p = loadPayloadAny(r.id);
     if (!p) return { ok: false, reason: `报告数据缺失：${r.id}` };
-    data[r.id] = p;
+    // 对比包同样是「转发给别人」的产物：设备唯一标识一并脱敏
+    data[r.id] = redactSharedPayload(p);
   }
 
   const dir = getBundledReportsDir();
@@ -2376,10 +2469,12 @@ function buildSharedCompareHtml(ids) {
   html = ec.html;
 
   // 2) 用参与对比的这几条索引替换外部的 history/index.js
+  //    索引条目里也带 deviceId，和 payload 一起脱敏，否则对比包仍能读出设备唯一标识
   const meta = buildCompareMeta(reps);
+  const safeReps = reps.map(r => (r.deviceId ? Object.assign({}, r, { deviceId: '已脱敏' }) : r));
   const IDX_RE = /<script src="history\/index\.js"[^>]*>\s*<\/script>/;
   if (!IDX_RE.test(html)) return { ok: false, reason: '报告库模板缺少索引加载标记，无法生成对比报告' };
-  html = html.replace(IDX_RE, () => '<script>\nvar reportIndex = ' + _inlineJson(reps) + ';\n</script>');
+  html = html.replace(IDX_RE, () => '<script>\nvar reportIndex = ' + _inlineJson(safeReps) + ';\n</script>');
 
   // 3) 页面尾部注入「数据 + 引导脚本」，打开即直接进入对比视图
   const boot = '<script>\nwindow.__PERFARA_CMP__ = { ids: ' + _inlineJson(list) +

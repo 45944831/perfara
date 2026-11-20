@@ -547,7 +547,7 @@ requestAnimationFrame(frame);
       //     ×.5 边界会超过原 ±0.6 容差；目标 60Hz 时传导上限 = 100/60*0.5≈0.83）。
       const expectReach = (shownFps / shownTarget) * 100;
       const reachTol = 0.6 + (100 / shownTarget) * 0.5;
-      check('达帧率 = 平均FPS ÷ 目标 × 100（±容差，显示值取整）',
+      check('帧率达成度 = 平均FPS ÷ 目标 × 100（±容差，显示值取整）',
         Number.isFinite(shownReach) && Math.abs(shownReach - expectReach) <= reachTol,
         { shownReach, expect: +expectReach.toFixed(1), tol: +reachTol.toFixed(2) });
       check('均帧 = 1000 ÷ 平均FPS（±8%）',

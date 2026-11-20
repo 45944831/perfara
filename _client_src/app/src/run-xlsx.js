@@ -664,19 +664,39 @@ function uniquePath(dir, name) {
 }
 
 /**
+ * 决定 Excel 的落盘目录与文件名。
+ *
+ * 有本次归档信息（archive = reportsDataJs.getLastArchive()）时，写进 history/，
+ * 与本次报告的 <id>.js 同名同目录（<id>.xlsx），提取时报告与数据一一对应；
+ * 没有归档信息（归档失败 / 独立导出）时，维持原行为：写 data.js 所在根目录。
+ *
+ * @param {object} payload
+ * @param {string} dataJsPath
+ * @param {{id:string, dir:string}|null} archive
+ */
+function resolveXlsxTarget(payload, dataJsPath, archive) {
+  if (archive && archive.id && archive.dir) {
+    const safe = String(archive.id).replace(/[\\/:*?"<>|]/g, '_');
+    return { dir: archive.dir, name: safe + '.xlsx' };
+  }
+  return { dir: path.dirname(dataJsPath), name: suggestXlsxName(payload) };
+}
+
+/**
  * 写到 data.js 所在的报告目录（自动跟随 userData fallback，避免只读安装目录写失败）。
+ * 传入 archive 时改为与历史报告同名归档到 history/（见 resolveXlsxTarget）。
  * @returns {{file:string, bytes:number, sheets:string[]}}
  */
-function writeRunXlsx(payload, dataJsPath) {
+function writeRunXlsx(payload, dataJsPath, archive) {
   if (!dataJsPath) throw new Error('缺少报告目录（data.js 路径）');
-  const dir = path.dirname(dataJsPath);
-  fs.mkdirSync(dir, { recursive: true });
+  const t = resolveXlsxTarget(payload, dataJsPath, archive);
+  fs.mkdirSync(t.dir, { recursive: true });
   const sheets = buildSheets(payload);
   const buf = Writer.buildXlsx(sheets, {
     title: `Perfara 采集数据 · ${(payload.device && payload.device.appName) || ''}`,
     creator: 'Perfara',
   });
-  const file = uniquePath(dir, suggestXlsxName(payload));
+  const file = uniquePath(t.dir, t.name);
   fs.writeFileSync(file, buf);
   return { file, bytes: buf.length, sheets: sheets.map(s => s.name) };
 }
@@ -685,22 +705,22 @@ function writeRunXlsx(payload, dataJsPath) {
  * 异步导出（主进程用这条）：建表、拼 XML、压缩都分帧，不再冻结窗口。
  * 返回结构与会话同步版一致，调用方只改 await。
  */
-async function writeRunXlsxAsync(payload, dataJsPath) {
+async function writeRunXlsxAsync(payload, dataJsPath, archive) {
   if (!dataJsPath) throw new Error('缺少报告目录（data.js 路径）');
-  const dir = path.dirname(dataJsPath);
-  await fs.promises.mkdir(dir, { recursive: true });
+  const t = resolveXlsxTarget(payload, dataJsPath, archive);
+  await fs.promises.mkdir(t.dir, { recursive: true });
   const sheets = await buildSheetsAsync(payload);
   const buf = await Writer.buildXlsxAsync(sheets, {
     title: `Perfara 采集数据 · ${(payload.device && payload.device.appName) || ''}`,
     creator: 'Perfara',
   });
-  const file = uniquePath(dir, suggestXlsxName(payload));
+  const file = uniquePath(t.dir, t.name);
   await fs.promises.writeFile(file, buf);
   return { file, bytes: buf.length, sheets: sheets.map(s => s.name) };
 }
 
 module.exports = {
-  buildSheets, buildSheetsAsync, writeRunXlsx, writeRunXlsxAsync, suggestXlsxName, uniquePath,
+  buildSheets, buildSheetsAsync, writeRunXlsx, writeRunXlsxAsync, suggestXlsxName, uniquePath, resolveXlsxTarget,
   flattenRow, normalizeTags,
   tagLabelFor, labelFor, fmtTs, GROUP_DEFS, DEFAULT_ORDER, qualitySheet, summarySheet,
   platformOf, unsupportedGroupsOf, PLATFORM_UNSUPPORTED_GROUPS, PLATFORM_SCOPE_NOTE,

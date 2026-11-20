@@ -65,7 +65,8 @@ async function main() {
   const src = fs.readFileSync(MAIN, 'utf8');
   // inlineEcharts 必须在 buildSharedReportHtml 之前抽取：
   // 它是 echarts 内联的实现，被 buildSharedReportHtml / buildSharedCompareHtml 共用。
-  const code = ['safeReportId', 'readReportPayload', 'inlineEcharts', 'buildSharedReportHtml', 'suggestSharedName']
+  // redactSharedPayload 是分享前脱敏设备唯一标识的纯函数，同属这一串调用链。
+  const code = ['safeReportId', 'readReportPayload', 'inlineEcharts', 'redactSharedPayload', 'buildSharedReportHtml', 'suggestSharedName']
     .map(n => extractFn(src, n)).join('\n\n');
   const factory = new Function('fs', 'path', 'getHistoryDir', 'getBundledReportsDir',
     code + '\nreturn { safeReportId, readReportPayload, buildSharedReportHtml, suggestSharedName };');
@@ -74,6 +75,15 @@ async function main() {
   const built = api.buildSharedReportHtml(reportId);
   check('打包成功返回 HTML', built.ok === true && typeof built.html === 'string', built.reason || Object.keys(built));
   if (!built.ok) { console.log(`\n结果：${passed} 通过 / ${failed} 失败`); process.exit(1); }
+
+  // P2 脱敏：分享包会被转发给别人，设备唯一标识不能原样带走（机型/应用仍保留）
+  const rawId = (built.payload && built.payload.device && built.payload.device.deviceId) || '';
+  if (rawId) {
+    const mId = /"deviceId":"([^"]*)"/.exec(built.html);
+    check('分享包内 deviceId 已脱敏', !!mId && mId[1] === '已脱敏', mId ? mId[1] : '未找到 deviceId');
+  } else {
+    console.log('  skip 该报告没有 deviceId，跳过脱敏断言');
+  }
 
   const name = api.suggestSharedName(built.payload, reportId);
   const outFile = path.join(OUT, name);
@@ -91,6 +101,44 @@ async function main() {
     const m = /var data\s*=\s*(\{[\s\S]*?\});\s*\n/.exec(built.html);
     try { const d = JSON.parse(m[1]); return !!(d && d.device && Array.isArray(d.perf)); } catch (_) { return false; }
   })());
+
+  // ── Excel 内联（隔离临时目录，避免污染真实报告库） ──
+  const xlsxHis = path.join(OUT, 'history_xlsx');
+  fs.rmSync(xlsxHis, { recursive: true, force: true });
+  fs.mkdirSync(xlsxHis, { recursive: true });
+  const rawReport = fs.readFileSync(path.join(historyDir, reportId + '.js'), 'utf8');
+  const fakeXlsx = Buffer.from('PK\u0003\u0004perfara-test-xlsx-payload');
+  fs.writeFileSync(path.join(xlsxHis, 'repX.js'), rawReport);
+  fs.writeFileSync(path.join(xlsxHis, 'repX.xlsx'), fakeXlsx);
+  fs.writeFileSync(path.join(xlsxHis, 'repY.js'), rawReport);   // 模拟改造前的旧报告（无 xlsx）
+  const apiX = factory(fs, path, () => xlsxHis, () => REPORTS);
+
+  const bx = apiX.buildSharedReportHtml('repX');
+  check('分享包内联 Excel（window.__PERFARA_XLSX__）', bx.ok === true && /window\.__PERFARA_XLSX__\s*=/.test(bx.html));
+  check('内联 Excel 文件名与归档 id 对应', /Perfara数据_repX\.xlsx/.test(bx.html));
+  check('内联 Excel 字节数与源文件一致', bx.xlsxBytes === fakeXlsx.length, { got: bx.xlsxBytes, want: fakeXlsx.length });
+  check('内联 base64 可还原为原字节', (() => {
+    const m = /"b64":"([A-Za-z0-9+/=]+)"/.exec(bx.html);
+    if (!m) return false;
+    return Buffer.from(m[1], 'base64').equals(fakeXlsx);
+  })());
+
+  const by = apiX.buildSharedReportHtml('repY');
+  // 注意：perf.html 模板本身含 window.__PERFARA_XLSX__ 的读取代码，
+  // 因此「未注入」要检测实际数据字段（"b64":"），不能只搜变量名。
+  check('旧报告（无 xlsx）不注入下载数据', by.ok === true && !/"b64":"/.test(by.html));
+  check('旧报告 xlsxBytes=0', by.xlsxBytes === 0, by.xlsxBytes);
+
+  // ── 接线守卫：导出结果要告诉用户分享包里有没有 Excel；报告库滚动条与另两处一致 ──
+  {
+    const libHtml = fs.readFileSync(path.join(REPORTS, 'library.html'), 'utf8');
+    check('导出 IPC 回传 xlsxBytes', /xlsxBytes:\s*built\.xlsxBytes\s*\|\|\s*0/.test(src));
+    check('导出提示区分「已内置」与「未内置」',
+      /已内置本次采集的 Excel 数据表/.test(libHtml) && /未内置 Excel 数据表/.test(libHtml));
+    check('超大 Excel 不内联（防巨型分享包）', /XLSX_INLINE_MAX/.test(src) && /12 \* 1024 \* 1024/.test(src));
+    check('报告库滚动条与报告页/主界面一致',
+      /::-webkit-scrollbar \{ width: 8px/.test(libHtml) && /#4a5368/.test(libHtml) && /#67728f/.test(libHtml));
+  }
 
   // ── 离线渲染验证 ──
   const browser = await pw.chromium.launch({ executablePath: EDGE, args: ['--no-sandbox', '--headless=new'] });
@@ -136,6 +184,39 @@ async function main() {
   await page.evaluate(() => window.scrollTo(0, 900));
   await page.waitForTimeout(600);
   await page.screenshot({ path: path.join(OUT, 'shared-report-charts.png') });
+
+  // ── 带 Excel 的分享包：顶栏按钮 + 真实点击下载 ──
+  const xlsxHtmlFile = path.join(OUT, 'shared-with-xlsx.html');
+  fs.writeFileSync(xlsxHtmlFile, bx.html, 'utf8');
+  const page2 = await browser.newPage({ viewport: { width: 1400, height: 900 }, acceptDownloads: true });
+  const errs2 = [];
+  page2.on('pageerror', e => errs2.push(e.message));
+  await page2.goto('file:///' + xlsxHtmlFile.replace(/\\/g, '/'), { waitUntil: 'load' });
+  await page2.waitForTimeout(2000);
+
+  const btnText = await page2.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll('.topbar-right .btn-xlsx'));
+    const vis = btns.find(b => b.offsetParent !== null) || btns[0];
+    return vis ? vis.textContent.trim() : '';
+  });
+  check('分享包顶栏出现「↓ Excel」按钮', /Excel/.test(btnText), btnText);
+
+  let dlName = '';
+  try {
+    const btn = page2.locator('.topbar-right .btn-xlsx:visible').first();
+    const [dl] = await Promise.all([
+      page2.waitForEvent('download', { timeout: 10000 }),
+      btn.click(),
+    ]);
+    dlName = dl.suggestedFilename();
+    await dl.cancel().catch(() => {});
+  } catch (e) {
+    dlName = 'ERR:' + (e && e.message ? e.message : e);
+  }
+  check('点击后触发 Excel 下载', dlName === 'Perfara数据_repX.xlsx', dlName);
+  check('Excel 分享页无 JS 报错', errs2.length === 0, errs2.slice(0, 3));
+  await page2.close();
+
   await browser.close();
 
   console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
